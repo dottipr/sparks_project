@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch import optim
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
 from tensorboardX import SummaryWriter
 import imageio
 
@@ -27,6 +27,95 @@ CONFIG_FILE = os.path.join(BASEDIR, "config.ini")
 logger = logging.getLogger(__name__)
 
 
+def predict(dataset: Dataset, args: argparse.Namespace):
+    # Since the dataset acts more like a generator than a list, we can't yield the first item
+    # without breaking access to other elements. Thus, the container must be initialized later
+    predictions = None
+    original_data = None
+
+    # retain some contextual information (in the form of previous and following frames)
+    # by slicing results according to a frame overlap
+    overlap = (dataset.duration - dataset.step) // 2
+    assert overlap % 2 == 0, f"Frame overlap must be an even number; is {overlap}"
+
+    # TODO: have this use a dataloader
+    # dataset_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    for i, (chunk, _) in enumerate(dataset):
+        if args.quick and 0 < i < 121: 
+            continue
+        logger.debug(f"Sample {i+1:>3}/{len(dataset):>3}")
+        if predictions is None:
+            # initialize mask container with the size from the first chunk
+            predictions = torch.zeros(
+                (
+                    4,                                 # number of classes,
+                    len(dataset) * dataset.step + 2 * overlap,       # time, i.e. every video frame
+                    *(chunk.shape[1:])                 # the actual frames, height x width
+                ), dtype=torch.float32, device=device)
+            logger.debug(f"Created prediction container of shape {predictions.shape}")
+
+            # create a container of the same sizes but without the dims for different classes
+            original_data = torch.zeros(1, *(predictions.shape[1:]), dtype=torch.float32, device=device)
+            logger.debug(f"Created data container of shape {original_data.shape}")
+
+        # for every frame, cut the predictions into the range [-overlap, overlap], except for
+        # - the first item (start at the first frame)
+        # - the last item (end at the last frame)
+        # additionally, keep track of the absolute locations of the data in the input video
+        if i == 0:
+            logger.debug(f"First sample, adding extra {overlap} frames")
+            slice_start = 0
+            slice_end = -overlap
+            abs_start = 0
+            abs_end = dataset.step + overlap
+        else:
+            slice_start = overlap
+            slice_end = -overlap
+            abs_start = i * dataset.step + overlap
+            abs_end = abs_start + dataset.step
+            if i == len(dataset) - 1:
+                logger.debug(f"Last sample, adding extra {overlap} frames")
+                slice_end = None  # slice to and including the end
+                abs_end += overlap
+
+        logger.debug(
+            f"Slicing results: [{slice_start}:{slice_end}] "
+            f"mapping to time frames [{abs_start:>5}:{abs_end:<5}]")
+
+        chunk_t = torch.Tensor(chunk).to(device)
+
+        prediction = network(chunk_t[None, None])
+
+        # remove empty first dim
+        prediction_squeeze = torch.squeeze(prediction, dim=0)
+        data_squeeze = torch.squeeze(chunk_t, dim=0)
+
+        # this line is slightly different from ...[:, start:end] - I couldn't find a way to ask for a slice
+        # which would have actually included the last element in the standard [start:end] notation.
+        # instead, slice(start, end) does what I need by accepting None
+        prediction_slice = prediction_squeeze[:, slice(slice_start, slice_end)]
+        data_slice = data_squeeze[slice(slice_start, slice_end)]
+
+        time_length = prediction_slice.shape[1]
+
+        logger.debug(
+            f"Mangling prediction {prediction.shape} into sliced {prediction_slice.shape}, "
+            f"spanning {time_length} time units")
+
+        # poor man's unittest to assert correct slicing of video chunks
+        assert time_length == (abs_end - abs_start)
+        if i == 0 or i == len(dataset) - 1:
+            # first and last entries are longer
+            assert time_length == dataset.step + overlap
+        else:
+            assert time_length == dataset.step
+
+        predictions[:, abs_start:abs_end, :, :] = prediction_slice
+        original_data[0, abs_start:abs_end, :, :] = data_slice
+
+    return predictions, original_data
+
+
 if __name__ == "__main__":
 
     c = configparser.ConfigParser()
@@ -35,12 +124,12 @@ if __name__ == "__main__":
         c.read(CONFIG_FILE)
     else:
         logger.warning(f"No config file found at {CONFIG_FILE}, trying to use fallback values.")
-    
+
     parser = argparse.ArgumentParser("Spark & Puff detector using U-Net.")
 
     parser.add_argument(
-        '-v-', '--verbosity', 
-        type=int, 
+        '-v-', '--verbosity',
+        type=int,
         default=c.getint("general", "verbosity", fallback="0"),
         help="Set verbosity level ([0, 3])"
     )
@@ -88,28 +177,28 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        '-w0', '--weight-background', 
+        '-w0', '--weight-background',
         type=float,
         default=c.getfloat("data", "weight_background", fallback="1"),
         help="Weight proportion for background"
     )
 
     parser.add_argument(
-        '-w1', '--weight-sparks', 
+        '-w1', '--weight-sparks',
         type=float,
         default=c.getfloat("data", "weight_sparks", fallback="1"),
         help="Weight proportion for sparks"
     )
 
     parser.add_argument(
-        '-w2', '--weight-waves', 
+        '-w2', '--weight-waves',
         type=float,
         default=c.getfloat("data", "weight_waves", fallback="1"),
         help="Weight proportion for waves"
     )
 
     parser.add_argument(
-        '-w3', '--weight-puffs', 
+        '-w3', '--weight-puffs',
         type=float,
         default=c.getfloat("data", "weight_puffs", fallback="1"),
         help="Weight proportion for puffs"
@@ -121,7 +210,7 @@ if __name__ == "__main__":
         default=False,
         help="Run on as little data as possible while still touching as much functionality as possible for debugging."
     )
-    
+
     args = parser.parse_args()
 
     level_map = {3: logging.DEBUG, 2: logging.INFO, 1: logging.WARNING, 0: logging.ERROR}
@@ -190,9 +279,6 @@ if __name__ == "__main__":
 
     logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
 
-    # initialize data loader
-    dataset_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-
     # configure unet
     unet_config = unet.UNetConfig(
         steps=c.getint("data", "step"),
@@ -216,89 +302,7 @@ if __name__ == "__main__":
 
     # feed data to the network
     network.eval()
-
-    # Since the dataset acts more like a generator than a list, we can't yield the first item
-    # without breaking access to other elements. Thus, the container must be initialized later
-    predictions = None
-    original_data = None
-
-    # retain some contextual information (in the form of previous and following frames)
-    # by slicing results according to a frame overlap
-    overlap = (dataset.duration - dataset.step) // 2
-    assert overlap % 2 == 0, f"Frame overlap must be an even number; is {overlap}"
-
-    for i, (chunk, _) in enumerate(dataset):
-        if args.quick and 0 < i < 121: 
-            continue
-        logger.debug(f"Sample {i+1:>3}/{len(dataset):>3}")
-        if predictions is None:
-            # initialize mask container with the size from the first chunk
-            predictions = torch.zeros(
-                (
-                    4,                                 # number of classes,
-                    len(dataset) * dataset.step + 2 * overlap,       # time, i.e. every video frame
-                    *(chunk.shape[1:])                 # the actual frames, height x width
-                ), dtype=torch.float32, device=device)
-            logger.debug(f"Created prediction container of shape {predictions.shape}")
-
-            # create a container of the same sizes but without the dims for different classes
-            original_data = torch.zeros(1, *(predictions.shape[1:]), dtype=torch.float32, device=device)
-            logger.debug(f"Created data container of shape {original_data.shape}")
-
-        # for every frame, cut the predictions into the range [-overlap, overlap], except for
-        # - the first item (start at the first frame)
-        # - the last item (end at the last frame)
-        # additionally, keep track of the absolute locations of the data in the input video
-        if i == 0:
-            logger.debug(f"First sample, adding extra {overlap} frames")
-            slice_start = 0
-            slice_end = -overlap
-            abs_start = 0
-            abs_end = dataset.step + overlap
-        else:
-            slice_start = overlap
-            slice_end = -overlap
-            abs_start = i * dataset.step + overlap
-            abs_end = abs_start + dataset.step 
-            if i == len(dataset) - 1:
-                logger.debug(f"Last sample, adding extra {overlap} frames")
-                slice_end = None  # slice to and including the end
-                abs_end += overlap
-
-        logger.debug(
-            f"Slicing results: [{slice_start}:{slice_end}] "
-            f"mapping to time frames [{abs_start:>5}:{abs_end:<5}]")
-
-        chunk_t = torch.Tensor(chunk).to(device)
-
-        prediction = network(chunk_t[None, None])
-
-        # remove empty first dim
-        prediction_squeeze = torch.squeeze(prediction, dim=0)
-        data_squeeze = torch.squeeze(chunk_t, dim=0)
-
-        # this line is slightly different from ...[:, start:end] - I couldn't find a way to ask for a slice 
-        # which would have actually included the last element in the standard [start:end] notation.
-        # instead, slice(start, end) does what I need by accepting None
-        prediction_slice = prediction_squeeze[:, slice(slice_start, slice_end)]
-        data_slice = data_squeeze[slice(slice_start, slice_end)]
-
-        time_length = prediction_slice.shape[1]
-
-        logger.debug(
-            f"Mangling prediction {prediction.shape} into sliced {prediction_slice.shape}, "
-            f"spanning {time_length} time units")
-
-        # poor man's unittest to assert correct slicing of video chunks
-        assert time_length == (abs_end - abs_start)
-        if i == 0 or i == len(dataset) - 1:
-            # first and last entries are longer
-            assert time_length == dataset.step + overlap
-        else:
-            assert time_length == dataset.step
-
-        predictions[:, abs_start:abs_end, :, :] = prediction_slice
-        original_data[0, abs_start:abs_end, :, :] = data_slice
+    predictions, original_data = predict(dataset, args)
 
     logger.info(f"Generating output files in {os.path.abspath(args.output)}")
     for class_label, data in zip(
