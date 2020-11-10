@@ -7,6 +7,7 @@ import logging.handlers
 import argparse
 import pathlib
 import configparser
+from typing import List
 
 import numpy as np
 import torch
@@ -27,9 +28,76 @@ logger = logging.getLogger(__name__)
 logging.getLogger('wandb').setLevel(logging.ERROR)
 
 
+def get_dataset(input_files: List[str], weights: List[float] = [1., 1., 1., 1.]) -> Dataset:
+    """Returns a fully configured dataset for spark detection for a given input video."""
+    assert len(input_files) == 1, f"More than one input provided: {len(input_files)}"
+    input_file = pathlib.Path(input_files[0])
+    name_for_ds, ext = os.path.splitext(input_file.name)
+
+    dataset = MaskTEMPTestDataset(
+        # TODO: Fix path building in dataset
+        base_path=input_file.parent.parent,
+        video_name=name_for_ds,
+        smoothing='2d',
+        step=c.getint("data", "step"),
+        duration=c.getint("data", "chunks_duration"),
+        remove_background=c.getboolean("data", "remove_background")
+    )
+
+    logger.info(f"Loaded dataset with {len(dataset)} samples")
+
+    # class weights
+    # TODO: determine if/how these are used
+    """
+    class_weights = compute_class_weights_puffs(
+        dataset,
+        w0=args.weight_background,
+        w1=args.weight_sparks,
+        w2=args.weight_waves,
+        w3=args.weight_puffs
+    )
+    class_weights = torch.tensor(np.float32(class_weights))
+
+    logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
+    """
+    return dataset
+
+
+def get_network(device: torch.device, state_file: str = None) -> nn.Module:
+    """Returns a fully configured UNet, optionally with loaded weights from a state."""
+    unet_config = unet.UNetConfig(
+        steps=c.getint("data", "step"),
+        num_classes=c.getint("network", "num_classes"),
+        ndims=c.getint("network", "ndims"),
+        border_mode=c.get("network", "border_mode"),
+        batch_normalization=c.getboolean("network", "batch_normalization")
+    )
+    unet_config.feature_map_shapes((c.getint("data", "chunks_duration"), 64, 512))
+    network = nn.DataParallel(unet.UNetClassifier(unet_config)).to(device)
+
+    """
+    # TODO: Figure out if/how this is used
+    if c.getboolean("network", "initialize_weights", fallback="no"):
+        network.apply(weights_init)
+    """
+
+    if state_file:
+        # load model state
+        if not os.path.isfile(state_file):
+            raise RuntimeError(f"State is not a file: {state_file}")
+
+        logger.info(f"Loading state from {state_file}")
+        network.load_state_dict(torch.load(state_file, map_location=device))
+    else:
+        logger.warning("Not loading network state")
+    return network
+
+
 # we don't care about gradients, and retaining them explodes the memory usage
 @torch.no_grad()
 def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.Tensor:
+    """Run a network against a dataset and produce the predictions, optionally massively shortened by the quick parameter."""
+
     # Since the dataset acts more like a generator than a list, we can't yield the first item
     # without breaking access to other elements. Thus, the container must be initialized later
     predictions = None
@@ -120,7 +188,9 @@ def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.
     return predictions
 
 
-def parse_predictions(predictions: torch.Tensor, desc: str, output: str) -> None:
+def parse_predictions(predictions: torch.Tensor, desc: str = "", output: str = "./output") -> None:
+    """Work on the predictions and do whatever is required to make them human-parseable."""
+
     logger.info(f"Generating output files in {os.path.abspath(output)}")
 
     # produce a singleton output, containing all outputs stacked, i.e. stacked along the vertical pixel axis
@@ -177,25 +247,21 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        '-b', '--batch-size',
-        type=int,
-        default=c.getint("general", "batch_size", fallback="1"),
-        help="Use this batch size for training & evaluation."
-    )
-
-    parser.add_argument(
         '-o', '--output',
         type=str,
         default=c.get("general", "output", fallback="output"),
         help="Move output files to this directory"
     )
 
+    """
+    # TODO: Determine how this affects output
     parser.add_argument(
         '--fps',
         type=float,
         default=145.0,
         help=""
     )
+    """
 
     parser.add_argument(
         'input',
@@ -279,56 +345,18 @@ if __name__ == "__main__":
     n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
     logger.info(f"Using torch device {device}, with {n_gpus} GPUs")
 
-    assert len(args.input) == 1, f"More than one input provided: {len(args.input)}"
-    input_file = pathlib.Path(args.input[0])
-    name_for_ds, ext = os.path.splitext(input_file.name)
+    # extract a part of the input file name to better describe the output.
+    input_desc, _ = os.path.splitext(os.path.basename(args.input[0]))
 
-    dataset = MaskTEMPTestDataset(
-        # TODO: Fix path building in dataset
-        base_path=input_file.parent.parent,
-        video_name=name_for_ds,
-        smoothing='2d',
-        step=c.getint("data", "step"),
-        duration=c.getint("data", "chunks_duration"),
-        remove_background=c.getboolean("data", "remove_background")
-    )
-
-    logger.info(f"Loaded dataset with {len(dataset)} samples")
-
-    # class weights
-    class_weights = compute_class_weights_puffs(
-        dataset,
-        w0=args.weight_background,
-        w1=args.weight_sparks,
-        w2=args.weight_waves,
-        w3=args.weight_puffs
-    )
-    class_weights = torch.tensor(np.float32(class_weights))
-
-    logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
-
-    # configure unet
-    unet_config = unet.UNetConfig(
-        steps=c.getint("data", "step"),
-        num_classes=c.getint("network", "num_classes"),
-        ndims=c.getint("network", "ndims"),
-        border_mode=c.get("network", "border_mode"),
-        batch_normalization=c.getboolean("network", "batch_normalization")
-    )
-    unet_config.feature_map_shapes((c.getint("data", "chunks_duration"), 64, 512))
-    network = nn.DataParallel(unet.UNetClassifier(unet_config)).to(device)
-
-    if c.getboolean("network", "initialize_weights", fallback="no"):
-        network.apply(weights_init)
-
-    # load model state
-    if not os.path.isfile(args.state):
-        raise RuntimeError(f"State is not a file: {args.state}")
-
-    logger.info(f"Loading state from {args.state}")
-    network.load_state_dict(torch.load(args.state, map_location=device))
+    dataset = get_dataset(args.input, weights=[
+        args.weight_background,
+        args.weight_sparks,
+        args.weight_waves,
+        args.weight_puffs
+    ])
+    network = get_network(device, args.state)
 
     # feed data to the network
     network.eval()
     predictions = predict(network, dataset, args.quick)
-    parse_predictions(predictions, desc=name_for_ds, output=args.output)
+    parse_predictions(predictions, desc=input_desc, output=args.output)
