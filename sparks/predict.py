@@ -10,15 +10,12 @@ import configparser
 import numpy as np
 import torch
 from torch import nn
-from torch import optim
 from torch.utils.data import Dataset, DataLoader
-from tensorboardX import SummaryWriter
 import imageio
 
 import unet
-from dataset_tools import random_flip, compute_class_weights_puffs, weights_init
-from datasets import MaskTEMPDataset, MaskTEMPTestDataset
-from training_tools import training_step, test_function, sampler
+from dataset_tools import compute_class_weights_puffs, weights_init
+from datasets import MaskTEMPTestDataset
 
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
@@ -42,8 +39,10 @@ def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.
     # TODO: have this use a dataloader
     # dataset_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     for i, (chunk, labels) in enumerate(dataset):
-        if args.quick and 0 < i < 121:
+        if args.quick and 0 < i < (len(dataset) - 1):
+            # skipping all but the first and last frame
             continue
+
         logger.debug(f"Sample {i+1:>3}/{len(dataset):>3}")
         if predictions is None:
             # initialize mask container with the size from the first chunk
@@ -85,6 +84,7 @@ def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.
         prediction = network(chunk_t[None, None])
 
         # remove empty first dim
+        # note that predictions still have one more dim than data & labels!
         prediction_squeeze = torch.squeeze(prediction, dim=0)
         data_squeeze = torch.squeeze(chunk_t, dim=0)
         label_squeeze = torch.squeeze(labels_t, dim=0)
@@ -117,13 +117,25 @@ def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.
     return predictions
 
 
-def parse_predictions(predictions: torch.Tensor, output: str) -> None:
+def parse_predictions(predictions: torch.Tensor, desc: str, output: str) -> None:
     logger.info(f"Generating output files in {os.path.abspath(output)}")
+
+    # produce a singleton output, containing all outputs stacked, i.e. stacked along the vertical pixel axis
+    # since .cat() requires a collection of tensors, we create that using torch's views along the first dim;
+    # and finally, we have to remove the empty (one-dimensional) first dimension by squeeze()
+    predictions_stacked = torch.cat(torch.split(predictions, 1, dim=0), dim=2).squeeze()
+    fn = os.path.join(output, f"{desc}_stacked.tif")
+    # TODO: doing this twice is wasteful; instead, exp().numpy() once and use it for every subsequent volwrite
+    logger.debug(f"Prediction has shape {predictions.shape}, stack along output axis has shape {predictions_stacked.shape}")
+    data_np = torch.exp(predictions_stacked).detach().cpu().numpy()
+    imageio.volwrite(fn, data_np)
+
+    # produce an output file per output
     for class_label, data in zip(
         ("input", "labels", "unknown", "sparks", "waves", "puffs"),
         predictions
     ):
-        fn = os.path.join(output, f"{name_for_ds}_{class_label}.tif")
+        fn = os.path.join(output, f"{desc}_{class_label}.tif")
         logger.debug(f"Building {fn} from data in shape {data.shape}")
         data_np = torch.exp(data).detach().cpu().numpy()
         imageio.volwrite(fn, data_np)
@@ -316,4 +328,4 @@ if __name__ == "__main__":
     # feed data to the network
     network.eval()
     predictions = predict(network, dataset, args.quick)
-    parse_predictions(predictions, args.output)
+    parse_predictions(predictions, desc=name_for_ds, output=args.output)
