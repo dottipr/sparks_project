@@ -25,13 +25,14 @@ BASEDIR = os.path.dirname(os.path.realpath(__file__))
 CONFIG_FILE = os.path.join(BASEDIR, "config.ini")
 
 logger = logging.getLogger(__name__)
+# disable most wandb logging, since we don't care about it here
+logging.getLogger('wandb').setLevel(logging.ERROR)
 
 
-def predict(dataset: Dataset, args: argparse.Namespace):
+def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.Tensor:
     # Since the dataset acts more like a generator than a list, we can't yield the first item
     # without breaking access to other elements. Thus, the container must be initialized later
     predictions = None
-    original_data = None
 
     # retain some contextual information (in the form of previous and following frames)
     # by slicing results according to a frame overlap
@@ -40,23 +41,19 @@ def predict(dataset: Dataset, args: argparse.Namespace):
 
     # TODO: have this use a dataloader
     # dataset_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-    for i, (chunk, _) in enumerate(dataset):
-        if args.quick and 0 < i < 121: 
+    for i, (chunk, labels) in enumerate(dataset):
+        if args.quick and 0 < i < 121:
             continue
         logger.debug(f"Sample {i+1:>3}/{len(dataset):>3}")
         if predictions is None:
             # initialize mask container with the size from the first chunk
             predictions = torch.zeros(
                 (
-                    4,                                 # number of classes,
-                    len(dataset) * dataset.step + 2 * overlap,       # time, i.e. every video frame
-                    *(chunk.shape[1:])                 # the actual frames, height x width
+                    1 + 1 + 4,                                      # input + labels + number of classes
+                    len(dataset) * dataset.step + 2 * overlap,      # time, i.e. every video frame
+                    *(chunk.shape[1:])                              # the actual frames, height x width
                 ), dtype=torch.float32, device=device)
             logger.debug(f"Created prediction container of shape {predictions.shape}")
-
-            # create a container of the same sizes but without the dims for different classes
-            original_data = torch.zeros(1, *(predictions.shape[1:]), dtype=torch.float32, device=device)
-            logger.debug(f"Created data container of shape {original_data.shape}")
 
         # for every frame, cut the predictions into the range [-overlap, overlap], except for
         # - the first item (start at the first frame)
@@ -83,18 +80,21 @@ def predict(dataset: Dataset, args: argparse.Namespace):
             f"mapping to time frames [{abs_start:>5}:{abs_end:<5}]")
 
         chunk_t = torch.Tensor(chunk).to(device)
+        labels_t = torch.Tensor(labels).to(device)
 
         prediction = network(chunk_t[None, None])
 
         # remove empty first dim
         prediction_squeeze = torch.squeeze(prediction, dim=0)
         data_squeeze = torch.squeeze(chunk_t, dim=0)
+        label_squeeze = torch.squeeze(labels_t, dim=0)
 
         # this line is slightly different from ...[:, start:end] - I couldn't find a way to ask for a slice
         # which would have actually included the last element in the standard [start:end] notation.
         # instead, slice(start, end) does what I need by accepting None
         prediction_slice = prediction_squeeze[:, slice(slice_start, slice_end)]
         data_slice = data_squeeze[slice(slice_start, slice_end)]
+        label_slice = label_squeeze[slice(slice_start, slice_end)]
 
         time_length = prediction_slice.shape[1]
 
@@ -110,10 +110,23 @@ def predict(dataset: Dataset, args: argparse.Namespace):
         else:
             assert time_length == dataset.step
 
-        predictions[:, abs_start:abs_end, :, :] = prediction_slice
-        original_data[0, abs_start:abs_end, :, :] = data_slice
+        predictions[0, abs_start:abs_end, :, :] = data_slice
+        predictions[1, abs_start:abs_end, :, :] = label_slice
+        predictions[2:, abs_start:abs_end, :, :] = prediction_slice
 
-    return predictions, original_data
+    return predictions
+
+
+def parse_predictions(predictions: torch.Tensor, output: str) -> None:
+    logger.info(f"Generating output files in {os.path.abspath(output)}")
+    for class_label, data in zip(
+        ("input", "labels", "unknown", "sparks", "waves", "puffs"),
+        predictions
+    ):
+        fn = os.path.join(output, f"{name_for_ds}_{class_label}.tif")
+        logger.debug(f"Building {fn} from data in shape {data.shape}")
+        data_np = torch.exp(data).detach().cpu().numpy()
+        imageio.volwrite(fn, data_np)
 
 
 if __name__ == "__main__":
@@ -302,15 +315,5 @@ if __name__ == "__main__":
 
     # feed data to the network
     network.eval()
-    predictions, original_data = predict(dataset, args)
-
-    logger.info(f"Generating output files in {os.path.abspath(args.output)}")
-    for class_label, data in zip(
-        ("input", "unknown", "sparks", "waves", "puffs"),
-        torch.cat((original_data, predictions))
-    ):
-        fn = os.path.join(args.output, f"{name_for_ds}_{class_label}.tif") 
-        logger.debug(f"Building {fn} from data in shape {data.shape}")
-        data_np = torch.exp(data).detach().cpu().numpy()
-        imageio.volwrite(fn, data_np)
-
+    predictions = predict(network, dataset, args.quick)
+    parse_predictions(predictions, args.output)
