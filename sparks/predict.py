@@ -135,7 +135,7 @@ def parse_predictions(predictions: torch.Tensor, desc: str, output: str) -> None
 
     # produce an output file per output
     for class_label, data in zip(
-        ("input", "labels", "unknown", "sparks", "waves", "puffs"),
+        ("input", "labels", "background", "sparks", "waves", "puffs"),
         predictions
     ):
         fn = os.path.join(output, f"{desc}_{class_label}.tif")
