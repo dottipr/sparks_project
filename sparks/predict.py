@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 logging.getLogger('wandb').setLevel(logging.ERROR)
 
 
+# we don't care about gradients, and retaining them explodes the memory usage
+@torch.no_grad()
 def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.Tensor:
     # Since the dataset acts more like a generator than a list, we can't yield the first item
     # without breaking access to other elements. Thus, the container must be initialized later
