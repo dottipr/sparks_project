@@ -253,7 +253,7 @@ if __name__ == "__main__":
             logfile_path = os.path.abspath(args.logfile)
 
         logger.info(f"Storing logs in {logfile_path}")
-        file_handler = logging.RotatingFileHandler(
+        file_handler = logging.handlers.RotatingFileHandler(
             filename=logfile_path,
             maxBytes=(1024 * 1024 * 8),  # 8 MB
             backupCount=4,
