@@ -144,7 +144,7 @@ cython_debug/
 anaconda3/
 OLD/
 wandb/
-data/
+/data
 runs/
 predictions/
 .conda/
