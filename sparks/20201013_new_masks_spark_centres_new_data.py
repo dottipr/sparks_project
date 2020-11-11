@@ -21,8 +21,9 @@ from tensorboardX import SummaryWriter
 import wandb
 
 
-test_mode = True
+dataset_folder = "annotation_masks"
 
+test_mode = True
 
 # sparks in the masks have already the correct shape (radius and ignore index)
 
@@ -79,17 +80,13 @@ basepath = os.path.dirname("__file__")
 
 ### NETWORK AND DATASETS ###
 
-# PER IL MOMENTO SOLO DATASET DELLA DIMENSIONE NORMALE
-#if args.small_dataset:
-#    dataset_path = os.path.join(basepath,"..","..","data","small_dataset")
-#    if args.verbose:
-#        print("Train using small dataset")
-#if args.very_small_dataset:
-#    dataset_path = os.path.join(basepath,"..","..","data","very_small_dataset")
-#    if args.verbose:
-#        print("Train using very small dataset")
-#else:
-dataset_path = os.path.join(basepath,"..","..","data")
+if args.very_small_dataset:
+    dataset_path = os.path.join(basepath,"..","..","data",dataset_folder,
+                                "very_small_dataset")
+    if args.verbose:
+        print("Train using very small dataset")
+else:
+    dataset_path = os.path.join(basepath,"..","..","data",dataset_folder)
 
 
 dataset = MaskDataset(base_path=dataset_path, smoothing='2d',
@@ -103,12 +100,12 @@ if args.verbose:
 
 
 test_files_names = sorted([".".join(f.split(".")[:-1]) for f in
-                   os.listdir(os.path.join(dataset_path,"centres_videos_test"))])
+                   os.listdir(os.path.join(dataset_path,"video_test"))])
 testing_datasets = [MaskTestDataset(base_path=dataset_path,
-                                        video_name=file, smoothing='2d',
-                                        step=step, duration=chunks_duration,
-                                        #radius_event = radius_event,
-                                        remove_background = remove_background)
+                                    video_name=file, smoothing='2d',
+                                    step=step, duration=chunks_duration,
+                                    #radius_event = radius_event,
+                                    remove_background = remove_background)
                     for file in test_files_names]
 
 if args.verbose:

@@ -147,8 +147,6 @@ wandb/
 data/
 runs/
 predictions/
-<<<<<<< HEAD
-
 .conda/
 .jupyter/
 .local/
@@ -160,5 +158,3 @@ predictions/
 .network.sh.swp
 .python_history
 .viminfo
-=======
->>>>>>> 83cf66380317136ab05ee8ce97a701ba0ec6b192
