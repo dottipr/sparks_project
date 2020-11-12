@@ -224,7 +224,7 @@ class MaskDataset(Dataset):
 
         self.base_path = base_path
         self.files = sorted(glob.glob(os.path.join(self.base_path,
-                                                   "video", "*.tif")))
+                                                   "videos", "*.tif")))
 
         self.data = [np.asarray(imageio.volread(file)) for file in self.files]
         #self.ignore_index = ignore_index
@@ -328,7 +328,7 @@ class MaskTestDataset(Dataset): # dataset that load a single video for testing
 
         self.base_path = base_path
         self.video_name = video_name
-        self.file = os.path.join(self.base_path, "video_test",
+        self.file = os.path.join(self.base_path, "videos_test",
                                  self.video_name + ".tif")
 
         self.video = imageio.volread(self.file)
