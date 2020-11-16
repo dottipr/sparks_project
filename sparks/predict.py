@@ -17,7 +17,7 @@ import imageio
 
 import unet
 from dataset_tools import compute_class_weights_puffs, weights_init
-from datasets import MaskTEMPTestDataset
+from datasets import MaskTestDataset
 
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
@@ -34,7 +34,7 @@ def get_dataset(input_files: List[str], weights: List[float] = [1., 1., 1., 1.])
     input_file = pathlib.Path(input_files[0])
     name_for_ds, ext = os.path.splitext(input_file.name)
 
-    dataset = MaskTEMPTestDataset(
+    dataset = MaskTestDataset(
         # TODO: Fix path building in dataset
         base_path=input_file.parent.parent,
         video_name=name_for_ds,
