@@ -43,7 +43,8 @@ def create_signal_mask(t, h, w, start, stop, center, radius):
     return video_mask
 
 
-def get_spark_signal(video, sparks_labelled, idx, radius, context_duration):
+def get_spark_signal(video, sparks_labelled, idx, radius, context_duration,
+                     return_info = False):
     # video :            the original video sample
     # sparks_labelled :  mask containing the segmentation of the spark events
     #                    (1 integer for every event)
@@ -54,6 +55,7 @@ def get_spark_signal(video, sparks_labelled, idx, radius, context_duration):
     # context_duration : number of frames included in the analysis before and
     #                    after the event
     # returns signal average and list of corresponding frames
+
 
     assert (idx < sparks_labelled.max()),(
     f"given idx is too large, video contains only {sparks_labelled.max()} events")
@@ -67,14 +69,17 @@ def get_spark_signal(video, sparks_labelled, idx, radius, context_duration):
     y,x = int(loc[1].start+center[0]), int(loc[2].start+center[1])
 
     # get mask representing sparks location (with radius and context)
-    start = loc[0].start - context_duration
-    stop = loc[0].stop + context_duration
+    start = max(0, loc[0].start - context_duration)
+    stop = min(video.shape[0], loc[0].stop + context_duration)
     signal_mask = create_signal_mask(*sparks_array.shape, start, stop,
                                      (x,y), radius)
 
     frames = np.arange(start,stop)
     signal = np.average(video_array[start:stop], axis=(1,2),
                         weights=signal_mask[start:stop])
+
+    if return_info:
+        return frames, signal, (y,x), loc[0].start, loc[0].stop
 
     return frames, signal
 
@@ -105,18 +110,27 @@ if __name__ == "__main__":
 
     # define radius around event center and context duration
     radius = 3
-    context_duration = 7
+    context_duration = 30
 
     # Plot few signal samples
+    plt.rcParams.update({'font.size': 6})
+
     plt.figure(figsize=(20,10))
+    plt.suptitle("Signal around some sample sparks", fontsize=10)
 
     for idx in range(10):
-        frames, signal = get_spark_signal(video_array,sparks_labelled,idx,
-                                          radius,context_duration)
+        frames, signal, (y,x), start, stop = get_spark_signal(video_array,
+                                                              sparks_labelled,
+                                                              idx,radius,
+                                                              context_duration,
+                                                              return_info=True)
 
         ax = plt.subplot(2,5,idx+1)
-        plt.plot(frames,signal)
+        ax.set_title(f"Spark at position ({x},{y}) at frames {start}-{stop}")
+        ax.axvspan(start, stop, facecolor='green', alpha=0.3)
+        plt.plot(frames,signal,color='darkgreen')
 
 
-    plt.tight_layout()
+    #plt.tight_layout()
+    plt.subplots_adjust(hspace=0.2, wspace=0.3)
     plt.show()
