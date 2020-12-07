@@ -88,22 +88,22 @@ if __name__ == "__main__":
 
     # Import .tif events file as numpy array
     data_path = os.path.join("..","data","annotation_masks")
-    events_name = os.path.join(data_path,"masks_test","130918_C_ET-1.tif")
-    video_name = os.path.join(data_path,"videos_test","130918_C_ET-1.tif")
+    sample_name = "130918_C_ET-1.tif"
+    events_name = os.path.join(data_path,"masks_test",sample_name)
+    video_name = os.path.join(data_path,"videos_test",sample_name)
 
     events_array = np.asarray(imageio.volread(events_name)).astype('int')
     video_array = np.asarray(imageio.volread(video_name)).astype('int')
 
 
-    # only analyse spark (and puff) events, get rid of the rest
+    # only analyse spark events, get rid of the rest
     sparks_array = np.where(events_array==1,1,0)
-    # puffs_array = np.where(events_array==3,1,0) # TODO: extract signal from puffs
 
 
     # separate events: assign an integer to every connected component
     sparks_labelled, n_sparks = ndimage.measurements.label(sparks_array,
-                                                     np.ones((3,3,3),
-                                                     dtype=np.int))
+                                                           np.ones((3,3,3),
+                                                           dtype=np.int))
 
     # get a list with subarrays indices of sparks_labelled for every event
     find_sparks = ndimage.measurements.find_objects(sparks_labelled)
