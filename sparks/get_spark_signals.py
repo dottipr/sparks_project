@@ -188,7 +188,7 @@ if __name__ == "__main__":
     context_duration = 30
 
     # Get 1D signal along time and plot it for a few samples
-    plt.rcParams.update({'font.size': 6})
+    plt.rcParams.update({'font.size': 5})
 
     plt.figure(figsize=(20,10))
     plt.suptitle("Signal around some sample sparks", fontsize=10)
@@ -207,7 +207,7 @@ if __name__ == "__main__":
 
 
     #plt.tight_layout()
-    plt.subplots_adjust(hspace=0.2, wspace=0.3)
+    plt.subplots_adjust(hspace=0.3, wspace=0.3, top=0.9, bottom=0.1, left=0.05, right=0.95)
     plt.show()
 
     # Get 2D signal around center of some sparks and plot them
@@ -232,8 +232,8 @@ if __name__ == "__main__":
         ax.set_title(f"Spark at location ({x},{y}) at frame {t}")
         ax.plot_surface(y_axis, x_axis, signal_2d, cmap=cm.coolwarm, linewidth=0)#, antialiased=False)
     else:
-        plt.suptitle("2D smoothed signals some sample sparks", fontsize=10)
-        plt.rcParams.update({'font.size': 8})
+        plt.suptitle("2D smoothed signals of some sample sparks", fontsize=10)
+        plt.rcParams.update({'font.size': 5})
 
         num_plots = min(n_sparks,10)
         for idx in range(1,num_plots+1):
@@ -252,5 +252,5 @@ if __name__ == "__main__":
             ax.plot_surface(y_axis, x_axis, signal_2d, cmap=cm.coolwarm, linewidth=0)#, antialiased=False)
 
     plt.tight_layout()
-    plt.subplots_adjust(hspace=0.1, wspace=0.1, top=0.9, left=0.05, right=0.95)
+    plt.subplots_adjust(hspace=0.2, wspace=0.2, top=0.9, bottom=0.1, left=0.05, right=0.95)
     plt.show()
