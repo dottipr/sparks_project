@@ -8,6 +8,7 @@ import glob
 
 import imageio
 import pandas as pd
+import ntpath
 
 import numpy as np
 from scipy.signal import convolve2d
@@ -219,8 +220,6 @@ class MaskDataset(Dataset):
                  remove_background = False):
 
         # base_path is the folder containing the whole dataset (train and test)
-        # video_name is a video that must be present in the "video" folder
-        # of the base_path
 
         self.base_path = base_path
         self.files = sorted(glob.glob(os.path.join(self.base_path,
@@ -377,6 +376,216 @@ class MaskTestDataset(Dataset): # dataset that load a single video for testing
         self.annotations_file = os.path.join(self.base_path,
                                              "masks_test",
                                              self.video_name + ".tif")
+        self.annotations = np.asarray(imageio.volread(self.annotations_file)).astype(int)
+
+
+        #self.annotations = self.add_ignore_region(self.annotations,
+        #                   self.radius_ignore, self.ignore_index)
+
+    #def add_ignore_region(self, annotation_mask, radius_ignore, ignore_index):
+    #    binary_mask = np.where(np.logical_or(annotation_mask == 0,
+    #                           annotation_mask == ignore_index), 1, 0)
+    #    dt = ndimage.distance_transform_edt(binary_mask)
+    #    annotation_mask[np.logical_and(dt < radius_ignore, annotation_mask == 0)] = ignore_index
+
+    #    return annotation_mask
+
+    def __len__(self):
+        return self.blocks_number
+
+    def __getitem__(self, chunk_id):
+        chunks = get_chunks(self.length, self.step, self.duration)
+        chunk = self.video[chunks[chunk_id]]
+        chunk = chunk / chunk.max()
+        chunk = np.float32(chunk)
+
+        labels = self.annotations[chunks[chunk_id]]
+
+        return chunk, labels
+
+
+'''
+New dataset videos are identified by an ID of the form XX
+Video filenames are: XX_video.tif
+Annotation filenames are: XX_mask.tif
+
+'''
+
+class IDMaskDataset(Dataset):
+
+    def __init__(self, base_path,
+                 step = 4, duration = 16, smoothing = False,
+                 resampling = False, resampling_rate = 150,
+                 remove_background = False):
+
+        # base_path is the folder containing the whole dataset (train and test)
+
+        self.base_path = base_path
+        self.files = sorted(glob.glob(os.path.join(self.base_path,
+                                                   "videos", "*.tif")))
+
+        self.data = [np.asarray(imageio.volread(file)) for file in self.files]
+        #self.ignore_index = ignore_index
+        #self.radius_ignore = radius_ignore
+
+        if remove_background:
+            self.data = [remove_avg_background(video) for video in self.data]
+
+        if smoothing == '2d':
+            _smooth_filter = torch.tensor(([1/16,1/16,1/16],
+                                           [1/16,1/2,1/16],
+                                           [1/16,1/16,1/16]))
+            self.data = [np.asarray([convolve2d(frame, _smooth_filter,
+                                            mode = 'same', boundary = 'symm')
+                                            for frame in video])
+                                            for video in self.data]
+
+        if smoothing == '3d':
+            _smooth_filter = 1/52*np.ones((3,3,3))
+            _smooth_filter[1,1,1] = 1/2
+            self.data = [convolve(video, _smooth_filter) for video in self.data]
+
+        if resampling:
+            self.fps = [get_fps(file) for file in self.files]
+            self.data = [video_spline_interpolation(video, video_path,
+                                                    resampling_rate)
+                            for video,video_path in zip(self.data,self.files)]
+
+
+        # compute chunks indices
+        self.step = step
+        self.duration = duration
+        self.lengths, self.tot_blocks, self.preceding_blocks = self.compute_chunks_indices()
+
+        # import annotation masks
+        self.annotations_files = sorted(glob.glob(os.path.join(self.base_path,
+                                              "masks", "*.tif")))
+        self.annotations = [np.asarray(imageio.volread(f)).astype('int')
+                            for f in self.annotations_files]
+        #self.annotations = [self.add_ignore_region(video, self.radius_ignore,
+        #                    self.ignore_index) for video in self.annotations]
+
+        # check that video files correspond to annotation files
+        assert ([ntpath.split(v)[1][:3] for v in self.files] ==
+               [ntpath.split(a)[1][:3] for a in self.annotations_files]), \
+               "Video and annotation filenames do not match"
+
+
+    def compute_chunks_indices(self):
+        lengths = [video.shape[0] for video in self.data]
+        # blocks in each video :
+        blocks_number = [((length-self.duration)//self.step)+1
+                         for length in lengths]
+        # number of blocks in preceding videos in data :
+        preceding_blocks = np.roll(np.cumsum(blocks_number),1)
+        tot_blocks = preceding_blocks[0]
+        preceding_blocks[0] = 0
+
+        return lengths, tot_blocks, preceding_blocks
+
+    #def add_ignore_region(self, annotation_mask, radius_ignore, ignore_index):
+    #    binary_mask = np.where(np.logical_or(annotation_mask == 0,
+    #                           annotation_mask == ignore_index), 1, 0)
+    #    dt = ndimage.distance_transform_edt(binary_mask)
+    #    annotation_mask[np.logical_and(dt < radius_ignore,
+    #                    annotation_mask == 0)] = ignore_index
+
+    #    return annotation_mask
+
+    def __len__(self):
+        return self.tot_blocks
+
+    def __getitem__(self, idx):
+        #index of video containing chunk idx
+        vid_id = np.where(self.preceding_blocks == max([y
+                          for y in self.preceding_blocks
+                          if y <= idx]))[0][0]
+        #index of chunk idx in video vid_id
+        chunk_id = idx - self.preceding_blocks[vid_id]
+
+        chunks = get_chunks(self.lengths[vid_id],self.step,self.duration)
+
+        chunk = self.data[vid_id][chunks[chunk_id]]
+        chunk = chunk / chunk.max()
+        chunk = np.float32(chunk)
+
+        labels = self.annotations[vid_id][chunks[chunk_id]]
+
+        return chunk, labels
+
+
+class IDMaskTestDataset(Dataset): # dataset that load a single video for testing
+
+    def __init__(self, base_path, video_name,
+                 step = 4, duration = 16, smoothing = False,
+                 resampling = False, resampling_rate = 150,
+                 remove_background = False):#,
+                 #ignore_index = 4 , radius_ignore = 2):
+
+        # base_path is the folder containing the whole dataset (train and test)
+        # video_name is a video of the form XX_video.tif that must be present in
+        # the "video_test" folder of the base_path
+
+        # sparks in the masks have already the correct shape (radius and
+        # ignore index) !!!
+
+        self.base_path = base_path
+        self.video_name = video_name
+        self.file = os.path.join(self.base_path, "videos_test",
+                                 self.video_name + ".tif")
+
+        self.video = imageio.volread(self.file)
+        #self.ignore_index = ignore_index
+        #self.radius_ignore = radius_ignore
+
+        if remove_background:
+            self.video = remove_avg_background(self.video)
+
+        if smoothing == '2d':
+            _smooth_filter = torch.tensor(([1/16,1/16,1/16],
+                                           [1/16,1/2,1/16],
+                                           [1/16,1/16,1/16]))
+            self.video = np.asarray([convolve2d(frame, _smooth_filter,
+                                            mode = 'same', boundary = 'symm')
+                                            for frame in self.video])
+
+        if smoothing == '3d':
+            _smooth_filter = 1/52*np.ones((3,3,3))
+            _smooth_filter[1,1,1] = 1/2
+            self.video = convolve(self.video, _smooth_filter)
+
+        if resampling:
+            self.fps = get_fps(self.file)
+            self.video = video_spline_interpolation(self.video, self.file,
+                                                    resampling_rate)
+
+        self.step = step
+        self.duration = duration
+        self.length = self.video.shape[0]
+        self.pad = 0
+
+        # if necessary, pad empty frames at the end
+        if (((self.length-self.duration)/self.step) % 1 != 0):
+            self.pad = (self.duration
+                        + self.step*(1+(self.length-self.duration)//self.step)
+                        - self.length)
+            self.video = np.pad(self.video,((0,self.pad),(0,0),(0,0)),
+                                'constant',constant_values=0)
+            self.length = self.length + self.pad
+
+        # blocks in the video :
+        self.blocks_number = ((self.length-self.duration)//self.step)+1
+
+        # annotations
+
+        if self.video_name[2] != "_":
+            self.annotations_name = self.video_name
+        else:
+            self.annotations_name = self.video_name[:3]+"unet_mask"
+
+        self.annotations_file = os.path.join(self.base_path,
+                                             "masks_test",
+                                             self.annotations_name + ".tif")
         self.annotations = np.asarray(imageio.volread(self.annotations_file)).astype(int)
 
 
