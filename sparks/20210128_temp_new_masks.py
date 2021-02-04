@@ -9,6 +9,9 @@ Available videos (saved in folder 'temp_annotation_masks'):
 
 Of which 01,06,11,22,28 are in the test dataset
 
+UPDATES:
+20210204 use longer chunks: from 16 to 64
+
 '''
 
 import os
@@ -36,7 +39,7 @@ import wandb
 
 dataset_folder = "temp_annotation_masks"
 
-test_mode = True
+test_mode = False # if True it do not run the training
 
 # sparks in the masks have already the correct shape (radius and ignore index)
 
@@ -51,7 +54,7 @@ remove_background = True
 
 # step and chunks duration
 step = 4
-chunks_duration = 16 # power of 2
+chunks_duration = 64 # power of 2
 ignore_frames_loss = (chunks_duration-step)//2 # frames ignored by loss fct
 
 # add options
