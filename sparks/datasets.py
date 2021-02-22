@@ -519,7 +519,7 @@ class IDMaskTestDataset(Dataset): # dataset that load a single video for testing
     def __init__(self, base_path, video_name,
                  step = 4, duration = 16, smoothing = False,
                  resampling = False, resampling_rate = 150,
-                 remove_background = False):#,
+                 remove_background = False, test = True):#,
                  #ignore_index = 4 , radius_ignore = 2):
 
         # base_path is the folder containing the whole dataset (train and test)
@@ -531,8 +531,13 @@ class IDMaskTestDataset(Dataset): # dataset that load a single video for testing
 
         self.base_path = base_path
         self.video_name = video_name
-        self.file = os.path.join(self.base_path, "videos_test",
-                                 self.video_name + ".tif")
+
+        if test == True:
+            self.file = os.path.join(self.base_path, "videos_test",
+                                     self.video_name + ".tif")
+        else:
+            self.file = os.path.join(self.base_path, "videos",
+                                     self.video_name + ".tif")
 
         self.video = imageio.volread(self.file)
         #self.ignore_index = ignore_index
@@ -583,9 +588,15 @@ class IDMaskTestDataset(Dataset): # dataset that load a single video for testing
         else:
             self.annotations_name = self.video_name[:3]+"unet_mask"
 
-        self.annotations_file = os.path.join(self.base_path,
-                                             "masks_test",
-                                             self.annotations_name + ".tif")
+        if test == True:
+            self.annotations_file = os.path.join(self.base_path,
+                                                 "masks_test",
+                                                 self.annotations_name + ".tif")
+        else:
+            self.annotations_file = os.path.join(self.base_path,
+                                                 "masks",
+                                                  self.annotations_name + ".tif")
+
         self.annotations = np.asarray(imageio.volread(self.annotations_file)).astype(int)
 
 

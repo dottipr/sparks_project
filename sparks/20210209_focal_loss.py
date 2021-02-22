@@ -1,16 +1,13 @@
 '''
-28.01.2021
+09.02.2021
 
-Train U-Net using corrected masks based on Miguel's semi-automatic
-segmentations.
-
-Available videos (saved in folder 'temp_annotation_masks'):
-01-11, 15-17, 21-25, 27-28, 33-36 (25 videos)
-
-Of which 01,06,11,22,28 are in the test dataset
+Train U-Net using focal loss instead of standard cross entropy loss.
+TODO: if training improves, rename 'training_step_fl' and 'test_function_fl'.
 
 UPDATES:
-20210204 use longer chunks: from 16 to 64
+20210208 ignore fewer frames in loss fct: from 15 to 4.
+20210218 train with larger sparks
+         ('temp_annotation_masks' --> 'temp_annotation_masks_large_sparks')
 
 '''
 
@@ -30,22 +27,18 @@ import unet
 
 from dataset_tools import random_flip, compute_class_weights_puffs, weights_init
 from datasets import IDMaskDataset, IDMaskTestDataset
-from training_tools import training_step, test_function, sampler
+from training_tools import training_step_fl, test_function_fl, sampler
 from options import add_options
+from focal_losses import FocalLoss
 
 from tensorboardX import SummaryWriter
 import wandb
 
-
-dataset_folder = "temp_annotation_masks"
-
 test_mode = False # if True it do not run the training
 
+
+dataset_folder = "temp_annotation_masks_large_sparks"
 # sparks in the masks have already the correct shape (radius and ignore index)
-
-# ignored index
-ignore_index = 4
-
 # event size
 #radius_event = 3.5
 
@@ -55,7 +48,14 @@ remove_background = True
 # step and chunks duration
 step = 4
 chunks_duration = 64 # power of 2
-ignore_frames_loss = (chunks_duration-step)//2 # frames ignored by loss fct
+#ignore_frames_loss = (chunks_duration-step)//2 # frames ignored by loss fct
+
+# configure loss function
+ignore_index = 4
+ignore_frames_loss = 4
+
+criterion = FocalLoss(reduction='mean', ignore_index=ignore_index)
+
 
 # add options
 parser = argparse.ArgumentParser(description="Train U-Net")
@@ -75,10 +75,10 @@ if args.verbose:
     print("\tBatch size: ",args.batch_size)
     print("\tUsing small dataset: ",args.small_dataset)
     print("\tUsing very small dataset: ",args.very_small_dataset)
-    print("\tClass weights coefficients: ",args.weight_background,", ",
-                                           args.weight_sparks,", ",
-                                           args.weight_waves,", ",
-                                           args.weight_puffs)
+#    print("\tClass weights coefficients: ",args.weight_background,", ",
+#                                           args.weight_sparks,", ",
+#                                           args.weight_waves,", ",
+#                                           args.weight_puffs)
 
 
 unet.config_logger("/dev/null")
@@ -128,7 +128,7 @@ if args.verbose:
     print("Samples in each video in testing dataset: ",
           *[len(test_dataset) for test_dataset in testing_datasets])
 
-
+'''
 # compute weights for each class
 class_weights = compute_class_weights_puffs(dataset,
                                             w0=args.weight_background,
@@ -139,7 +139,7 @@ class_weights = torch.tensor(np.float32(class_weights))
 
 if args.verbose:
     print("Class weights:", *(class_weights.tolist()))
-
+'''
 
 # Training dataset loader
 dataset_loader = DataLoader(dataset, batch_size=args.batch_size,
@@ -188,14 +188,15 @@ summary_writer = SummaryWriter(os.path.join(output_path, "summary"),
 
 
 trainer = unet.TrainingManager(
-    lambda _: training_step(sampler, network, optimizer, device, class_weights,
-                            dataset_loader, ignore_frames=ignore_frames_loss,
+    lambda _: training_step_fl(sampler, network, optimizer, device, criterion,
+                            dataset_loader,
+                            ignore_frames=ignore_frames_loss,
                             ignore_ind=ignore_index),
     save_every=5000,
     save_path=output_path,
     managed_objects=unet.managed_objects({'network': network,
                                           'optimizer': optimizer}),
-    test_function=lambda _: test_function(network,device,class_weights,
+    test_function=lambda _: test_function_fl(network,device,criterion,
                                           testing_datasets,logger,
                                           ignore_ind=ignore_index,
                                           ignore_frames=ignore_frames_loss),
@@ -214,8 +215,8 @@ if args.load_epoch:
 # Test network before training
 if args.verbose:
     print("Test network before training:")
-test_function(network,device,class_weights,testing_datasets,logger,
-              ignore_ind=ignore_index, ignore_frames=ignore_frames_loss)
+test_function_fl(network,device,criterion,testing_datasets,logger,
+              ignore_ind=ignore_index,ignore_frames=ignore_frames_loss)
 
 if test_mode:
     exit()
