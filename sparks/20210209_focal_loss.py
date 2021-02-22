@@ -8,6 +8,8 @@ UPDATES:
 20210208 ignore fewer frames in loss fct: from 15 to 4.
 20210218 train with larger sparks
          ('temp_annotation_masks' --> 'temp_annotation_masks_large_sparks')
+20210222 go back to training with smaller sparks;
+         add weights to focal loss
 
 '''
 
@@ -37,7 +39,7 @@ import wandb
 test_mode = False # if True it do not run the training
 
 
-dataset_folder = "temp_annotation_masks_large_sparks"
+dataset_folder = "temp_annotation_masks"
 # sparks in the masks have already the correct shape (radius and ignore index)
 # event size
 #radius_event = 3.5
@@ -54,7 +56,6 @@ chunks_duration = 64 # power of 2
 ignore_index = 4
 ignore_frames_loss = 4
 
-criterion = FocalLoss(reduction='mean', ignore_index=ignore_index)
 
 
 # add options
@@ -128,18 +129,23 @@ if args.verbose:
     print("Samples in each video in testing dataset: ",
           *[len(test_dataset) for test_dataset in testing_datasets])
 
-'''
-# compute weights for each class
+
+# compute weights for each class and define criterion for computing loss
 class_weights = compute_class_weights_puffs(dataset,
                                             w0=args.weight_background,
                                             w1=args.weight_sparks,
                                             w2=args.weight_waves,
                                             w3=args.weight_puffs)
-class_weights = torch.tensor(np.float32(class_weights))
+class_weights = torch.tensor(np.float32(class_weights)).tolist()
 
 if args.verbose:
-    print("Class weights:", *(class_weights.tolist()))
-'''
+    print("Class weights:", *class_weights)
+
+
+criterion = FocalLoss(reduction='mean',
+                      ignore_index=ignore_index,
+                      alpha=class_weights)
+
 
 # Training dataset loader
 dataset_loader = DataLoader(dataset, batch_size=args.batch_size,

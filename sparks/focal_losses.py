@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import matplotlib.pyplot as plt
 
 
 # based on:
@@ -74,11 +75,11 @@ def one_hot(labels: torch.Tensor,
 def focal_loss(
         input: torch.Tensor,
         target: torch.Tensor,
-        alpha: float = 1.0,
+        alpha: list = None,
         gamma: float = 2.0,
         reduction: str = 'none',
         ignore_index: int = 9999,
-        eps: float = 1e-8) -> torch.Tensor:
+        eps: float = 1e-8,) -> torch.Tensor:
     r"""Criterion that computes Focal loss.
 
     According to :cite:`lin2018focal`, the Focal loss is computed as follows:
@@ -93,7 +94,7 @@ def focal_loss(
     Args:
         input (torch.Tensor): logits tensor with shape :math:`(N, C, *)` where C = number of classes.
         target (torch.Tensor): labels tensor with shape :math:`(N, *)` where each value is :math:`0 ≤ targets[i] ≤ C−1`.
-        alpha (float): Weighting factor :math:`\alpha \in [0, 1]`.
+        alpha (float): Weighting factor :math:`\alpha` with shape `(C)`.
         gamma (float, optional): Focusing parameter :math:`\gamma >= 0`. Default 2.
         reduction (str, optional): Specifies the reduction to apply to the
          output: ‘none’ | ‘mean’ | ‘sum’. ‘none’: no reduction will be applied,
@@ -135,15 +136,30 @@ def focal_loss(
             "input and target must be in the same device. Got: {} and {}" .format(
                 input.device, target.device))
 
+
     # create mask for ignore_index
-    #print("TARGET", target)
     #print("IGNORE INDEX", ignore_index)
     ignore_mask = torch.where(target == ignore_index, 0, 1)
     #print("IGNORE MASK\n", ignore_mask, "\n", ignore_mask.shape)
     target_copy = torch.clone(target).detach() # do not modify original target
-    target_copy[target_copy == ignore_index] = 0 # the corresponding pts will be ignored
+    temp_ignored_index = 0 # the corresponding pts will be ignored
+    target_copy[target_copy == ignore_index] = temp_ignored_index
+    #print("TARGET COPY", target_copy)
     num_ignored = torch.count_nonzero(ignore_mask)
     #print("NUM IGNORED", num_ignored)
+
+
+    if alpha == None:
+        alpha_mask = 1.
+    else:
+        # create alpha mask that will multiply focal loss
+        assert len(alpha) == input.shape[1], "alpha does not contain a weight per class"
+        alpha_mask = torch.zeros(target.shape)
+        for idx, alpha_t in enumerate(alpha):
+            alpha_mask[target==idx] = alpha_t
+        #print(alpha_mask)
+
+    alpha_mask = alpha_mask.to(target.device)
 
     # compute softmax over the classes axis
     input_soft: torch.Tensor = F.softmax(input, dim=1) + eps
@@ -153,19 +169,20 @@ def focal_loss(
     target_one_hot: torch.Tensor = one_hot(
         target_copy, num_classes=input.shape[1],
         device=input.device, dtype=input.dtype)
+    #print("TARGET ONE HOT", target_one_hot, target_one_hot.shape)
 
 
     # compute the actual focal loss
     weight = torch.pow(-input_soft + 1., gamma)
-    focal = -alpha * weight * torch.log(input_soft)
+    focal = - weight * torch.log(input_soft)
+    #print("ALPHA MASK", alpha_mask)
+    #print("FOCAL", focal)
     loss_tmp = torch.sum(target_one_hot * focal, dim=1)
     #print("LOSS TMP SHAPE", loss_tmp.shape)
     # remove loss values in ignored points
-    loss_tmp = loss_tmp * ignore_mask
+    loss_tmp = loss_tmp * ignore_mask * alpha_mask
     #print("LOSS TMP SHAPE", loss_tmp.shape)
     #print("LOSS TMP", loss_tmp)
-
-
 
     if reduction == 'none':
         loss = loss_tmp
@@ -307,11 +324,11 @@ class FocalLoss(nn.Module):
         >>> output.backward()
     """
 
-    def __init__(self, alpha: float = 1.0, gamma: float = 2.0,
+    def __init__(self, alpha: list = None, gamma: float = 2.0,
                  reduction: str = 'none', ignore_index: int = 9999,
                  eps: float = 1e-8) -> None:
         super(FocalLoss, self).__init__()
-        self.alpha: float = alpha
+        self.alpha: list = alpha
         self.gamma: float = gamma
         self.reduction: str = reduction
         self.ignore_index: int = ignore_index
