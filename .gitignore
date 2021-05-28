@@ -159,3 +159,4 @@ predictions/
 .python_history
 .viminfo
 slurm*
+test*
