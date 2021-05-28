@@ -4,6 +4,7 @@ Functions that are used during the training of the neural network
 
 import os
 import os.path
+import time
 
 import numpy as np
 import imageio
@@ -42,35 +43,9 @@ __all__ = ["training_step",
 
 
 # Make one step of the training (update parameters and compute loss)
-def training_step(sampler, network, optimizer, device, class_weights,
-                  dataset_loader, ignore_frames, ignore_ind = 2):
-
-    network.train()
-
-    x, y = sampler(dataset_loader)
-    x = x.to(device)
-    y = y.to(device)
-    class_weights = class_weights.to(device).type(torch.cuda.FloatTensor)
-
-    y_pred = network(x[:, None])
-
-    #Compute loss
-    loss = nn.functional.nll_loss(y_pred[:,:,ignore_frames:-ignore_frames],
-                                  y[:,ignore_frames:-ignore_frames].long(),
-                                  weight=class_weights, ignore_index=ignore_ind)
-
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-
-    wandb.log({"U-Net training loss": loss.item()})
-
-    return {"loss": loss.item()}
-
-
-# Training step using focal loss
-def training_step_fl(sampler, network, optimizer, device, criterion,
-                     dataset_loader, ignore_frames, ignore_ind = 2):
+def training_step(sampler, network, optimizer, device, criterion,
+                  dataset_loader, ignore_frames):
+    #start = time.time()
 
     network.train()
 
@@ -91,12 +66,52 @@ def training_step_fl(sampler, network, optimizer, device, criterion,
 
     wandb.log({"U-Net training loss": loss.item()})
 
+    #end = time.time()
+    #print(f"Runtime for 1 training step: {end-start}")
+
     return {"loss": loss.item()}
 
 
+def training_step_new(network, optimizer, device, criterion,
+                     dataset_loader, ignore_frames):
+    #start = time.time()
+
+    network.train()
+    running_loss = 0.0
+
+    for x,y in dataset_loader:
+        optimizer.zero_grad()
+
+        x = x.to(device)
+        y = y.to(device)
+        y_pred = network(x[:, None])
+
+        #Compute loss
+
+        batch_loss = criterion(y_pred[:,:,ignore_frames:-ignore_frames],
+                               y[:,ignore_frames:-ignore_frames].long())
+
+        batch_loss.backward()
+        optimizer.step()
+
+        running_loss += batch_loss.item()
+
+        wandb.log({"U-Net batch training loss": batch_loss.item()})
+
+    running_loss /= len(dataset_loader)
+    wandb.log({"U-Net epoch training loss": running_loss})
+
+    #end = time.time()
+    #print(f"Runtime for 1 training step: {end-start}")
+    #exit()
+
+    return {"loss": running_loss}
+
+
+
 # Compute some metrics on the predictions of the network
-def test_function(network, device, class_weights, testing_datasets, logger,
-                  threshold=0.95, ignore_ind=4, ignore_frames=4):
+def test_function(network, device, criterion, testing_datasets, logger,
+                  threshold=0.95, ignore_frames=4):
     # Requires a list of testing dataset as input
     # (every test video has its own dataset)
     network.eval()
@@ -107,16 +122,13 @@ def test_function(network, device, class_weights, testing_datasets, logger,
     # (duration-step) has to be even
 
 
-    loss = 0
+    loss = 0.0
     metrics = [] # store metrics for each video
 
     for test_dataset in testing_datasets:
         xs = []
         ys = []
         preds = []
-        sparks = []
-        puffs = []
-        waves = []
 
         with torch.no_grad():
             if (len(test_dataset)>1):
@@ -125,11 +137,14 @@ def test_function(network, device, class_weights, testing_datasets, logger,
                 ys.append(y[:-half_overlap])
 
                 x = torch.Tensor(x).to(device)
-                pred = network(x[None, None])[0].cpu().numpy()
+                y = torch.Tensor(y[None]).to(device)
+                pred = network(x[None, None])
+
+                loss += criterion(pred[:,:,:-half_overlap],
+                                 y[:,:-half_overlap].long())
+
+                pred = pred[0].cpu().numpy()
                 preds.append(pred[:,:-half_overlap])
-                sparks.append(pred[1,:-half_overlap])
-                puffs.append(pred[3,:-half_overlap])
-                waves.append(pred[2,:-half_overlap])
 
                 for i in range(1,len(test_dataset)-1):
                     x,y = test_dataset[i]
@@ -137,49 +152,50 @@ def test_function(network, device, class_weights, testing_datasets, logger,
                     ys.append(y[half_overlap:-half_overlap])
 
                     x = torch.Tensor(x).to(device)
-                    pred = network(x[None, None])[0].cpu().numpy()
+                    y = torch.Tensor(y[None]).to(device)
+                    pred = network(x[None, None])
+
+                    loss += criterion(pred[:,:,half_overlap:-half_overlap],
+                                     y[:,half_overlap:-half_overlap].long())
+
+                    pred = pred[0].cpu().numpy()
                     preds.append(pred[:,half_overlap:-half_overlap])
-                    sparks.append(pred[1,half_overlap:-half_overlap])
-                    puffs.append(pred[3,half_overlap:-half_overlap])
-                    waves.append(pred[2,half_overlap:-half_overlap])
 
                 x,y = test_dataset[-1]
                 xs.append(x[half_overlap:])
                 ys.append(y[half_overlap:])
 
                 x = torch.Tensor(x).to(device)
-                pred = network(x[None, None])[0].cpu().numpy()
-                preds.append(pred[:,half_overlap:])
-                sparks.append(pred[1,half_overlap:])
-                puffs.append(pred[3,half_overlap:])
-                waves.append(pred[2,half_overlap:])
+                y = torch.Tensor(y[None]).to(device)
+                pred = network(x[None, None])
 
+                loss += criterion(pred[:,:,half_overlap:],
+                                 y[:,half_overlap:].long())
+
+                pred = pred[0].cpu().numpy()
+                preds.append(pred[:,half_overlap:])
             else:
                 x,y = test_dataset[0]
                 xs.append(x)
                 ys.append(y)
 
                 x = torch.Tensor(x).to(device)
-                pred = network(x[None, None])[0].cpu().numpy()
+                y = torch.Tensor(y[None]).to(device)
+                pred = network(x[None, None])
+
+                loss += criterion(pred, y.long())
+
+                pred = pred[0].cpu().numpy()
                 preds.append(pred)
-                sparks.append(pred[1])
-                puffs.append(pred[3])
-                waves.append(pred[2])
 
         # concatenated frames and predictions for a single video:
         xs = np.concatenate(xs, axis=0)
         ys = np.concatenate(ys, axis=0)
-        sparks = np.concatenate(sparks, axis=0)
-        waves = np.concatenate(waves, axis=0)
-        puffs = np.concatenate(puffs, axis=0)
         preds = np.concatenate(preds, axis=1)
 
         if test_dataset.pad != 0:
             xs = xs[:-test_dataset.pad]
             ys = ys[:-test_dataset.pad]
-            sparks = sparks[:-test_dataset.pad]
-            waves = waves[:-test_dataset.pad]
-            puffs = puffs[:-test_dataset.pad]
             preds = preds[:,:-test_dataset.pad]
 
         # predictions have logarithmic values
@@ -193,27 +209,17 @@ def test_function(network, device, class_weights, testing_datasets, logger,
                                       np.uint8(ys))
         imageio.volwrite(os.path.join("predictions",
                                       test_dataset.video_name + "_sparks.tif"),
-                                      np.exp(sparks))
+                                      np.exp(preds[1]))
         imageio.volwrite(os.path.join("predictions",
                                       test_dataset.video_name + "_waves.tif"),
-                                      np.exp(waves))
+                                      np.exp(preds[2]))
         imageio.volwrite(os.path.join("predictions",
                                       test_dataset.video_name + "_puffs.tif"),
-                                      np.exp(puffs))
+                                      np.exp(preds[3]))
 
-
-        # compute validation loss
-        ys_loss = torch.Tensor(ys[None,ignore_frames:-ignore_frames])
-        preds = torch.Tensor(preds[None,:,ignore_frames:-ignore_frames])
-        # preds is torch.Size([1, 4, 'video duration'-2*ignore_frames , 64, 512])
-
-        loss += nn.functional.nll_loss(preds,
-                                ys_loss.long(),
-                                weight=class_weights,
-                                ignore_index=ignore_ind).item()
 
         # compute predicted sparks and correspondences
-        sparks = np.exp(sparks)
+        sparks = np.exp(preds[1])
         sparks = sparks[ignore_frames:-ignore_frames]
         sparks = np.pad(sparks,((ignore_frames,),(0,),(0,)), mode='constant')
 
@@ -234,6 +240,7 @@ def test_function(network, device, class_weights, testing_datasets, logger,
                                             coords_preds, match_distance=6)))
 
     # Compute average validation loss
+    loss = loss.item()
     loss /= len(testing_datasets)
 
     # Compute metrics comparing ys and y_preds
@@ -252,160 +259,6 @@ def test_function(network, device, class_weights, testing_datasets, logger,
 
     return results
 
-# test function with focal loss
-def test_function_fl(network, device, criterion, testing_datasets, logger,
-                     threshold=0.95, ignore_ind=4, ignore_frames=4):
-    # Requires a list of testing dataset as input
-    # (every test video has its own dataset)
-    network.eval()
-
-    duration = testing_datasets[0].duration
-    step = testing_datasets[0].step
-    half_overlap = (duration-step)//2 # to re-build videos from chunks
-    # (duration-step) has to be even
-
-
-    loss = 0
-    metrics = [] # store metrics for each video
-
-    for test_dataset in testing_datasets:
-        xs = []
-        ys = []
-        preds = []
-        sparks = []
-        puffs = []
-        waves = []
-
-        with torch.no_grad():
-            if (len(test_dataset)>1):
-                x,y = test_dataset[0]
-                xs.append(x[:-half_overlap])
-                ys.append(y[:-half_overlap])
-
-                x = torch.Tensor(x).to(device)
-                pred = network(x[None, None])[0].cpu().numpy()
-                preds.append(pred[:,:-half_overlap])
-                sparks.append(pred[1,:-half_overlap])
-                puffs.append(pred[3,:-half_overlap])
-                waves.append(pred[2,:-half_overlap])
-
-                for i in range(1,len(test_dataset)-1):
-                    x,y = test_dataset[i]
-                    xs.append(x[half_overlap:-half_overlap])
-                    ys.append(y[half_overlap:-half_overlap])
-
-                    x = torch.Tensor(x).to(device)
-                    pred = network(x[None, None])[0].cpu().numpy()
-                    preds.append(pred[:,half_overlap:-half_overlap])
-                    sparks.append(pred[1,half_overlap:-half_overlap])
-                    puffs.append(pred[3,half_overlap:-half_overlap])
-                    waves.append(pred[2,half_overlap:-half_overlap])
-
-                x,y = test_dataset[-1]
-                xs.append(x[half_overlap:])
-                ys.append(y[half_overlap:])
-
-                x = torch.Tensor(x).to(device)
-                pred = network(x[None, None])[0].cpu().numpy()
-                preds.append(pred[:,half_overlap:])
-                sparks.append(pred[1,half_overlap:])
-                puffs.append(pred[3,half_overlap:])
-                waves.append(pred[2,half_overlap:])
-
-            else:
-                x,y = test_dataset[0]
-                xs.append(x)
-                ys.append(y)
-
-                x = torch.Tensor(x).to(device)
-                pred = network(x[None, None])[0].cpu().numpy()
-                preds.append(pred)
-                sparks.append(pred[1])
-                puffs.append(pred[3])
-                waves.append(pred[2])
-
-        # concatenated frames and predictions for a single video:
-        xs = np.concatenate(xs, axis=0)
-        ys = np.concatenate(ys, axis=0)
-        sparks = np.concatenate(sparks, axis=0)
-        waves = np.concatenate(waves, axis=0)
-        puffs = np.concatenate(puffs, axis=0)
-        preds = np.concatenate(preds, axis=1)
-
-        if test_dataset.pad != 0:
-            xs = xs[:-test_dataset.pad]
-            ys = ys[:-test_dataset.pad]
-            sparks = sparks[:-test_dataset.pad]
-            waves = waves[:-test_dataset.pad]
-            puffs = puffs[:-test_dataset.pad]
-            preds = preds[:,:-test_dataset.pad]
-
-        # predictions have logarithmic values
-
-        # save preds as videos
-        imageio.volwrite(os.path.join("predictions",
-                                      test_dataset.video_name + "_xs.tif"),
-                                      xs)
-        imageio.volwrite(os.path.join("predictions",
-                                      test_dataset.video_name + "_ys.tif"),
-                                      np.uint8(ys))
-        imageio.volwrite(os.path.join("predictions",
-                                      test_dataset.video_name + "_sparks.tif"),
-                                      np.exp(sparks))
-        imageio.volwrite(os.path.join("predictions",
-                                      test_dataset.video_name + "_waves.tif"),
-                                      np.exp(waves))
-        imageio.volwrite(os.path.join("predictions",
-                                      test_dataset.video_name + "_puffs.tif"),
-                                      np.exp(puffs))
-
-
-        # compute validation loss
-        ys_loss = torch.Tensor(ys[None,ignore_frames:-ignore_frames])
-        preds = torch.Tensor(preds[None,:,ignore_frames:-ignore_frames])
-        # preds is torch.Size([1, 4, 'video duration'-2*ignore_frames , 64, 512])
-
-        loss += criterion(preds,ys_loss.long()).item()
-
-        # compute predicted sparks and correspondences
-        sparks = np.exp(sparks)
-        sparks = sparks[ignore_frames:-ignore_frames]
-        sparks = np.pad(sparks,((ignore_frames,),(0,),(0,)), mode='constant')
-
-        min_radius = 3 # minimal "radius" of a valid event
-
-        coords_preds = process_spark_prediction(sparks,
-                                             t_detection=(threshold),
-                                             min_radius=min_radius)
-
-        sparks_mask_true = ys[ignore_frames:-ignore_frames]
-        sparks_mask_true = np.where(sparks_mask_true==1, 1.0, 0.0)
-        sparks_mask_true = np.pad(sparks_mask_true,((ignore_frames,),(0,),(0,)),
-                                  mode='constant')
-
-        coords_true = nonmaxima_suppression(sparks_mask_true)
-
-        metrics.append(Metrics(*correspondences_precision_recall(coords_true,
-                                            coords_preds, match_distance=6)))
-
-    # Compute average validation loss
-    loss /= len(testing_datasets)
-
-    # Compute metrics comparing ys and y_preds
-    results = reduce_metrics(metrics)
-    prec = results[0]
-    rec = results[1]
-    logger.info("\tPrecision: {:.4g}".format(prec))
-    logger.info("\tRecall: {:.4g}".format(rec))
-    logger.info("\tValidation loss: {:.4g}".format(loss))
-
-    results = {"precision": prec,
-               "recall": rec,
-               "validation_loss": loss}
-
-    wandb.log(results)
-
-    return results
 
 ''' versione con ignore_frames e vecchia versione per prec + rec
 def test_function(network, device, class_weights, testing_datasets, logger,

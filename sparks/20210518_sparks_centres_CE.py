@@ -1,18 +1,18 @@
 '''
-09.02.2021
+18.05.2021
 
-Train U-Net using focal loss instead of standard cross entropy loss.
-TODO: if training improves, rename 'training_step_fl' and 'test_function_fl'.
+Train U-Net using corrected masks based on Miguel's semi-automatic
+segmentations, with sparks centres, and cross entropy loss.
 
-UPDATES:
-20210208 ignore fewer frames in loss fct: from 15 to 4.
-20210218 train with larger sparks
-         ('temp_annotation_masks' --> 'temp_annotation_masks_large_sparks')
-20210222 go back to training with smaller sparks;
-         add weights to focal loss
+The idea is to use this script instead of 20210128_temp_new_masks.py to
+perform the same training.
+
+Available videos (saved in folder 'temp_annotation_masks'):
+01-11, 15-17, 21-25, 27-28, 33-36 (25 videos)
+
+Of which 01,06,11,22,28 are in the test dataset
 
 '''
-
 import os
 import glob
 import logging
@@ -29,32 +29,38 @@ import unet
 
 from dataset_tools import random_flip, compute_class_weights_puffs, weights_init
 from datasets import IDMaskDataset, IDMaskTestDataset
-from training_tools import training_step, test_function, sampler
+from training_tools import training_step, test_function, sampler, training_step_new
 from options import add_options
-from focal_losses import FocalLoss
 
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 import wandb
 
-test_mode = False # if True it do not run the training
 
+####################### OTHER PARAMS ###########################################
 
+# TODO: idealmente aggiungere questi all'argument parser nel modello definitivo
+
+# DATASET OPTIONS
 dataset_folder = "temp_annotation_masks"
-# sparks in the masks have already the correct shape (radius and ignore index)
-# event size
-#radius_event = 3.5
 
-# remove background
-remove_background = True
+# DATALOADER OPTIONS
+n_workers = 1
+
+# TRAINING OPTIONS
+test_mode = False # if True it do not run the training
+remove_background = True # remove background
+criterion = 'nll_loss' # loss function used for training
 
 # step and chunks duration
 step = 4
 chunks_duration = 64 # power of 2
-#ignore_frames_loss = (chunks_duration-step)//2 # frames ignored by loss fct
 
 # configure loss function
 ignore_index = 4
 ignore_frames_loss = 4
+
+################################################################################
+
 
 
 
@@ -76,16 +82,17 @@ if args.verbose:
     print("\tBatch size: ",args.batch_size)
     print("\tUsing small dataset: ",args.small_dataset)
     print("\tUsing very small dataset: ",args.very_small_dataset)
-#    print("\tClass weights coefficients: ",args.weight_background,", ",
-#                                           args.weight_sparks,", ",
-#                                           args.weight_waves,", ",
-#                                           args.weight_puffs)
+    print("\tClass weights coefficients: ",args.weight_background,", ",
+                                           args.weight_sparks,", ",
+                                           args.weight_waves,", ",
+                                           args.weight_puffs)
 
 
+# configure logger
 unet.config_logger("/dev/null")
 logger = logging.getLogger(__name__)
 
-
+# detect device(s)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 n_gpus = torch.cuda.device_count()
 if args.verbose:
@@ -108,7 +115,6 @@ else:
 
 dataset = IDMaskDataset(base_path=dataset_path, smoothing='2d',
                           step=step, duration=chunks_duration,
-                          #radius_event = radius_event,
                           remove_background = remove_background)
 dataset = unet.TransformedDataset(dataset, random_flip)
 
@@ -121,7 +127,6 @@ test_files_names = sorted([".".join(f.split(".")[:-1]) for f in
 testing_datasets = [IDMaskTestDataset(base_path=dataset_path,
                                     video_name=file, smoothing='2d',
                                     step=step, duration=chunks_duration,
-                                    #radius_event = radius_event,
                                     remove_background = remove_background)
                     for file in test_files_names]
 
@@ -130,31 +135,28 @@ if args.verbose:
           *[len(test_dataset) for test_dataset in testing_datasets])
 
 
-# compute weights for each class and define criterion for computing loss
+# compute weights for each class
 class_weights = compute_class_weights_puffs(dataset,
                                             w0=args.weight_background,
                                             w1=args.weight_sparks,
                                             w2=args.weight_waves,
                                             w3=args.weight_puffs)
-class_weights = torch.tensor(np.float32(class_weights)).tolist()
+class_weights = torch.tensor(np.float32(class_weights))
 
 if args.verbose:
-    print("Class weights:", *class_weights)
-
-
-criterion = FocalLoss(reduction='mean',
-                      ignore_index=ignore_index,
-                      alpha=class_weights)
+    print("Class weights:", *(class_weights.tolist()))
 
 
 # Training dataset loader
 dataset_loader = DataLoader(dataset, batch_size=args.batch_size,
-                            shuffle=True, num_workers=4)
+                            shuffle=True, num_workers=n_workers,
+                            pin_memory=True)
 
 
 # List of testing dataset loader
 testing_dataset_loaders = [DataLoader(test_dataset, batch_size=args.batch_size,
-                                      shuffle=False, num_workers=4)
+                                      shuffle=False, num_workers=n_workers,
+                                      pin_memory=True)
                            for test_dataset in testing_datasets]
 
 
@@ -180,6 +182,10 @@ network = network.to(device)
 # uncomment to use weights initialization
 #network.apply(weights_init)
 
+if criterion == 'nll_loss':
+    criterion = nn.NLLLoss(ignore_index=ignore_index,
+                           weight=class_weights.to(device))
+
 optimizer = optim.Adam(network.parameters(), lr=1e-4)
 network.train();
 
@@ -194,20 +200,17 @@ summary_writer = SummaryWriter(os.path.join(output_path, "summary"),
 
 
 trainer = unet.TrainingManager(
-    lambda _: training_step(sampler, network, optimizer, device, criterion,
-                            dataset_loader,
-                            ignore_frames=ignore_frames_loss,
-                            ignore_ind=ignore_index),
-    save_every=5000,
+    lambda _: training_step_new(network, optimizer, device, criterion,
+                                dataset_loader, ignore_frames_loss),
+    save_every=5,
     save_path=output_path,
     managed_objects=unet.managed_objects({'network': network,
                                           'optimizer': optimizer}),
     test_function=lambda _: test_function(network,device,criterion,
                                           testing_datasets,logger,
-                                          ignore_ind=ignore_index,
                                           ignore_frames=ignore_frames_loss),
-    test_every=1000,
-    plot_every=1000,
+    test_every=5,
+    plot_every=1,
     summary_writer=summary_writer # comment to use normal plots
 )
 
@@ -222,11 +225,11 @@ if args.load_epoch:
 if args.verbose:
     print("Test network before training:")
 test_function(network,device,criterion,testing_datasets,logger,
-              ignore_ind=ignore_index,ignore_frames=ignore_frames_loss)
+              ignore_frames=ignore_frames_loss)
 
 if test_mode:
     exit()
 
 
 # Train network
-trainer.train(args.train_epochs, print_every=100)
+trainer.train(args.train_epochs, print_every=1)

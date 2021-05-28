@@ -29,7 +29,7 @@ from tensorboardX import SummaryWriter
 basepath = os.getcwd()
 
 
-### Select run adn dataset to load ###
+### Select run and dataset to load ###
 
 dataset_path = os.path.join(basepath,"..","data")
 dataset_name = "temp_annotation_masks"
@@ -44,7 +44,7 @@ test_files = sorted([".".join(f.split(".")[:-1]) for f in
 
 
 # run parameters
-run_name = "temp_corrected_masks_long_chunks"
+run_name = "focal_loss_w_weights"
 load_epoch = 100000
 batch_size = 2 # same as for selected training
 
@@ -58,7 +58,7 @@ remove_background = True
 step = 4
 chunks_duration = 64 # power of 2
 half_overlap = (chunks_duration-step)//2 # to re-build videos from chunks
-ignore_frames_loss = half_overlap # frames ignored by loss fct
+ignore_frames_loss = 4 # frames ignored by loss fct
 
 ### Configure cuda and logger ###
 
@@ -218,7 +218,7 @@ for video_name in train_files:
                                      test=False)
 
     dataset_loader = DataLoader(dataset, batch_size=batch_size,
-                                shuffle=False, num_workers=4)
+                                shuffle=False, num_workers=1)
 
     print("Saving unet preds...")
     save_preds(network,device,dataset)
