@@ -145,7 +145,7 @@ anaconda3/
 OLD/
 wandb/
 /data
-runs/
+*runs/
 predictions/
 .conda/
 .jupyter/
