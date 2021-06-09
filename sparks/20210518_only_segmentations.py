@@ -35,6 +35,7 @@ import unet
 from dataset_tools import random_flip, compute_class_weights_puffs, weights_init
 from datasets import IDMaskDataset, IDMaskTestDataset
 from training_tools import training_step, test_function, sampler, training_step_new
+from metrics_tools import take_closest
 from options import add_options
 
 from torch.utils.tensorboard import SummaryWriter
@@ -64,6 +65,10 @@ chunks_duration = 64 # power of 2
 ignore_index = 4
 ignore_frames_loss = 4
 
+# thresholds for events detection
+thresholds = np.arange(0.5, 1, 0.05)
+fixed_threshold = 0.95 # t used in plots wrt epochs
+
 ################################################################################
 
 
@@ -75,8 +80,11 @@ add_options(parser)
 args = parser.parse_args()
 
 
-wandb.init(project="sparks", name=args.name)
-
+wandb.init(project="sparks", name=args.name,
+           #notes = 'Cerco di capire il perché del vanishing gradient',
+           tags = ['Sparks Project',
+                   'Cross entropy loss',
+                   'Original segmentation as annotations'])
 
 if args.verbose:
     print("Parser arguments: ")
@@ -198,27 +206,34 @@ network.train();
 
 ### PREPARE TRAINING ###
 
-output_path = "runs/"+args.name
+# Compute idx of t in thresholds list that is closest to fixed_threshold
+closest_t = take_closest(thresholds, fixed_threshold)
+idx_fixed_t = list(thresholds).index(closest_t)
+
+
+output_path = "epoch_runs/"+args.name
 os.makedirs(output_path, exist_ok=True)
 summary_writer = SummaryWriter(os.path.join(output_path, "summary"),
                                purge_step=0)
+#summary_writer.add_graph(network) # non funziona
 
 
 trainer = unet.TrainingManager(
     lambda _: training_step_new(network, optimizer, device, criterion,
-                                dataset_loader, ignore_frames_loss),
+                                dataset_loader, ignore_frames_loss,
+                                summary_writer),
     save_every=5,
     save_path=output_path,
     managed_objects=unet.managed_objects({'network': network,
                                           'optimizer': optimizer}),
-    test_function=lambda _: test_function(network,device,criterion,
-                                          testing_datasets,logger,
-                                          ignore_frames=ignore_frames_loss),
+    test_function=lambda _: test_function(network, device, criterion,
+                                          testing_datasets, logger,
+                                          thresholds, idx_fixed_t,
+                                          ignore_frames_loss, summary_writer),
     test_every=5,
     plot_every=1,
     summary_writer=summary_writer # comment to use normal plots
 )
-
 
 
 ### TRAIN NETWORK ###
@@ -229,8 +244,8 @@ if args.load_epoch:
 # Test network before training
 if args.verbose:
     print("Test network before training:")
-test_function(network,device,criterion,testing_datasets,logger,
-              ignore_frames=ignore_frames_loss)
+test_function(network, device, criterion, testing_datasets, logger, thresholds,
+              idx_fixed_t, ignore_frames_loss, summary_writer)
 
 if test_mode:
     exit()
@@ -238,3 +253,5 @@ if test_mode:
 
 # Train network
 trainer.train(args.train_epochs, print_every=1)
+
+summary_writer.close()

@@ -6,6 +6,7 @@ import os
 import os.path
 import time
 
+import matplotlib.pyplot as plt
 import numpy as np
 import imageio
 import pandas as pd
@@ -20,10 +21,7 @@ from torch.utils.data import Dataset, DataLoader
 import unet
 #from focal_losses import focal_loss
 
-from correspondences import (nonmaxima_suppression,
-                             process_spark_prediction,
-                             correspondences_precision_recall,
-                             Metrics, reduce_metrics)
+from metrics_tools import *
 
 
 import wandb
@@ -72,8 +70,9 @@ def training_step(sampler, network, optimizer, device, criterion,
     return {"loss": loss.item()}
 
 
+
 def training_step_new(network, optimizer, device, criterion,
-                     dataset_loader, ignore_frames):
+                     dataset_loader, ignore_frames, summary_writer):
     #start = time.time()
 
     network.train()
@@ -95,6 +94,8 @@ def training_step_new(network, optimizer, device, criterion,
         optimizer.step()
 
         running_loss += batch_loss.item()
+        summary_writer.add_scalar("training/batch_loss",
+                                  batch_loss.item(), global_step=1)
 
         wandb.log({"U-Net batch training loss": batch_loss.item()})
 
@@ -111,7 +112,8 @@ def training_step_new(network, optimizer, device, criterion,
 
 # Compute some metrics on the predictions of the network
 def test_function(network, device, criterion, testing_datasets, logger,
-                  threshold=0.95, ignore_frames=4):
+                  thresholds, idx_fixed_threshold, ignore_frames,
+                  summary_writer):
     # Requires a list of testing dataset as input
     # (every test video has its own dataset)
     network.eval()
@@ -119,11 +121,14 @@ def test_function(network, device, criterion, testing_datasets, logger,
     duration = testing_datasets[0].duration
     step = testing_datasets[0].step
     half_overlap = (duration-step)//2 # to re-build videos from chunks
+
     # (duration-step) has to be even
+    assert (duration-step)%2 == 0, "(duration-step) is not even"
 
 
     loss = 0.0
     metrics = [] # store metrics for each video
+    fixed_threshold_idx = -1 # idx of threshold used in plots vs epoch
 
     for test_dataset in testing_datasets:
         xs = []
@@ -201,63 +206,70 @@ def test_function(network, device, criterion, testing_datasets, logger,
         # predictions have logarithmic values
 
         # save preds as videos
-        imageio.volwrite(os.path.join("predictions",
-                                      test_dataset.video_name + "_xs.tif"),
-                                      xs)
-        imageio.volwrite(os.path.join("predictions",
-                                      test_dataset.video_name + "_ys.tif"),
-                                      np.uint8(ys))
-        imageio.volwrite(os.path.join("predictions",
-                                      test_dataset.video_name + "_sparks.tif"),
-                                      np.exp(preds[1]))
-        imageio.volwrite(os.path.join("predictions",
-                                      test_dataset.video_name + "_waves.tif"),
-                                      np.exp(preds[2]))
-        imageio.volwrite(os.path.join("predictions",
-                                      test_dataset.video_name + "_puffs.tif"),
-                                      np.exp(preds[3]))
+        #write_videos_on_disk(xs,ys,preds,test_dataset.video_name)
 
 
         # compute predicted sparks and correspondences
         sparks = np.exp(preds[1])
-        sparks = sparks[ignore_frames:-ignore_frames]
-        sparks = np.pad(sparks,((ignore_frames,),(0,),(0,)), mode='constant')
+        #sparks = sparks[ignore_frames:-ignore_frames]
+        #sparks = np.pad(sparks,((ignore_frames,),(0,),(0,)), mode='constant')
+        sparks = empty_marginal_frames(sparks, ignore_frames)
 
-        min_radius = 3 # minimal "radius" of a valid event
+        #min_radius = 3 # minimal "radius" of a valid event
 
-        coords_preds = process_spark_prediction(sparks,
-                                             t_detection=(threshold),
-                                             min_radius=min_radius)
+        #coords_preds = process_spark_prediction(sparks,
+        #                                        t_detection=(threshold),
+        #                                        min_radius=min_radius)
 
-        sparks_mask_true = ys[ignore_frames:-ignore_frames]
+        #sparks_mask_true = ys[ignore_frames:-ignore_frames]
+        #sparks_mask_true = np.pad(sparks_mask_true,((ignore_frames,),(0,),(0,)),
+        #                          mode='constant')
+        sparks_mask_true = empty_marginal_frames(ys, ignore_frames)
         sparks_mask_true = np.where(sparks_mask_true==1, 1.0, 0.0)
-        sparks_mask_true = np.pad(sparks_mask_true,((ignore_frames,),(0,),(0,)),
-                                  mode='constant')
 
-        coords_true = nonmaxima_suppression(sparks_mask_true)
 
-        metrics.append(Metrics(*correspondences_precision_recall(coords_true,
-                                            coords_preds, match_distance=6)))
+        #coords_true = nonmaxima_suppression(sparks_mask_true)
+
+        #metrics.append(Metrics(*correspondences_precision_recall(coords_true,
+        #                                    coords_preds, match_distance=6)))
+
+
+        metrics.append(compute_prec_rec(sparks_mask_true, sparks, thresholds))
+
 
     # Compute average validation loss
     loss = loss.item()
     loss /= len(testing_datasets)
 
     # Compute metrics comparing ys and y_preds
-    results = reduce_metrics(metrics)
-    prec = results[0]
-    rec = results[1]
+    _, precs, recs, a_u_c = reduce_metrics_thresholds(metrics)
+
+    prec = precs[fixed_threshold_idx]
+    rec = recs[fixed_threshold_idx]
     logger.info("\tPrecision: {:.4g}".format(prec))
     logger.info("\tRecall: {:.4g}".format(rec))
+    #logger.info("\tArea under the curve: {:.4g}".format(a_u_c))
     logger.info("\tValidation loss: {:.4g}".format(loss))
 
-    results = {"precision": prec,
-               "recall": rec,
+    # save precision recall plot (on disk and TB)
+    figure = plt.figure()
+    plt.plot(recs, precs)
+    summary_writer.add_figure("testing/sparks/prec_rec_plot", figure)
+
+    results = {"sparks/precision": prec,
+               "sparks/recall": rec,
+               #"sparks/area_under_curve": a_u_c,
                "validation_loss": loss}
 
     wandb.log(results)
 
     return results
+
+
+
+
+
+
 
 
 ''' versione con ignore_frames e vecchia versione per prec + rec
