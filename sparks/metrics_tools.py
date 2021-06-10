@@ -232,13 +232,13 @@ def compute_prec_rec(annotations, preds, thresholds):
     #prec = []
     #rec = []
 
+    coords_true = nonmaxima_suppression(annotations)
+
     # compute prec and rec for every threshold
     for t in thresholds:
         coords_preds = process_spark_prediction(preds,
                                                 t_detection=t,
                                                 min_radius=min_radius)
-
-        coords_true = nonmaxima_suppression(annotations)
 
         prec_rec = Metrics(*correspondences_precision_recall(coords_true,
                                                              coords_preds,

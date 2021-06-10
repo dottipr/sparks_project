@@ -95,7 +95,7 @@ def training_step_new(network, optimizer, device, criterion,
 
         running_loss += batch_loss.item()
         summary_writer.add_scalar("training/batch_loss",
-                                  batch_loss.item(), global_step=1)
+                                  batch_loss.item(), global_step=None)
 
         wandb.log({"U-Net batch training loss": batch_loss.item()})
 
@@ -254,7 +254,17 @@ def test_function(network, device, criterion, testing_datasets, logger,
     # save precision recall plot (on disk and TB)
     figure = plt.figure()
     plt.plot(recs, precs)
+    plt.xlim([0,1])
+    plt.ylim([0,1])
+    plt.xlabel('recall')
+    plt.ylabel('precision')
+    plt.title("Precision-recall plot")
+
+    #print("RECALLS", recs)
+    #print("PRECISIONS", precs)
+    #print("ADDING FIGURE TO TENSORBOARD")
     summary_writer.add_figure("testing/sparks/prec_rec_plot", figure)
+    figure.savefig("prec_rec_plot.png")
 
     results = {"sparks/precision": prec,
                "sparks/recall": rec,

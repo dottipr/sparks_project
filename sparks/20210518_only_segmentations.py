@@ -66,7 +66,10 @@ ignore_index = 4
 ignore_frames_loss = 4
 
 # thresholds for events detection
-thresholds = np.arange(0.5, 1, 0.05)
+thresholds = np.linspace(0, 1, num=21) # magari cambiare perché bisogna
+                                        # calcolare nonmaxima supression per
+                                        # threshold
+
 fixed_threshold = 0.95 # t used in plots wrt epochs
 
 ################################################################################
@@ -173,6 +176,21 @@ testing_dataset_loaders = [DataLoader(test_dataset, batch_size=args.batch_size,
                            for test_dataset in testing_datasets]
 
 
+### PREPARE TRAINING ###
+
+# Compute idx of t in thresholds list that is closest to fixed_threshold
+closest_t = take_closest(thresholds, fixed_threshold)
+idx_fixed_t = list(thresholds).index(closest_t)
+
+
+output_path = "epoch_runs/"+args.name
+os.makedirs(output_path, exist_ok=True)
+summary_writer = SummaryWriter(os.path.join(output_path, "summary"),
+                               purge_step=0)
+
+
+### CONFIGURE UNET ###
+
 unet_config = unet.UNetConfig(
     steps=4,
     num_classes=4,
@@ -181,11 +199,12 @@ unet_config = unet.UNetConfig(
     batch_normalization=False
 )
 
-# U-net layers
-unet_config.feature_map_shapes((chunks_duration, 64, 512))
-
-
+unet_config.feature_map_shapes((chunks_duration, 64, 512)) # U-net layers
 network = unet.UNetClassifier(unet_config)
+
+dumb_input = torch.zeros((1, 1, chunks_duration, 64, 512))
+summary_writer.add_graph(network, dumb_input)
+
 wandb.watch(network)
 
 if n_gpus > 1:
@@ -201,21 +220,6 @@ if criterion == 'nll_loss':
 
 optimizer = optim.Adam(network.parameters(), lr=1e-4)
 network.train();
-
-
-
-### PREPARE TRAINING ###
-
-# Compute idx of t in thresholds list that is closest to fixed_threshold
-closest_t = take_closest(thresholds, fixed_threshold)
-idx_fixed_t = list(thresholds).index(closest_t)
-
-
-output_path = "epoch_runs/"+args.name
-os.makedirs(output_path, exist_ok=True)
-summary_writer = SummaryWriter(os.path.join(output_path, "summary"),
-                               purge_step=0)
-#summary_writer.add_graph(network) # non funziona
 
 
 trainer = unet.TrainingManager(
