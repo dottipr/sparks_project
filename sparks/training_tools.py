@@ -255,6 +255,8 @@ def test_function(network, device, criterion, testing_datasets, logger,
     #logger.info("\tArea under the curve: {:.4g}".format(a_u_c))
     logger.info("\tValidation loss: {:.4g}".format(loss))
 
+    '''
+    # TODO: not working properly
     # save precision recall plot (on disk and TB)
     figure = plt.figure()
     plt.plot(recs, precs, marker = '.')
@@ -269,6 +271,7 @@ def test_function(network, device, criterion, testing_datasets, logger,
     #print("ADDING FIGURE TO TENSORBOARD")
     summary_writer.add_figure("testing/sparks/prec_rec_plot", figure)
     figure.savefig("prec_rec_plot.png")
+    '''
 
     results = {"sparks/precision": prec,
                "sparks/recall": rec,
@@ -279,12 +282,6 @@ def test_function(network, device, criterion, testing_datasets, logger,
         wandb.log(results)
 
     return results
-
-
-
-
-
-
 
 
 ''' versione con ignore_frames e vecchia versione per prec + rec
@@ -455,7 +452,7 @@ def sampler(dataset_loader):
     return next(mycycle(dataset_loader))#(_cycle)
 
 
-
+''' OLD FUNCTIONS
 ############### results processing methods ###############
 
 
@@ -529,7 +526,7 @@ def store_results(network, device, test_datasets):
     return results
 
 
-''' OLD FUNCTIONS
+
 
 def get_preds_coords(y_preds, threshold):
     # threshold between 0 and 1

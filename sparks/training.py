@@ -326,18 +326,8 @@ if __name__ == "__main__":
     if args.load_epoch:
         trainer.load(args.load_epoch)
 
-    test_function(
-        network,
-        device,
-        criterion,
-        testing_datasets,
-        logger,
-        summary_writer,
-        thresholds,
-        idx_fixed_t,
-        ignore_frames=c.getint("data", "ignore_frames_loss"),
-        wandb_log=c.getboolean("general", "wandb_enable", fallback="no")
-    )
+    logger.info("Test network before training")
+    trainer.run_validation()
 
     if args.training:
         logger.info("Starting training")

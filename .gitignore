@@ -149,6 +149,7 @@ wandb/
 /data
 *runs/
 predictions/
+.keras/
 .conda/
 .jupyter/
 .local/
