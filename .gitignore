@@ -137,6 +137,8 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+.gitignore
+
 # spark project files and folder to ignore
 *.pyc
 *.tif
@@ -160,3 +162,5 @@ predictions/
 .viminfo
 slurm*
 test*
+2020*
+2021*

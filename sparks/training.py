@@ -5,6 +5,7 @@ import os
 import logging
 import argparse
 import configparser
+import glob
 
 import numpy as np
 import torch
@@ -16,17 +17,30 @@ import wandb
 
 import unet
 from dataset_tools import random_flip, compute_class_weights_puffs, weights_init
-from datasets import MaskTEMPDataset, MaskTEMPTestDataset
+from datasets import SparkDataset, SparkTestDataset
 from training_tools import training_step, test_function, sampler
+from metrics_tools import take_closest
 
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
-CONFIG_FILE = os.path.join(BASEDIR, "config.ini")
+#CONFIG_FILE = os.path.join(BASEDIR, "config.ini")
 
 logger = logging.getLogger(__name__)
 
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser("Spark & Puff detector using U-Net.")
+
+    parser.add_argument(
+        'config',
+        type=str,
+        help="Input config file, used to configure training"
+    )
+
+    args = parser.parse_args()
+
+    CONFIG_FILE = os.path.join(BASEDIR, args.config)
 
     c = configparser.ConfigParser()
     if os.path.isfile(CONFIG_FILE):
@@ -34,12 +48,10 @@ if __name__ == "__main__":
         c.read(CONFIG_FILE)
     else:
         logger.warning(f"No config file found at {CONFIG_FILE}, trying to use fallback values.")
-    
-    parser = argparse.ArgumentParser("Spark & Puff detector using U-Net.")
 
     parser.add_argument(
-        '-v-', '--verbosity', 
-        type=int, 
+        '-v-', '--verbosity',
+        type=int,
         default=c.getint("general", "verbosity", fallback="0"),
         help="Set verbosity level ([0, 3])"
     )
@@ -94,7 +106,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        '-d', '--dataset-size', 
+        '-d', '--dataset-size',
         type=str,
         choices=('full', 'small', 'minimal'),
         default=c.get("data", "size", fallback="full"),
@@ -102,38 +114,42 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        '-w0', '--weight-background', 
+        '-w0', '--weight-background',
         type=float,
         default=c.getfloat("data", "weight_background", fallback="1"),
         help="Weight proportion for background"
     )
 
     parser.add_argument(
-        '-w1', '--weight-sparks', 
+        '-w1', '--weight-sparks',
         type=float,
         default=c.getfloat("data", "weight_sparks", fallback="1"),
         help="Weight proportion for sparks"
     )
 
     parser.add_argument(
-        '-w2', '--weight-waves', 
+        '-w2', '--weight-waves',
         type=float,
         default=c.getfloat("data", "weight_waves", fallback="1"),
         help="Weight proportion for waves"
     )
 
     parser.add_argument(
-        '-w3', '--weight-puffs', 
+        '-w3', '--weight-puffs',
         type=float,
         default=c.getfloat("data", "weight_puffs", fallback="1"),
         help="Weight proportion for puffs"
     )
-    
+
     args = parser.parse_args()
 
     level_map = {3: logging.DEBUG, 2: logging.INFO, 1: logging.WARNING, 0: logging.ERROR}
     log_level = level_map[args.verbosity]
     log_handlers = (logging.StreamHandler(sys.stdout), )
+
+    if c.getboolean("general", "wandb_enable", fallback="no"):
+        wandb.init(project=c.get("general", "wandb_project_name"), name=args.name)
+        logging.getLogger('wandb').setLevel(logging.DEBUG)
 
     if args.logfile:
         if not os.path.isdir(os.path.basename(args.logfile)):
@@ -164,8 +180,6 @@ if __name__ == "__main__":
     for k, v in vars(args).items():
         logger.info(f"{k:>18s}: {v}")
 
-    if c.getboolean("general", "wandb_enable", fallback="no"):
-        wandb.init(project=c.get("general", "wandb_project_name"), name=args.name)
 
     # detect CUDA devices
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -182,8 +196,7 @@ if __name__ == "__main__":
     dataset_path = os.path.realpath(f"{BASEDIR}/{dataset_basedir}/{dataset_dir}")
     assert os.path.isdir(dataset_path), f"\"{dataset_path}\" is not a directory"
     logger.info(f"Using {dataset_path} as dataset root path")
-    
-    dataset = MaskTEMPDataset(
+    dataset = SparkDataset(
         base_path=dataset_path,
         smoothing='2d',
         step=c.getint("data", "step"),
@@ -197,18 +210,15 @@ if __name__ == "__main__":
     logger.info(f"Samples in training dataset: {len(dataset)}")
 
     # initialize testing dataset
-    test_file_names = os.listdir(f"{dataset_path}/video_temp_test")
-    # remove file extensions
-    test_base_file_names = [base for base, ext in map(os.path.splitext, test_file_names)]
+    test_file_names = sorted(glob.glob(f"{dataset_path}/videos_test/*[!_mask].tif"))
     testing_datasets = [
-        MaskTEMPTestDataset(
-            base_path=dataset_path,
-            video_name=f,
+        SparkTestDataset(
+            video_path=f,
             smoothing='2d',
             step=c.getint("data", "step"),
             duration=c.getint("data", "chunks_duration"),
             remove_background=c.getboolean("data", "remove_background")
-        ) for f in test_base_file_names]
+        ) for f in test_file_names]
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
@@ -226,15 +236,15 @@ if __name__ == "__main__":
     logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
 
     # initialize data loaders
-    dataset_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    dataset_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=c.getint("training", "num_workers"))
     testing_dataset_loaders = [
-        DataLoader(test_dataset, batch_size=args.bach_size, shuffle=False, num_workers=4)
+        DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=c.getint("training", "num_workers"))
         for test_dataset in testing_datasets
     ]
 
     # configure unet
     unet_config = unet.UNetConfig(
-        steps=c.getint("data", "steps"),
+        steps=c.getint("data", "step"),
         num_classes=c.getint("network", "num_classes"),
         ndims=c.getint("network", "ndims"),
         border_mode=c.get("network", "border_mode"),
@@ -256,6 +266,14 @@ if __name__ == "__main__":
     logger.info(f"Output directory: {output_path}")
     summary_writer = SummaryWriter(os.path.join(output_path, "summary"), purge_step=0)
 
+    if c.get("training", "criterion", fallback="nll_loss") == "nll_loss":
+        criterion = nn.NLLLoss(ignore_index=c.getint("data", "ignore_index"),
+                               weight=class_weights.to(device))
+    elif c.get("training", "criterion", fallback="nll_loss") == "focal_loss":
+        criterion = FocalLoss(reduction='mean',
+                              ignore_index=c.getint("data", "ignore_index"),
+                              alpha=class_weights)
+
     trainer = unet.TrainingManager(
         # training items
         training_step=lambda _: training_step(
@@ -263,12 +281,12 @@ if __name__ == "__main__":
             network,
             optimizer,
             device,
-            class_weights,
+            criterion,
             dataset_loader,
             ignore_frames=c.getint("data", "ignore_frames_loss"),
-            ignore_index=c.getint("data", "ignore_index")
+            wandb_log=c.getboolean("general", "wandb_enable", fallback="no")
         ),
-        save_every=5000,
+        save_every=c.getint("training", "save_every", fallback=5000),
         save_path=output_path,
         managed_objects=unet.managed_objects({
             'network': network,
@@ -278,15 +296,31 @@ if __name__ == "__main__":
         test_function=lambda _: test_function(
             network,
             device,
-            class_weights,
+            criterion,
             testing_datasets,
-            # logger,
-            ignore_ind=c.getint("data", "ignore_index")
+            logger,
+            summary_writer,
+            thresholds,
+            idx_fixed_t,
+            ignore_frames=c.getint("data", "ignore_frames_loss"),
+            wandb_log=c.getboolean("general", "wandb_enable", fallback="no")
         ),
-        test_every=1000,
-        plot_every=1000,
+        test_every=c.getint("training", "test_every", fallback=1000),
+        plot_every=c.getint("training", "plot_every", fallback=1000),
         summary_writer=summary_writer
     )
+
+    # configure testing
+    thresholds = np.linspace(0, 1, num=21) # thresholds for events detection
+                                           # TODO: maybe change because
+                                           # nonmaxima supression is computed
+                                           # for every threshold (slow)
+    fixed_threshold = c.getfloat("testing", "fixed_threshold", fallback = 0.9)
+    closest_t = take_closest(thresholds, fixed_threshold) # Compute idx of t in
+                                                          # thresholds list that
+                                                          # is closest to
+                                                          # fixed_threshold
+    idx_fixed_t = list(thresholds).index(closest_t)
 
     # begin training
     if args.load_epoch:
@@ -295,10 +329,14 @@ if __name__ == "__main__":
     test_function(
         network,
         device,
-        class_weights,
+        criterion,
         testing_datasets,
-        # logger,
-        ignore_ind=c.getint("data", "ignore_index")
+        logger,
+        summary_writer,
+        thresholds,
+        idx_fixed_t,
+        ignore_frames=c.getint("data", "ignore_frames_loss"),
+        wandb_log=c.getboolean("general", "wandb_enable", fallback="no")
     )
 
     if args.training:
@@ -308,4 +346,3 @@ if __name__ == "__main__":
     if args.testing:
         logger.info("Starting final validation")
         trainer.run_validation()
-

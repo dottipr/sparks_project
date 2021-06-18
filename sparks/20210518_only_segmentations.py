@@ -70,7 +70,7 @@ thresholds = np.linspace(0, 1, num=21) # magari cambiare perché bisogna
                                         # calcolare nonmaxima supression per
                                         # threshold
 
-fixed_threshold = 0.95 # t used in plots wrt epochs
+fixed_threshold = 0.9 # t used in plots wrt epochs
 
 ################################################################################
 
@@ -87,7 +87,8 @@ wandb.init(project="sparks", name=args.name,
            #notes = 'Cerco di capire il perché del vanishing gradient',
            tags = ['Sparks Project',
                    'Cross entropy loss',
-                   'Original segmentation as annotations'])
+                   'Original segmentation as annotations',
+                   'Fixed threshold = 0.9 instead of 0.95'])
 
 if args.verbose:
     print("Parser arguments: ")

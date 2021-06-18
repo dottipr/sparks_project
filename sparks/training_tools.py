@@ -42,7 +42,7 @@ __all__ = ["training_step",
 
 # Make one step of the training (update parameters and compute loss)
 def training_step(sampler, network, optimizer, device, criterion,
-                  dataset_loader, ignore_frames):
+                  dataset_loader, ignore_frames, wandb_log):
     #start = time.time()
 
     network.train()
@@ -62,7 +62,8 @@ def training_step(sampler, network, optimizer, device, criterion,
     loss.backward()
     optimizer.step()
 
-    wandb.log({"U-Net training loss": loss.item()})
+    if wandb_log:
+        wandb.log({"U-Net training loss": loss.item()})
 
     #end = time.time()
     #print(f"Runtime for 1 training step: {end-start}")
@@ -72,7 +73,8 @@ def training_step(sampler, network, optimizer, device, criterion,
 
 
 def training_step_new(network, optimizer, device, criterion,
-                     dataset_loader, ignore_frames, summary_writer):
+                     dataset_loader, ignore_frames, summary_writer,
+                     wandb_log=True):
     #start = time.time()
 
     network.train()
@@ -97,10 +99,12 @@ def training_step_new(network, optimizer, device, criterion,
         summary_writer.add_scalar("training/batch_loss",
                                   batch_loss.item(), global_step=None)
 
-        wandb.log({"U-Net batch training loss": batch_loss.item()})
+        if wandb_log:
+            wandb.log({"U-Net batch training loss": batch_loss.item()})
 
     running_loss /= len(dataset_loader)
-    wandb.log({"U-Net epoch training loss": running_loss})
+    if wandb_log:
+        wandb.log({"U-Net epoch training loss": running_loss})
 
     #end = time.time()
     #print(f"Runtime for 1 training step: {end-start}")
@@ -112,8 +116,8 @@ def training_step_new(network, optimizer, device, criterion,
 
 # Compute some metrics on the predictions of the network
 def test_function(network, device, criterion, testing_datasets, logger,
-                  thresholds, idx_fixed_threshold, ignore_frames,
-                  summary_writer):
+                  summary_writer, thresholds, idx_fixed_threshold,
+                  ignore_frames, wandb_log):
     # Requires a list of testing dataset as input
     # (every test video has its own dataset)
     network.eval()
@@ -253,7 +257,7 @@ def test_function(network, device, criterion, testing_datasets, logger,
 
     # save precision recall plot (on disk and TB)
     figure = plt.figure()
-    plt.plot(recs, precs)
+    plt.plot(recs, precs, marker = '.')
     plt.xlim([0,1])
     plt.ylim([0,1])
     plt.xlabel('recall')
@@ -271,7 +275,8 @@ def test_function(network, device, criterion, testing_datasets, logger,
                #"sparks/area_under_curve": a_u_c,
                "validation_loss": loss}
 
-    wandb.log(results)
+    if wandb_log:
+        wandb.log(results)
 
     return results
 

@@ -16,8 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 import imageio
 
 import unet
-from dataset_tools import compute_class_weights_puffs, weights_init
-from datasets import MaskTestDataset
+from datasets import SparkTestDataset
 
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
@@ -28,16 +27,14 @@ logger = logging.getLogger(__name__)
 logging.getLogger('wandb').setLevel(logging.ERROR)
 
 
-def get_dataset(input_files: List[str], weights: List[float] = [1., 1., 1., 1.]) -> Dataset:
+def get_dataset(input_files: List[str]) -> Dataset:
     """Returns a fully configured dataset for spark detection for a given input video."""
     assert len(input_files) == 1, f"More than one input provided: {len(input_files)}"
     input_file = pathlib.Path(input_files[0])
     name_for_ds, ext = os.path.splitext(input_file.name)
 
-    dataset = MaskTestDataset(
-        # TODO: Fix path building in dataset
-        base_path=input_file.parent.parent,
-        video_name=name_for_ds,
+    dataset = SparkTestDataset(
+        video_path=input_file,
         smoothing='2d',
         step=c.getint("data", "step"),
         duration=c.getint("data", "chunks_duration"),
@@ -46,20 +43,6 @@ def get_dataset(input_files: List[str], weights: List[float] = [1., 1., 1., 1.])
 
     logger.info(f"Loaded dataset with {len(dataset)} samples")
 
-    # class weights
-    # TODO: determine if/how these are used
-    """
-    class_weights = compute_class_weights_puffs(
-        dataset,
-        w0=args.weight_background,
-        w1=args.weight_sparks,
-        w2=args.weight_waves,
-        w3=args.weight_puffs
-    )
-    class_weights = torch.tensor(np.float32(class_weights))
-
-    logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
-    """
     return dataset
 
 
@@ -74,12 +57,6 @@ def get_network(device: torch.device, state_file: str = None) -> nn.Module:
     )
     unet_config.feature_map_shapes((c.getint("data", "chunks_duration"), 64, 512))
     network = nn.DataParallel(unet.UNetClassifier(unet_config)).to(device)
-
-    """
-    # TODO: Figure out if/how this is used
-    if c.getboolean("network", "initialize_weights", fallback="no"):
-        network.apply(weights_init)
-    """
 
     if state_file:
         # load model state
@@ -193,25 +170,25 @@ def parse_predictions(predictions: torch.Tensor, desc: str = "", output: str = "
 
     logger.info(f"Generating output files in {os.path.abspath(output)}")
 
+    predictions_exp = torch.exp(predictions).detach().cpu().numpy()
+
     # produce a singleton output, containing all outputs stacked, i.e. stacked along the vertical pixel axis
     # since .cat() requires a collection of tensors, we create that using torch's views along the first dim;
     # and finally, we have to remove the empty (one-dimensional) first dimension by squeeze()
-    predictions_stacked = torch.cat(torch.split(predictions, 1, dim=0), dim=2).squeeze()
+    predictions_stacked = np.concatenate(predictions_exp, axis=1).squeeze()
     fn = os.path.join(output, f"{desc}_stacked.tif")
-    # TODO: doing this twice is wasteful; instead, exp().numpy() once and use it for every subsequent volwrite
     logger.debug(f"Prediction has shape {predictions.shape}, stack along output axis has shape {predictions_stacked.shape}")
-    data_np = torch.exp(predictions_stacked).detach().cpu().numpy()
-    imageio.volwrite(fn, data_np)
+
+    imageio.volwrite(fn, predictions_stacked)
 
     # produce an output file per output
     for class_label, data in zip(
         ("input", "labels", "background", "sparks", "waves", "puffs"),
-        predictions
+        predictions_exp
     ):
         fn = os.path.join(output, f"{desc}_{class_label}.tif")
         logger.debug(f"Building {fn} from data in shape {data.shape}")
-        data_np = torch.exp(data).detach().cpu().numpy()
-        imageio.volwrite(fn, data_np)
+        imageio.volwrite(fn, data)
 
 
 if __name__ == "__main__":
@@ -271,34 +248,6 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        '-w0', '--weight-background',
-        type=float,
-        default=c.getfloat("data", "weight_background", fallback="1"),
-        help="Weight proportion for background"
-    )
-
-    parser.add_argument(
-        '-w1', '--weight-sparks',
-        type=float,
-        default=c.getfloat("data", "weight_sparks", fallback="1"),
-        help="Weight proportion for sparks"
-    )
-
-    parser.add_argument(
-        '-w2', '--weight-waves',
-        type=float,
-        default=c.getfloat("data", "weight_waves", fallback="1"),
-        help="Weight proportion for waves"
-    )
-
-    parser.add_argument(
-        '-w3', '--weight-puffs',
-        type=float,
-        default=c.getfloat("data", "weight_puffs", fallback="1"),
-        help="Weight proportion for puffs"
-    )
-
-    parser.add_argument(
         '-q', '--quick',
         action="store_true",
         default=False,
@@ -348,12 +297,7 @@ if __name__ == "__main__":
     # extract a part of the input file name to better describe the output.
     input_desc, _ = os.path.splitext(os.path.basename(args.input[0]))
 
-    dataset = get_dataset(args.input, weights=[
-        args.weight_background,
-        args.weight_sparks,
-        args.weight_waves,
-        args.weight_puffs
-    ])
+    dataset = get_dataset(args.input)
     network = get_network(device, args.state)
 
     # feed data to the network
