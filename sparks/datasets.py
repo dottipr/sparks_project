@@ -722,18 +722,22 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
     def __init__(self, video_path,
                  step = 4, duration = 16, smoothing = False,
                  resampling = False, resampling_rate = 150,
-                 remove_background = False, test = True):
+                 remove_background = False, gt_available = True):
 
         # video_path is the complete path to the video
+        # gt_available == True if ground truth annotations is available
 
-        # get video and mask paths
+        self.gt_available = gt_available
+
+        # get video path and array
         self.video_path = video_path
-        filename, ext = os.path.splitext(video_path)
-        self.mask_path = filename + "_mask" + ext
-
-        # get video and mask arrays
         self.video = imageio.volread(self.video_path)
-        self.mask = imageio.volread(self.mask_path)
+
+        # get mask path and array
+        if self.gt_available:
+            filename, ext = os.path.splitext(video_path)
+            self.mask_path = filename + "_mask" + ext
+            self.mask = imageio.volread(self.mask_path)
 
         # perform some preprocessing on videos, if necessary
         if remove_background:
@@ -780,6 +784,9 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         chunk = chunk / chunk.max()
         chunk = np.float32(chunk)
 
-        labels = self.mask[chunks[chunk_id]]
+        if self.gt_available:
+            labels = self.mask[chunks[chunk_id]]
 
-        return chunk, labels
+            return chunk, labels
+
+        return chunk

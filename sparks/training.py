@@ -18,7 +18,7 @@ import wandb
 import unet
 from dataset_tools import random_flip, compute_class_weights_puffs, weights_init
 from datasets import SparkDataset, SparkTestDataset
-from training_tools import training_step, test_function, sampler
+from training_tools import training_step, test_function_fixed_t, sampler
 from metrics_tools import take_closest
 
 
@@ -274,6 +274,18 @@ if __name__ == "__main__":
                               ignore_index=c.getint("data", "ignore_index"),
                               alpha=class_weights)
 
+    # configure testing
+    #thresholds = np.linspace(0, 1, num=21) # thresholds for events detection
+                                           # TODO: maybe change because
+                                           # nonmaxima supression is computed
+                                           # for every threshold (slow)
+    fixed_threshold = c.getfloat("testing", "fixed_threshold", fallback = 0.9)
+    #closest_t = take_closest(thresholds, fixed_threshold) # Compute idx of t in
+                                                          # thresholds list that
+                                                          # is closest to
+                                                          # fixed_threshold
+    #idx_fixed_t = list(thresholds).index(closest_t)
+
     trainer = unet.TrainingManager(
         # training items
         training_step=lambda _: training_step(
@@ -293,15 +305,16 @@ if __name__ == "__main__":
             'optimizer': optimizer
         }),
         # testing items
-        test_function=lambda _: test_function(
+        test_function=lambda _: test_function_fixed_t(
             network,
             device,
             criterion,
             testing_datasets,
             logger,
             summary_writer,
-            thresholds,
-            idx_fixed_t,
+            fixed_threshold,
+            #thresholds,
+            #idx_fixed_t,
             ignore_frames=c.getint("data", "ignore_frames_loss"),
             wandb_log=c.getboolean("general", "wandb_enable", fallback="no")
         ),
@@ -309,18 +322,6 @@ if __name__ == "__main__":
         plot_every=c.getint("training", "plot_every", fallback=1000),
         summary_writer=summary_writer
     )
-
-    # configure testing
-    thresholds = np.linspace(0, 1, num=21) # thresholds for events detection
-                                           # TODO: maybe change because
-                                           # nonmaxima supression is computed
-                                           # for every threshold (slow)
-    fixed_threshold = c.getfloat("testing", "fixed_threshold", fallback = 0.9)
-    closest_t = take_closest(thresholds, fixed_threshold) # Compute idx of t in
-                                                          # thresholds list that
-                                                          # is closest to
-                                                          # fixed_threshold
-    idx_fixed_t = list(thresholds).index(closest_t)
 
     # begin training
     if args.load_epoch:

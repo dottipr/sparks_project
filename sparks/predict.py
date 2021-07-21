@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger('wandb').setLevel(logging.ERROR)
 
 
-def get_dataset(input_files: List[str]) -> Dataset:
+def get_dataset(input_files: List[str], gt_available: bool) -> Dataset:
     """Returns a fully configured dataset for spark detection for a given input video."""
     assert len(input_files) == 1, f"More than one input provided: {len(input_files)}"
     input_file = pathlib.Path(input_files[0])
@@ -38,7 +38,8 @@ def get_dataset(input_files: List[str]) -> Dataset:
         smoothing='2d',
         step=c.getint("data", "step"),
         duration=c.getint("data", "chunks_duration"),
-        remove_background=c.getboolean("data", "remove_background")
+        remove_background=c.getboolean("data", "remove_background"),
+        gt_available=gt_available
     )
 
     logger.info(f"Loaded dataset with {len(dataset)} samples")
@@ -72,7 +73,8 @@ def get_network(device: torch.device, state_file: str = None) -> nn.Module:
 
 # we don't care about gradients, and retaining them explodes the memory usage
 @torch.no_grad()
-def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.Tensor:
+def predict(network: nn.Module, dataset: Dataset, gt_available: bool,
+            quick: bool = False) -> torch.Tensor:
     """Run a network against a dataset and produce the predictions, optionally massively shortened by the quick parameter."""
 
     # Since the dataset acts more like a generator than a list, we can't yield the first item
@@ -86,7 +88,11 @@ def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.
 
     # TODO: have this use a dataloader
     # dataset_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-    for i, (chunk, labels) in enumerate(dataset):
+    for i, chunk in enumerate(dataset):
+
+        if gt_available:
+            chunk, labels = chunk
+
         if args.quick and 0 < i < (len(dataset) - 1):
             # skipping all but the first and last frame
             continue
@@ -96,7 +102,7 @@ def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.
             # initialize mask container with the size from the first chunk
             predictions = torch.zeros(
                 (
-                    1 + 1 + 4,                                      # input + labels + number of classes
+                    (1 + 1 + 4) if gt_available else (1 + 4),       # input (+ labels) + number of classes
                     len(dataset) * dataset.step + 2 * overlap,      # time, i.e. every video frame
                     *(chunk.shape[1:])                              # the actual frames, height x width
                 ), dtype=torch.float32, device=device)
@@ -127,7 +133,8 @@ def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.
             f"mapping to time frames [{abs_start:>5}:{abs_end:<5}]")
 
         chunk_t = torch.Tensor(chunk).to(device)
-        labels_t = torch.Tensor(labels).to(device)
+        if gt_available:
+            labels_t = torch.Tensor(labels).to(device)
 
         prediction = network(chunk_t[None, None])
 
@@ -135,14 +142,16 @@ def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.
         # note that predictions still have one more dim than data & labels!
         prediction_squeeze = torch.squeeze(prediction, dim=0)
         data_squeeze = torch.squeeze(chunk_t, dim=0)
-        label_squeeze = torch.squeeze(labels_t, dim=0)
+        if gt_available:
+            label_squeeze = torch.squeeze(labels_t, dim=0)
 
         # this line is slightly different from ...[:, start:end] - I couldn't find a way to ask for a slice
         # which would have actually included the last element in the standard [start:end] notation.
         # instead, slice(start, end) does what I need by accepting None
         prediction_slice = prediction_squeeze[:, slice(slice_start, slice_end)]
         data_slice = data_squeeze[slice(slice_start, slice_end)]
-        label_slice = label_squeeze[slice(slice_start, slice_end)]
+        if gt_available:
+            label_slice = label_squeeze[slice(slice_start, slice_end)]
 
         time_length = prediction_slice.shape[1]
 
@@ -159,8 +168,11 @@ def predict(network: nn.Module, dataset: Dataset, quick: bool = False) -> torch.
             assert time_length == dataset.step
 
         predictions[0, abs_start:abs_end, :, :] = data_slice
-        predictions[1, abs_start:abs_end, :, :] = label_slice
-        predictions[2:, abs_start:abs_end, :, :] = prediction_slice
+        if gt_available:
+            predictions[1, abs_start:abs_end, :, :] = label_slice
+            predictions[2:, abs_start:abs_end, :, :] = prediction_slice
+        else:
+            predictions[1:, abs_start:abs_end, :, :] = prediction_slice
 
     return predictions
 
@@ -169,6 +181,8 @@ def parse_predictions(predictions: torch.Tensor, desc: str = "", output: str = "
     """Work on the predictions and do whatever is required to make them human-parseable."""
 
     logger.info(f"Generating output files in {os.path.abspath(output)}")
+
+    assert predictions.size()[0] == (5 or 6), "Prediction shape is wrong"
 
     predictions_exp = torch.exp(predictions).detach().cpu().numpy()
 
@@ -182,10 +196,12 @@ def parse_predictions(predictions: torch.Tensor, desc: str = "", output: str = "
     imageio.volwrite(fn, predictions_stacked)
 
     # produce an output file per output
-    for class_label, data in zip(
-        ("input", "labels", "background", "sparks", "waves", "puffs"),
-        predictions_exp
-    ):
+    categories = (
+        ("input", "labels", "background", "sparks", "waves", "puffs")
+        if predictions.size()[0] == 6
+        else ("input", "background", "sparks", "waves", "puffs"))
+
+    for class_label, data in zip(categories, predictions_exp):
         fn = os.path.join(output, f"{desc}_{class_label}.tif")
         logger.debug(f"Building {fn} from data in shape {data.shape}")
         imageio.volwrite(fn, data)
@@ -254,6 +270,13 @@ if __name__ == "__main__":
         help="Run on as little data as possible while still touching as much functionality as possible for debugging."
     )
 
+    parser.add_argument(
+        '-gt', '--gt_available',
+        action="store_true",
+        default=c.get("predict", "gt_available", fallback=False),
+        help="Compare predictions with given gt_available"
+    )
+
     args = parser.parse_args()
 
     level_map = {3: logging.DEBUG, 2: logging.INFO, 1: logging.WARNING, 0: logging.ERROR}
@@ -297,10 +320,10 @@ if __name__ == "__main__":
     # extract a part of the input file name to better describe the output.
     input_desc, _ = os.path.splitext(os.path.basename(args.input[0]))
 
-    dataset = get_dataset(args.input)
+    dataset = get_dataset(args.input, args.gt_available)
     network = get_network(device, args.state)
 
     # feed data to the network
     network.eval()
-    predictions = predict(network, dataset, args.quick)
+    predictions = predict(network, dataset, args.gt_available, args.quick)
     parse_predictions(predictions, desc=input_desc, output=args.output)
