@@ -14,96 +14,17 @@ from PIL import Image
 import torch
 
 
-__all__ = ["numpy_to_mask",
-           "final_mask",
-           "get_chunks",
+__all__ = ["get_chunks",
            "random_flip",
-           "compute_class_weights",
-           "compute_class_weights_waves",
            "compute_class_weights_puffs",
            "weights_init",
            "get_times",
            "get_fps",
-           "annotations_interpolation",
            "video_spline_interpolation",
-           "annotations_mask",
-           "annotations_mask_puffs",
-           "remove_avg_background",
-           "concat_sin_channels",
-           "random_flip_channels"]
+           "remove_avg_background"]
 
 
 ### functions for data preproccesing ###
-
-
-def numpy_to_mask(pos, shape):
-    # return a numpy array of the same shape of the sample video where the peaks
-    # annotated in pos have value 1 and the background has value 0
-
-    mask = np.zeros(shape, dtype=np.int64)
-    mask[pos[:, 0], pos[:, 2], pos[:, 1]] = 1
-    # x and y indices are inverted in the CSV file
-
-    return mask
-
-
-def final_mask(mask, radius1=2.5, radius2=3.5, ignore_ind=2): # SLOW
-    dt = ndimage.distance_transform_edt(1 - mask)
-    new_mask = np.zeros(mask.shape, dtype=np.int64)
-    new_mask[dt < radius2] = ignore_ind
-    new_mask[dt < radius1] = 1
-
-    return new_mask
-
-
-def annotations_mask(sparks, waves, radius_sparks = 2.5, radius_ignore = 1, ignore_index = 3):
-    # sparks and waves are masks
-    # radius_mask = how much to increase sparks size
-    # radius_ignore = radius of the uncertainty region
-    # return the final annotation mask that can be used as input of the NN
-    dt = ndimage.distance_transform_edt(1-sparks)
-    sparks[dt < radius_sparks+radius_ignore] = ignore_index
-    sparks[dt < radius_sparks] = 1
-
-    annotations = np.where(sparks != 0, sparks, waves)
-    dt = ndimage.distance_transform_edt(1-annotations.astype(bool))
-
-    return np.where(np.logical_or(dt==0, dt>radius_ignore), annotations, ignore_index)
-
-
-def annotations_mask_puffs(sparks, waves, puffs, radius_event = 2.5, radius_ignore = 1, ignore_index = 4):
-    # sparks, puffs and waves are masks
-    # radius_event = how much to increase sparks and puffs size
-    # radius_ignore = radius of the uncertainty region
-    # return the final annotation mask that can be used as input of the NN
-
-    empty_dist = np.ones(sparks.shape)*(radius_event+radius_ignore)*2
-
-    if np.count_nonzero(sparks) != 0:
-        dt_s = ndimage.distance_transform_edt(1-sparks)
-    else:
-        dt_s = empty_dist
-
-    if np.count_nonzero(puffs) != 0:
-        dt_p = ndimage.distance_transform_edt(3-puffs)
-    else:
-        dt_p = empty_dist
-
-    if np.count_nonzero(waves) != 0:
-        dt_w = ndimage.distance_transform_edt(2-waves)
-    else:
-        dt_w = empty_dist
-
-    annotations = np.zeros(sparks.shape)
-    annotations[np.logical_or(dt_s <= radius_event+radius_ignore,dt_p <= radius_event+radius_ignore)] = 4
-    annotations[dt_s <= radius_event] = 1
-    annotations[dt_p <= radius_event] = 3
-    annotations = np.where(annotations != 0, annotations, waves)
-    annotations[np.logical_and(dt_w <= radius_ignore, annotations == 0)] = 4
-
-    return annotations
-
-
 def get_chunks(video_length, step, duration):
     n_blocks = ((video_length-duration)//(step))+1
 
@@ -126,91 +47,13 @@ def random_flip(x, y):
     return x, y
 
 
-def random_flip_channels(x, y):
-
-    if np.random.uniform() > 0.5:
-        x = x[..., ::-1]
-        y = y[..., ::-1]
-
-    if np.random.uniform() > 0.5:
-        x = x[..., ::-1, :]
-        y = y[..., ::-1, :]
-
-    x = np.ascontiguousarray(x)
-    y = np.ascontiguousarray(y)
-
-    return x, y
-
-
 def remove_avg_background(video):
     # remove average background
     avg = np.mean(video, axis = 0)
     return np.add(video, -avg)
 
 
-def concat_sin_channels(chunk):
-    shape = np.shape(chunk) # 16 x 64 x 512
-
-    x = np.linspace(-np.pi,np.pi,shape[2]) # 512 elem
-    y = np.linspace(-np.pi,np.pi,shape[1]) # 64 elem
-    t = np.linspace(-np.pi,np.pi,shape[0]) # 16 elem
-
-    # n values
-    n_x = [1,2,4,8,32]
-    n_y = [1,2,4,8]
-    n_t = [1,2,4]
-
-    # sin values
-    x_sin = [np.sin(n*x) for n in n_x] # 5 x 512
-    y_sin = [np.sin(n*y) for n in n_y] # 4 x 64
-    t_sin = [np.sin(n*t) for n in n_t] # 3 x 16
-
-    # new 3D channels
-    x_sin_all = [np.broadcast_to(x_sin_n, (shape[0], shape[1], shape[2])) for x_sin_n in x_sin]
-
-    y_sin_all = [np.broadcast_to(y_sin_n, (shape[2], shape[0], shape[1])) for y_sin_n in y_sin]
-    y_sin_all = [np.transpose(channel, (1,2,0)) for channel in y_sin_all]
-
-    t_sin_all = [np.broadcast_to(t_sin_n, (shape[1], shape[2], shape[0])) for t_sin_n in t_sin]
-    t_sin_all = [np.transpose(channel, (2,0,1)) for channel in t_sin_all]
-
-    return np.asarray([chunk] + x_sin_all + y_sin_all + t_sin_all)
-
-
 ### functions related to U-Net hyperparameters ###
-
-
-def compute_class_weights(dataset):
-    # Assuming there are only 2 classes
-    count0 = 0
-    count1 = 0
-
-    with torch.no_grad():
-        for _,y in dataset:
-            count0 += np.count_nonzero(y==0)
-            count1 += np.count_nonzero(y==1)
-    total = count0 + count1
-    weights = np.array([4*total/(2*count0), 0.25*total/(2*count1)])
-
-    return np.float64(weights)
-
-
-def compute_class_weights_waves(dataset, w0=1, w1=1, w2=2):
-    # For 3 classes
-    count0 = 0
-    count1 = 0
-    count2 = 0
-
-    with torch.no_grad():
-        for _,y in dataset:
-            count0 += np.count_nonzero(y==0)
-            count1 += np.count_nonzero(y==1)
-            count2 += np.count_nonzero(y==2)
-
-    total = count0 + count1 + count2
-    weights = np.array([w0*total/(3*count0), w1*total/(3*count1), w2*total/(3*count2)])
-
-    return np.float64(weights)
 
 
 def compute_class_weights_puffs(dataset, w0=1, w1=1, w2=1, w3=1):
@@ -262,13 +105,6 @@ def get_fps(video_path):
     times = get_times(video_path)
     deltas = np.diff(times)
     return 1/np.mean(deltas)
-
-
-def annotations_interpolation(csv_data, fps, new_fps=150):
-    # adapt annotations wrt resampling time
-    csv_data_new = np.copy(csv_data)
-    csv_data_new[:,0] = np.array(csv_data[:,0]*new_fps/fps, dtype=int)
-    return csv_data_new
 
 
 def video_spline_interpolation(video, video_path, new_fps=150):

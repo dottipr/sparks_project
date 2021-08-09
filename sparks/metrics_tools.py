@@ -1,4 +1,6 @@
-
+'''
+This script will contain methods useful for processing the unet outputs
+'''
 from collections import namedtuple
 
 import numpy as np
