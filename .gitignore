@@ -168,3 +168,5 @@ test*
 *old*
 *OLD*
 *LOCAL*
+*.png
+*.csv
