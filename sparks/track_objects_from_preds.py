@@ -1,5 +1,6 @@
 '''
-Get sparks locations from given .tif unet spark class prediction
+Separate and label different events in given .tif unet puffs/waves class
+prediction
 '''
 
 import sys
@@ -15,7 +16,7 @@ import numpy as np
 import imageio
 import csv
 
-from metrics_tools import process_spark_prediction, empty_marginal_frames
+from metrics_tools import separate_events, empty_marginal_frames
 
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
@@ -24,19 +25,6 @@ CONFIG_FILE = os.path.join(BASEDIR, "config.ini")
 logger = logging.getLogger(__name__)
 # disable most wandb logging, since we don't care about it here
 logging.getLogger('wandb').setLevel(logging.ERROR)
-
-
-def create_csv(filename, positions):
-    #N = positions.shape[0]
-    with open(filename, 'w') as csvfile:
-        filewriter = csv.writer(csvfile, delimiter=',',
-                                quotechar='|', quoting=csv.QUOTE_MINIMAL)
-        filewriter.writerow(['frame','x','y'])
-        #for n in range(N):
-        #    filewriter.writerow([positions[n,0], positions[n,1], positions[n,2]])
-        for loc in positions:
-            filewriter.writerow([loc[0], loc[2], loc[1]])
-            logger.info(f"Location {[loc[0], loc[2], loc[1]]} written to .csv file")
 
 
 if __name__ == "__main__":
@@ -48,7 +36,7 @@ if __name__ == "__main__":
     else:
         logger.warning(f"No config file found at {CONFIG_FILE}, trying to use fallback values.")
 
-    parser = argparse.ArgumentParser("Get sparks locations from predictions.")
+    parser = argparse.ArgumentParser("Separate puffs/waves in predictions.")
 
     parser.add_argument(
         '-v-', '--verbosity',
@@ -81,8 +69,7 @@ if __name__ == "__main__":
 
 
     '''
-    # TODO: if ground truth is provided, print precision and recall (& other
-    #       metrics)
+    # TODO: if ground truth is provided, also print metrics
     parser.add_argument(
         '-gt', '--gt_available',
         action="store_true",
@@ -136,18 +123,14 @@ if __name__ == "__main__":
                                       c.getint("data","ignore_frames_loss"))
 
     # process predictions
-    sparks_list = process_spark_prediction(pred_mask,
-                                           c.getfloat("processing",
-                                                      "t_detection_sparks",
-                                                      fallback=0.9),
-                                           c.getint("processing",
-                                                    "neighborhood_radius_sparks",
-                                                    fallback=5),
-                                           c.getint("processing",
-                                                    "min_radius_sparks",
-                                                    fallback=3))
+    pred_events, n_events = separate_events(pred_mask,
+                                            t_detection=c.getfloat("processing",
+                                                        "t_detection_puffs_waves",
+                                                        fallback=0.5))
 
-    logger.info(f"Writing sparks locations to .csv file in {os.path.abspath(args.output)}")
+    logger.info(f"Separated events values\n{np.unique(pred_events)}")
+    logger.info(f"Separated events shape {pred_events.shape}")
+    logger.info(f"Writing {n_events} separated events to .tif file in {os.path.abspath(args.output)}")
 
-    csv_filename = os.path.join(args.output, f"{input_desc}_locations.csv")
-    create_csv(csv_filename, sparks_list)
+    out_filename = os.path.join(args.output, f"{input_desc}_events.tif")
+    imageio.volwrite(out_filename, pred_events)

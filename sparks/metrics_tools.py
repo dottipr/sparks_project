@@ -4,6 +4,7 @@ This script will contain methods useful for processing the unet outputs
 from collections import namedtuple
 
 import numpy as np
+import cc3d
 from scipy import ndimage as ndi
 from scipy import optimize, spatial
 from skimage import morphology
@@ -19,7 +20,6 @@ __all__ = ["Metrics",
            "process_spark_prediction",
            "inverse_argwhere",
            "correspondences_precision_recall",
-           #"new_correspondences_precision_recall",
            "reduce_metrics",
            "empty_marginal_frames",
            "write_videos_on_disk",
@@ -30,6 +30,7 @@ __all__ = ["Metrics",
 
 
 ################################ Generic utils #################################
+
 
 def empty_marginal_frames(video, n_frames):
     # Set first and last n_frames of a video to zero
@@ -175,36 +176,6 @@ def correspondences_precision_recall(coords_real, coords_pred, match_distance):
 
     return precision, recall, tp, tp_fp, tp_fn
 
-# new function for correspondences: closest point to annotation instead of minimal weight matching
-
-'''def new_correspondences_precision_recall(coords_real, coords_pred, match_distance):
-    tp_fn = len(coords_real)
-    tp_fp = len(coords_pred)
-
-    if (tp_fn == 0 or tp_fp == 0):
-        tp = 0
-    else:
-        w = spatial.distance_matrix(coords_real, coords_pred)
-        #print("distance matrix shape ", np.shape(w))
-        closest_annotation = np.argmin(w, axis=1)
-        tp = np.count_nonzero(w[range(w.shape[0]),closest_annotation] <= match_distance)
-
-        # TODO:
-        # se due annotations vengono assegnate alla stessa
-        # prediction, prendere la piu vicina
-
-    if tp_fn == 0: # no annotations
-        recall = 1
-    else:
-        recall = tp / tp_fn
-
-    if tp_fp == 0: # no predictions
-        precision = 1
-    else:
-        precision = tp / tp_fp
-
-    return precision, recall, tp, tp_fp, tp_fn'''
-
 
 def reduce_metrics(results):
 
@@ -294,3 +265,25 @@ Utils for computing metrics related to puffs and waves, e.g.:
 - Jaccard index
 - exclusion region for Jaccard index
 '''
+
+def separate_events(pred, t_detection=0.5, min_radius=4):
+    '''
+    Apply threshold to prediction and separate the events (1 event = 1 connected
+    component).
+    '''
+    # apply threshold to prediction
+    pred_boolean = pred >= t_detection
+
+    # clean events
+    min_size = (2 * min_radius) ** pred.ndim
+    pred_clean = morphology.remove_small_objects(pred_boolean,
+                                                 min_size=min_size)
+    #big_pred = np.where(small_objs_removed, pred, 0)
+
+    # separate events
+    connectivity = 26
+    labels, n_events = cc3d.connected_components(pred_clean,
+                                                 connectivity=connectivity,
+                                                 return_N=True)
+
+    return labels, n_events
