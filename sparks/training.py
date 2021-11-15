@@ -20,6 +20,7 @@ from dataset_tools import random_flip, compute_class_weights_puffs, weights_init
 from datasets import SparkDataset, SparkTestDataset
 from training_tools import training_step, test_function_fixed_t, sampler
 from metrics_tools import take_closest
+from focal_losses import FocalLoss
 
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
@@ -244,13 +245,15 @@ if __name__ == "__main__":
 
     # configure unet
     unet_config = unet.UNetConfig(
-        steps=c.getint("data", "step"),
+        steps=c.getint("network", "step"),
+        first_layer_channels=c.getint("network", "first_layer_channels"),
         num_classes=c.getint("network", "num_classes"),
         ndims=c.getint("network", "ndims"),
+        dilation=c.getint("network", "dilation", fallback=1),
         border_mode=c.get("network", "border_mode"),
         batch_normalization=c.getboolean("network", "batch_normalization")
     )
-    unet_config.feature_map_shapes((c.getint("data", "chunks_duration"), 64, 512))
+    #unet_config.feature_map_shapes((c.getint("data", "chunks_duration"), 64, 512))
     network = nn.DataParallel(unet.UNetClassifier(unet_config)).to(device)
 
     if c.getboolean("general", "wandb_enable"):
@@ -316,7 +319,8 @@ if __name__ == "__main__":
             #thresholds,
             #idx_fixed_t,
             ignore_frames=c.getint("data", "ignore_frames_loss"),
-            wandb_log=c.getboolean("general", "wandb_enable", fallback="no")
+            wandb_log=c.getboolean("general", "wandb_enable", fallback="no"),
+            training_name=c.get("general", "run_name")
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),
@@ -324,7 +328,7 @@ if __name__ == "__main__":
     )
 
     # begin training
-    if args.load_epoch:
+    if args.load_epoch != 0:
         trainer.load(args.load_epoch)
 
     logger.info("Test network before training")

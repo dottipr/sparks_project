@@ -20,10 +20,8 @@ from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader
 
-from dataset_tools import (numpy_to_mask, final_mask, get_chunks,
-                          annotations_mask, annotations_mask_puffs,
-                          get_fps, video_spline_interpolation,
-                          remove_avg_background, concat_sin_channels)
+from dataset_tools import (get_chunks, get_fps, video_spline_interpolation,
+                           remove_avg_background)
 
 
 __all__ = ["SparkDataset", "SparkTestDataset"]
@@ -32,10 +30,15 @@ __all__ = ["SparkDataset", "SparkTestDataset"]
 basepath = os.path.dirname("__file__")
 
 
+def path_leaf(path):
+    head, tail = ntpath.split(path)
+    return tail or ntpath.basename(head)
+
+
 '''
 Dataset videos are identified by an ID of the form XX
 Video filenames are: XX_video.tif
-Annotation filenames are: XX_mask.tif
+Annotation filenames are: XX_video_mask.tif
 '''
 
 class SparkDataset(Dataset):
@@ -90,7 +93,6 @@ class SparkDataset(Dataset):
         self.step = step
         self.duration = duration
         self.lengths, self.tot_blocks, self.preceding_blocks = self.compute_chunks_indices()
-
 
     def compute_chunks_indices(self):
         lengths = [video.shape[0] for video in self.data]
@@ -147,6 +149,8 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
             self.mask_path = filename + "_mask" + ext
             self.mask = imageio.volread(self.mask_path)
 
+        self.video_name = path_leaf(filename)
+
         # perform some preprocessing on videos, if necessary
         if remove_background:
             self.video = remove_avg_background(self.video)
@@ -177,6 +181,8 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
                         + self.step*(1+(self.length-self.duration)//self.step)
                         - self.length)
             self.video = np.pad(self.video,((0,self.pad),(0,0),(0,0)),
+                                'constant',constant_values=0)
+            self.mask = np.pad(self.mask,((0,self.pad),(0,0),(0,0)),
                                 'constant',constant_values=0)
             self.length = self.length + self.pad
 

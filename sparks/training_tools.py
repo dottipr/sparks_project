@@ -164,7 +164,7 @@ def test_function(network, device, criterion, testing_datasets, logger,
         # predictions have logarithmic values
 
         # save preds as videos
-        #write_videos_on_disk(xs,ys,preds,test_dataset.video_name)
+        #write_videos_on_disk(xs,ys,preds,training_name,test_dataset.video_name)
 
 
         # compute predicted sparks and correspondences
@@ -238,8 +238,8 @@ def test_function(network, device, criterion, testing_datasets, logger,
     return results
 
 def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
-                  summary_writer, threshold,
-                  ignore_frames, wandb_log):
+                          summary_writer, threshold, ignore_frames, wandb_log,
+                          training_name):
     # Requires a list of testing dataset as input
     # (every test video has its own dataset)
     # Compute precision and recall only for a fixed threshold
@@ -287,7 +287,6 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                     x = torch.Tensor(x).to(device)
                     y = torch.Tensor(y[None]).to(device)
                     pred = network(x[None, None])
-
                     loss += criterion(pred[:,:,half_overlap:-half_overlap],
                                      y[:,half_overlap:-half_overlap].long())
 
@@ -334,7 +333,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
         # predictions have logarithmic values
 
         # save preds as videos
-        #write_videos_on_disk(xs,ys,preds,test_dataset.video_name)
+        write_videos_on_disk(xs,ys,preds,training_name,test_dataset.video_name)
 
 
         # compute predicted sparks and correspondences

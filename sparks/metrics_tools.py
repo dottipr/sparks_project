@@ -39,21 +39,23 @@ def empty_marginal_frames(video, n_frames):
     return video
 
 
-def write_videos_on_disk(xs, ys, preds, video_name):
+def write_videos_on_disk(xs, ys, preds, training_name, video_name):
     # Write all videos on disk
     # xs : input video used by network
     # ys: segmentation video used in loss function
     # preds : all u-net preds [bg preds, sparks preds, puffs preds, waves preds]
 
-    imageio.volwrite(os.path.join("predictions", video_name + "_xs.tif"),
+    out_name_root = training_name + "_" + video_name + "_"
+
+    imageio.volwrite(os.path.join("predictions", out_name_root + "xs.tif"),
                                   xs)
-    imageio.volwrite(os.path.join("predictions", video_name + "_ys.tif"),
+    imageio.volwrite(os.path.join("predictions", out_name_root + "ys.tif"),
                                   np.uint8(ys))
-    imageio.volwrite(os.path.join("predictions", video_name + "_sparks.tif"),
+    imageio.volwrite(os.path.join("predictions", out_name_root + "sparks.tif"),
                                   np.exp(preds[1]))
-    imageio.volwrite(os.path.join("predictions", video_name + "_waves.tif"),
+    imageio.volwrite(os.path.join("predictions", out_name_root + "waves.tif"),
                                   np.exp(preds[2]))
-    imageio.volwrite(os.path.join("predictions", video_name + "_puffs.tif"),
+    imageio.volwrite(os.path.join("predictions", out_name_root + "puffs.tif"),
                                   np.exp(preds[3]))
 
 
