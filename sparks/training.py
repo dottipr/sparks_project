@@ -21,6 +21,7 @@ from datasets import SparkDataset, SparkTestDataset
 from training_tools import training_step, test_function_fixed_t, sampler
 from metrics_tools import take_closest
 from focal_losses import FocalLoss
+from architecture import TempRedUNet
 
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
@@ -251,10 +252,17 @@ if __name__ == "__main__":
         ndims=c.getint("network", "ndims"),
         dilation=c.getint("network", "dilation", fallback=1),
         border_mode=c.get("network", "border_mode"),
-        batch_normalization=c.getboolean("network", "batch_normalization")
+        batch_normalization=c.getboolean("network", "batch_normalization"),
+        num_input_channels=c.getint("network", "num_channels", fallback=1),
     )
     #unet_config.feature_map_shapes((c.getint("data", "chunks_duration"), 64, 512))
-    network = nn.DataParallel(unet.UNetClassifier(unet_config)).to(device)
+
+    if not c.getboolean("network", "temporal_reduction", fallback="no"):
+        network = unet.UNetClassifier(unet_config)
+    else:
+        network = TempRedUNet(unet_config)
+
+    network = nn.DataParallel(network).to(device)
 
     if c.getboolean("general", "wandb_enable"):
         wandb.watch(network)
