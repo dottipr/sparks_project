@@ -5,6 +5,7 @@ Classes to create training and testing datasets
 import os
 import os.path
 import glob
+import logging
 
 import imageio
 import pandas as pd
@@ -28,6 +29,7 @@ __all__ = ["SparkDataset", "SparkTestDataset"]
 
 
 basepath = os.path.dirname("__file__")
+logger = logging.getLogger(__name__)
 
 
 def path_leaf(path):
@@ -50,6 +52,10 @@ class SparkDataset(Dataset):
 
         # base_path is the folder containing the whole dataset (train and test)
         self.base_path = base_path
+
+        # dataset parameters
+        self.duration = duration
+        self.step = step
 
         # get videos and masks paths
         self.files = sorted(glob.glob(os.path.join(self.base_path,
@@ -88,13 +94,15 @@ class SparkDataset(Dataset):
                                                     resampling_rate)
                             for video,video_path in zip(self.data,self.files)]
 
+        # pad movies whose length does not match chunks_duration and step params
+        self.data = [self.pad_end_of_video(video) for video in self.data]
+        self.annotations = [self.pad_end_of_video(mask) for mask in self.annotations]
+
         # pad movies shorter than chunk duration with zeros before beginning and after end
-        self.duration = duration
         self.data = [self.pad_short_video(video) for video in self.data]
         self.annotations = [self.pad_short_video(mask) for mask in self.annotations]
 
         # compute chunks indices
-        self.step = step
         self.lengths, self.tot_blocks, self.preceding_blocks = self.compute_chunks_indices()
 
     def pad_short_video(self, video):
@@ -104,6 +112,25 @@ class SparkDataset(Dataset):
             video = np.pad(video, ((pad//2, (pad%2) + (pad//2)), (0,0), (0,0)))
 
             assert video.shape[0] == self.duration, "padding is wrong"
+
+            logger.info("Added padding to short video")
+
+        return video
+
+    def pad_end_of_video(self, video):
+        # pad videos whose length does not match with chunks_duration and step params
+        length = video.shape[0]
+        if (((length-self.duration)/self.step) % 1 != 0):
+            self.pad = (self.duration
+                        + self.step*(1+(length-self.duration)//self.step)
+                        - length)
+            video = np.pad(video,((0,self.pad),(0,0),(0,0)),
+                                'constant',constant_values=0)
+            length = video.shape[0]
+
+            logger.info("Added padding to video with unsuitable duration")
+
+        assert ((length-self.duration)/self.step) % 1 == 0, "padding at end of video is wrong"
 
         return video
 
@@ -200,7 +227,11 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
                                 'constant',constant_values=0)
             self.mask = np.pad(self.mask,((0,self.pad),(0,0),(0,0)),
                                 'constant',constant_values=0)
-            self.length = self.length + self.pad
+            self.length = self.video.shape[0]
+
+            logger.info("Added padding to video with unsuitable duration (test)")
+
+        assert ((self.length-self.duration)/self.step) % 1 == 0, "padding at end of video is wrong (test)"
 
         # blocks in the video :
         self.blocks_number = ((self.length-self.duration)//self.step)+1
@@ -213,7 +244,9 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
             mask = np.pad(mask, ((pad//2, (pad%2) + (pad//2)), (0,0), (0,0)))
 
             self.length = video.shape[0]
-            assert self.length == self.duration, "padding is wrong"
+            assert self.length == self.duration, "padding is wrong (test)"
+
+            logger.info("Added padding to short video (test)")
 
         return video, mask
 

@@ -5,6 +5,7 @@ Functions that are used during the training of the neural network
 import os
 import os.path
 import time
+import logging
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,6 +36,7 @@ __all__ = ["training_step",
            "sampler"
            ]
 
+logger = logging.getLogger(__name__)
 
 # Make one step of the training (update parameters and compute loss)
 def training_step(sampler, network, optimizer, device, criterion,
@@ -46,6 +48,11 @@ def training_step(sampler, network, optimizer, device, criterion,
     x, y = sampler(dataset_loader)
     x = x.to(device)
     y = y.to(device)
+
+    # detect nan in tensors
+    if (torch.isnan(x).any() or torch.isnan(y).any()):
+        logger.info(f"Detect nan in network input: {torch.isnan(x).any()}")
+        logger.info(f"Detect nan in network annotation: {torch.isnan(y).any()}")
 
     y_pred = network(x[:, None])
 
@@ -101,6 +108,7 @@ def test_function(network, device, criterion, testing_datasets, logger,
 
                 x = torch.Tensor(x).to(device)
                 y = torch.Tensor(y[None]).to(device)
+
                 pred = network(x[None, None])
 
                 loss += criterion(pred[:,:,:-half_overlap],
@@ -116,6 +124,7 @@ def test_function(network, device, criterion, testing_datasets, logger,
 
                     x = torch.Tensor(x).to(device)
                     y = torch.Tensor(y[None]).to(device)
+
                     pred = network(x[None, None])
 
                     loss += criterion(pred[:,:,half_overlap:-half_overlap],
@@ -130,6 +139,7 @@ def test_function(network, device, criterion, testing_datasets, logger,
 
                 x = torch.Tensor(x).to(device)
                 y = torch.Tensor(y[None]).to(device)
+
                 pred = network(x[None, None])
 
                 loss += criterion(pred[:,:,half_overlap:],
@@ -271,6 +281,12 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
 
                 x = torch.Tensor(x).to(device)
                 y = torch.Tensor(y[None]).to(device)
+
+                # detect nan in tensors
+                if (torch.isnan(x).any() or torch.isnan(y).any()):
+                    logger.info(f"Detect nan in network input (test): {torch.isnan(x).any()}")
+                    logger.info(f"Detect nan in network annotation (test): {torch.isnan(y).any()}")
+
                 pred = network(x[None, None])
 
                 loss += criterion(pred[:,:,:-half_overlap],
@@ -286,6 +302,12 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
 
                     x = torch.Tensor(x).to(device)
                     y = torch.Tensor(y[None]).to(device)
+
+                    # detect nan in tensors
+                    if (torch.isnan(x).any() or torch.isnan(y).any()):
+                        logger.info(f"Detect nan in network input (test): {torch.isnan(x).any()}")
+                        logger.info(f"Detect nan in network annotation (test): {torch.isnan(y).any()}")
+
                     pred = network(x[None, None])
                     loss += criterion(pred[:,:,half_overlap:-half_overlap],
                                      y[:,half_overlap:-half_overlap].long())
@@ -299,6 +321,11 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
 
                 x = torch.Tensor(x).to(device)
                 y = torch.Tensor(y[None]).to(device)
+
+                # detect nan in tensors
+                if (torch.isnan(x).any() or torch.isnan(y).any()):
+                    logger.info(f"Detect nan in network input (test): {torch.isnan(x).any()}")
+                    logger.info(f"Detect nan in network annotation (test): {torch.isnan(y).any()}")
                 pred = network(x[None, None])
 
                 loss += criterion(pred[:,:,half_overlap:],

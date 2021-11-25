@@ -181,6 +181,7 @@ if __name__ == "__main__":
     logger.info("Command parameters:")
     for k, v in vars(args).items():
         logger.info(f"{k:>18s}: {v}")
+        # TODO: AGGIUNGERE TUTTI I PARAMS NECESSARI DA PRINTARE
 
 
     # detect CUDA devices
