@@ -109,6 +109,18 @@ class SparkDataset(Dataset):
         # compute chunks indices
         self.lengths, self.tot_blocks, self.preceding_blocks = self.compute_chunks_indices()
 
+        #print("movie shape", self.data[-1].shape)
+        #print("movies' length", self.lengths)
+        #print("num chunks", self.tot_blocks)
+        #print("number of previous videos chunks", self.preceding_blocks)
+
+        # if using temporal reduction, shorten the annotations duration
+        if temporal_reduction:
+            self.annotations = [shrink_mask(mask, self.num_channels)
+                                for mask in self.annotations]
+
+        #print("annotations shape", self.annotations[-1].shape)
+
     def pad_short_video(self, video):
         # pad videos shorter than chunk duration with zeros on both sides
         if video.shape[0] < self.duration:
@@ -154,6 +166,8 @@ class SparkDataset(Dataset):
         return self.tot_blocks
 
     def __getitem__(self, idx):
+        if idx < 0 : idx = self.__len__() + idx
+
         #index of video containing chunk idx
         vid_id = np.where(self.preceding_blocks == max([y
                           for y in self.preceding_blocks
@@ -166,11 +180,28 @@ class SparkDataset(Dataset):
         chunk = self.data[vid_id][chunks[chunk_id]]
         chunk = chunk / chunk.max()
         chunk = np.float32(chunk)
+        #print("min and max value in chunk:", chunk.min(), chunk.max())
 
-        labels = self.annotations[vid_id][chunks[chunk_id]]
+        #print("vid id", vid_id)
+        #print("chunk id", chunk_id)
+        #print("chunks", chunks[chunk_id])
 
         if self.temporal_reduction:
-            labels = shrink_mask(labels, self.num_channels)
+            assert self.lengths[vid_id] % self.num_channels == 0, \
+                   "video length must be a multiple of num_channels"
+            assert self.step % self.num_channels == 0, \
+                   "step must be a multiple of num_channels"
+            assert self.duration % self.num_channels == 0, \
+                    "duration must be multiple of num_channels"
+
+            masks_chunks = get_chunks(self.lengths[vid_id]//self.num_channels,
+                                      self.step//self.num_channels,
+                                      self.duration//self.num_channels)
+
+            #print("mask chunk", masks_chunks[chunk_id])
+            labels = self.annotations[vid_id][masks_chunks[chunk_id]]
+        else:
+            labels = self.annotations[vid_id][chunks[chunk_id]]
 
         return chunk, labels
 
@@ -247,6 +278,10 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         # blocks in the video :
         self.blocks_number = ((self.length-self.duration)//self.step)+1
 
+        # if using temporal reduction, shorten the annotations duration
+        if temporal_reduction:
+            self.mask = shrink_mask(self.mask, self.num_channels)
+
     def pad_short_video(self, video, mask):
         # pad videos shorter than chunk duration with zeros on both sides
         if self.length < self.duration:
@@ -270,10 +305,22 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         chunk = chunk / chunk.max()
         chunk = np.float32(chunk)
         if self.gt_available:
-            labels = self.mask[chunks[chunk_id]]
 
             if self.temporal_reduction:
-                labels = shrink_mask(labels, self.num_channels)
+                assert self.length % self.num_channels == 0, \
+                       "video length must be a multiple of num_channels (test)"
+                assert self.step % self.num_channels == 0, \
+                       "step must be a multiple of num_channels (test)"
+                assert self.duration % self.num_channels == 0, \
+                        "duration must be multiple of num_channels (test)"
+
+                masks_chunks = get_chunks(self.length//self.num_channels,
+                                          self.step//self.num_channels,
+                                          self.duration//self.num_channels)
+
+                labels = self.mask[masks_chunks[chunk_id]]
+            else:
+                labels = self.mask[chunks[chunk_id]]
 
             return chunk, labels
 
