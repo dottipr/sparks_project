@@ -22,7 +22,7 @@ from torch import optim
 from torch.utils.data import Dataset, DataLoader
 
 from dataset_tools import (get_chunks, get_fps, video_spline_interpolation,
-                           remove_avg_background)
+                           remove_avg_background, shrink_mask)
 
 
 __all__ = ["SparkDataset", "SparkTestDataset"]
@@ -48,7 +48,8 @@ class SparkDataset(Dataset):
     def __init__(self, base_path,
                  step = 4, duration = 16, smoothing = False,
                  resampling = False, resampling_rate = 150,
-                 remove_background = False):
+                 remove_background = False,
+                 temporal_reduction = False, num_channels = 1):
 
         # base_path is the folder containing the whole dataset (train and test)
         self.base_path = base_path
@@ -56,6 +57,9 @@ class SparkDataset(Dataset):
         # dataset parameters
         self.duration = duration
         self.step = step
+        if temporal_reduction:
+            self.temporal_reduction = temporal_reduction
+            self.num_channels = num_channels
 
         # get videos and masks paths
         self.files = sorted(glob.glob(os.path.join(self.base_path,
@@ -96,7 +100,7 @@ class SparkDataset(Dataset):
 
         # pad movies whose length does not match chunks_duration and step params
         self.data = [self.pad_end_of_video(video) for video in self.data]
-        self.annotations = [self.pad_end_of_video(mask) for mask in self.annotations]
+        self.annotations = [self.pad_end_of_video(mask, mask=True) for mask in self.annotations]
 
         # pad movies shorter than chunk duration with zeros before beginning and after end
         self.data = [self.pad_short_video(video) for video in self.data]
@@ -117,18 +121,18 @@ class SparkDataset(Dataset):
 
         return video
 
-    def pad_end_of_video(self, video):
+    def pad_end_of_video(self, video, mask=False):
         # pad videos whose length does not match with chunks_duration and step params
         length = video.shape[0]
         if (((length-self.duration)/self.step) % 1 != 0):
-            self.pad = (self.duration
+            pad = (self.duration
                         + self.step*(1+(length-self.duration)//self.step)
                         - length)
-            video = np.pad(video,((0,self.pad),(0,0),(0,0)),
+            video = np.pad(video,((0,pad),(0,0),(0,0)),
                                 'constant',constant_values=0)
             length = video.shape[0]
-
-            logger.info("Added padding to video with unsuitable duration")
+            if not mask:
+                logger.info(f"Added padding of {pad} frames to video with unsuitable duration")
 
         assert ((length-self.duration)/self.step) % 1 == 0, "padding at end of video is wrong"
 
@@ -165,6 +169,9 @@ class SparkDataset(Dataset):
 
         labels = self.annotations[vid_id][chunks[chunk_id]]
 
+        if self.temporal_reduction:
+            labels = shrink_mask(labels, self.num_channels)
+
         return chunk, labels
 
 class SparkTestDataset(Dataset): # dataset that load a single video for testing
@@ -172,12 +179,16 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
     def __init__(self, video_path,
                  step = 4, duration = 16, smoothing = False,
                  resampling = False, resampling_rate = 150,
-                 remove_background = False, gt_available = True):
+                 remove_background = False, gt_available = True,
+                 temporal_reduction = False, num_channels = 1):
 
         # video_path is the complete path to the video
         # gt_available == True if ground truth annotations is available
 
         self.gt_available = gt_available
+        if temporal_reduction:
+            self.temporal_reduction = temporal_reduction
+            self.num_channels = num_channels
 
         # get video path and array
         self.video_path = video_path
@@ -229,7 +240,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
                                 'constant',constant_values=0)
             self.length = self.video.shape[0]
 
-            logger.info("Added padding to video with unsuitable duration (test)")
+            logger.info(f"Added padding of {self.pad} frames to video with unsuitable duration (test)")
 
         assert ((self.length-self.duration)/self.step) % 1 == 0, "padding at end of video is wrong (test)"
 
@@ -260,6 +271,9 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         chunk = np.float32(chunk)
         if self.gt_available:
             labels = self.mask[chunks[chunk_id]]
+
+            if self.temporal_reduction:
+                labels = shrink_mask(labels, self.num_channels)
 
             return chunk, labels
 

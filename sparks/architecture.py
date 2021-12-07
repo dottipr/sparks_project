@@ -44,11 +44,11 @@ class TempRedUNet(nn.Module):
 
 
     def forward(self, x):
-        print("input shape", x.shape)
+        #print("input shape", x.shape)
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = self.conv3(x)
-        print("unet input shape", x.shape)
+        #print("unet input shape", x.shape)
         x = self.unet(x)
-        print("output shape", x.shape)
+        #print("output shape", x.shape)
         return x

@@ -189,6 +189,10 @@ if __name__ == "__main__":
     n_gpus = torch.cuda.device_count()
     logger.info(f"Using torch device {device}, with {n_gpus} GPUs")
 
+    # set if temporal reduction is used
+    temporal_reduction = c.getboolean("network", "temporal_reduction", fallback="no")
+    num_channels = c.getint("network", "num_channels", fallback=1)
+
     # disable U-Net's logging to file
     #unet.config_logger("/dev/null")
 
@@ -204,7 +208,9 @@ if __name__ == "__main__":
         smoothing='2d',
         step=c.getint("data", "step"),
         duration=c.getint("data", "chunks_duration"),
-        remove_background=c.getboolean("data", "remove_background")
+        remove_background=c.getboolean("data", "remove_background"),
+        temporal_reduction=temporal_reduction,
+        num_channels=num_channels
     )
 
     # apply transforms
@@ -220,7 +226,9 @@ if __name__ == "__main__":
             smoothing='2d',
             step=c.getint("data", "step"),
             duration=c.getint("data", "chunks_duration"),
-            remove_background=c.getboolean("data", "remove_background")
+            remove_background=c.getboolean("data", "remove_background"),
+            temporal_reduction=temporal_reduction,
+            num_channels=num_channels
         ) for f in test_file_names]
 
     for i, tds in enumerate(testing_datasets):
@@ -258,9 +266,11 @@ if __name__ == "__main__":
     )
     #unet_config.feature_map_shapes((c.getint("data", "chunks_duration"), 64, 512))
 
-    if not c.getboolean("network", "temporal_reduction", fallback="no"):
+    if not temporal_reduction:
         network = unet.UNetClassifier(unet_config)
     else:
+        assert c.getint("data", "chunks_duration") % num_channels == 0, \
+        "using temporal reduction chunks_duration must be a multiple of num_channels"
         network = TempRedUNet(unet_config)
 
     network = nn.DataParallel(network).to(device)
@@ -329,7 +339,9 @@ if __name__ == "__main__":
             #idx_fixed_t,
             ignore_frames=c.getint("data", "ignore_frames_loss"),
             wandb_log=c.getboolean("general", "wandb_enable", fallback="no"),
-            training_name=c.get("general", "run_name")
+            training_name=c.get("general", "run_name"),
+            temporal_reduction=temporal_reduction,
+            num_channels=num_channels
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),
@@ -340,7 +352,7 @@ if __name__ == "__main__":
     if args.load_epoch != 0:
         trainer.load(args.load_epoch)
 
-    logger.info("Test network before training")
+    logger.info("Validate network before training")
     trainer.run_validation()
 
     if args.training:

@@ -189,8 +189,11 @@ def reduce_metrics(results):
         precision = tp / tp_fp
     else:
         precision = 1.0
-    recall = tp / tp_fn
-
+    if tp_fn > 0:
+        recall = tp / tp_fn
+    else:
+        recall = 1.0
+        
     return Metrics(precision, recall, tp, tp_fp, tp_fn)
 
 

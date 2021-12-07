@@ -21,7 +21,9 @@ __all__ = ["get_chunks",
            "get_times",
            "get_fps",
            "video_spline_interpolation",
-           "remove_avg_background"]
+           "remove_avg_background",
+           "shrink_mask",
+           "get_new_voxel_label"]
 
 
 ### functions for data preproccesing ###
@@ -114,3 +116,49 @@ def video_spline_interpolation(video, video_path, new_fps=150):
     assert(len(frames_time) == video.shape[0])
     frames_new = np.linspace(frames_time[0], frames_time[-1], int(frames_time[-1]*new_fps))
     return f(frames_new)
+
+def shrink_mask(mask, num_channels):
+    # input is an annotation mask with the number of channels of the unet
+    # output is a shrinked mask where :
+    # {0} -> 0
+    # {0, i}, {i} -> i, i = 1,2,3
+    # {0, 1, i}, {1, i} -> 1, i = 2,3
+    # {0, 2 ,3}, {2, 3} -> 2
+    # and each voxel in the output corresponds to 'num_channels' voxels in
+    # the input
+
+    assert mask.shape[0] % num_channels == 0, \
+    "in shrink_mask the duration of the mask is not a multiple of num_channels"
+
+    # get subtensor of duration 'num_channels'
+    sub_masks = np.split(mask, mask.shape[0]//num_channels)
+
+    #print(sub_masks[0].shape)
+    #print(len(sub_masks))
+
+    new_mask = []
+    # for each subtensor get a single frame
+    for sub_mask in sub_masks:
+        new_frame = np.array([[get_new_voxel_label(sub_mask[:,y,x]) for x in range(sub_mask.shape[2])] for y in range(sub_mask.shape[1])])
+        #print(new_frame.shape)
+        new_mask.append(new_frame)
+
+    new_mask = np.stack(new_mask)
+    return new_mask
+
+def get_new_voxel_label(voxel_seq):
+    # voxel_seq is a vector of 'num_channels' elements
+    # {0} -> 0
+    # {0, i}, {i} -> i, i = 1,2,3
+    # {0, 1, i}, {1, i} -> 1, i = 2,3
+    # {0, 2 ,3}, {2, 3} -> 3
+    #print(voxel_seq)
+
+    if np.max(voxel_seq == 0):
+        return 0
+    elif 1 in voxel_seq:
+        return 1
+    elif 3 in voxel_seq:
+        return 3
+    else:
+        return np.max(voxel_seq)

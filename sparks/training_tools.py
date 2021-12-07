@@ -49,10 +49,13 @@ def training_step(sampler, network, optimizer, device, criterion,
     x = x.to(device)
     y = y.to(device)
 
+    #print("X SHAPE", x.shape)
+    #print("Y SHAPE", y.shape)
+
     # detect nan in tensors
-    if (torch.isnan(x).any() or torch.isnan(y).any()):
-        logger.info(f"Detect nan in network input: {torch.isnan(x).any()}")
-        logger.info(f"Detect nan in network annotation: {torch.isnan(y).any()}")
+    #if (torch.isnan(x).any() or torch.isnan(y).any()):
+    #    logger.info(f"Detect nan in network input: {torch.isnan(x).any()}")
+    #    logger.info(f"Detect nan in network annotation: {torch.isnan(y).any()}")
 
     y_pred = network(x[:, None])
 
@@ -75,7 +78,7 @@ def training_step(sampler, network, optimizer, device, criterion,
 
 
 
-# Compute some metrics on the predictions of the network
+'''# Compute some metrics on the predictions of the network
 def test_function(network, device, criterion, testing_datasets, logger,
                   summary_writer, thresholds, idx_fixed_threshold,
                   ignore_frames, wandb_log):
@@ -219,23 +222,23 @@ def test_function(network, device, criterion, testing_datasets, logger,
     #logger.info("\tArea under the curve: {:.4g}".format(a_u_c))
     logger.info("\tValidation loss: {:.4g}".format(loss))
 
-    '''
+
     # TODO: not working properly
     # save precision recall plot (on disk and TB)
-    figure = plt.figure()
-    plt.plot(recs, precs, marker = '.')
-    plt.xlim([0,1])
-    plt.ylim([0,1])
-    plt.xlabel('recall')
-    plt.ylabel('precision')
-    plt.title("Precision-recall plot")
+    #figure = plt.figure()
+    #plt.plot(recs, precs, marker = '.')
+    #plt.xlim([0,1])
+    #plt.ylim([0,1])
+    #plt.xlabel('recall')
+    #plt.ylabel('precision')
+    #plt.title("Precision-recall plot")
 
     #print("RECALLS", recs)
     #print("PRECISIONS", precs)
     #print("ADDING FIGURE TO TENSORBOARD")
-    summary_writer.add_figure("testing/sparks/prec_rec_plot", figure)
-    figure.savefig("prec_rec_plot.png")
-    '''
+    #summary_writer.add_figure("testing/sparks/prec_rec_plot", figure)
+    #figure.savefig("prec_rec_plot.png")
+
 
     results = {"sparks/precision": prec,
                "sparks/recall": rec,
@@ -245,11 +248,12 @@ def test_function(network, device, criterion, testing_datasets, logger,
     if wandb_log:
         wandb.log(results)
 
-    return results
+    return results'''
 
 def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                           summary_writer, threshold, ignore_frames, wandb_log,
-                          training_name):
+                          training_name, temporal_reduction=False,
+                          num_channels=1):
     # Requires a list of testing dataset as input
     # (every test video has its own dataset)
     # Compute precision and recall only for a fixed threshold
@@ -261,6 +265,15 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     step = testing_datasets[0].step
     half_overlap = (duration-step)//2 # to re-build videos from chunks
 
+    if temporal_reduction:
+        assert half_overlap % num_channels == 0, \
+        "with temporal reduction half_overlap must be a multiple of num_channels"
+        half_overlap_mask = half_overlap // num_channels
+    else:
+        half_overlap_mask = half_overlap
+
+    #print(f"chunk duration = {duration}; step = {step}; half_overlap = {half_overlap}; half_overlap_mask = {half_overlap_mask}")
+
     # (duration-step) has to be even
     assert (duration-step)%2 == 0, "(duration-step) is not even"
 
@@ -269,6 +282,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     metrics = [] # store metrics for each video
 
     for test_dataset in testing_datasets:
+
         xs = []
         ys = []
         preds = []
@@ -277,62 +291,68 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
             if (len(test_dataset)>1):
                 x,y = test_dataset[0]
                 xs.append(x[:-half_overlap])
-                ys.append(y[:-half_overlap])
+                ys.append(y[:-half_overlap_mask])
 
                 x = torch.Tensor(x).to(device)
                 y = torch.Tensor(y[None]).to(device)
+                #print("X SHAPE", x.shape)
+                #print("Y SHAPE", y.shape)
 
                 # detect nan in tensors
-                if (torch.isnan(x).any() or torch.isnan(y).any()):
-                    logger.info(f"Detect nan in network input (test): {torch.isnan(x).any()}")
-                    logger.info(f"Detect nan in network annotation (test): {torch.isnan(y).any()}")
+                #if (torch.isnan(x).any() or torch.isnan(y).any()):
+                #    logger.info(f"Detect nan in network input (test): {torch.isnan(x).any()}")
+                #    logger.info(f"Detect nan in network annotation (test): {torch.isnan(y).any()}")
 
                 pred = network(x[None, None])
 
-                loss += criterion(pred[:,:,:-half_overlap],
-                                 y[:,:-half_overlap].long())
+                loss += criterion(pred[:,:,:-half_overlap_mask],
+                                 y[:,:-half_overlap_mask].long())
 
                 pred = pred[0].cpu().numpy()
-                preds.append(pred[:,:-half_overlap])
+                preds.append(pred[:,:-half_overlap_mask])
 
                 for i in range(1,len(test_dataset)-1):
                     x,y = test_dataset[i]
                     xs.append(x[half_overlap:-half_overlap])
-                    ys.append(y[half_overlap:-half_overlap])
+                    ys.append(y[half_overlap_mask:-half_overlap_mask])
 
                     x = torch.Tensor(x).to(device)
                     y = torch.Tensor(y[None]).to(device)
+                    #print("X SHAPE", x.shape)
+                    #print("Y SHAPE", y.shape)
 
                     # detect nan in tensors
-                    if (torch.isnan(x).any() or torch.isnan(y).any()):
-                        logger.info(f"Detect nan in network input (test): {torch.isnan(x).any()}")
-                        logger.info(f"Detect nan in network annotation (test): {torch.isnan(y).any()}")
+                    #if (torch.isnan(x).any() or torch.isnan(y).any()):
+                    #    logger.info(f"Detect nan in network input (test): {torch.isnan(x).any()}")
+                    #    logger.info(f"Detect nan in network annotation (test): {torch.isnan(y).any()}")
 
                     pred = network(x[None, None])
-                    loss += criterion(pred[:,:,half_overlap:-half_overlap],
-                                     y[:,half_overlap:-half_overlap].long())
+                    loss += criterion(pred[:,:,half_overlap_mask:-half_overlap_mask],
+                                     y[:,half_overlap_mask:-half_overlap_mask].long())
 
                     pred = pred[0].cpu().numpy()
-                    preds.append(pred[:,half_overlap:-half_overlap])
+                    preds.append(pred[:,half_overlap_mask:-half_overlap_mask])
 
                 x,y = test_dataset[-1]
                 xs.append(x[half_overlap:])
-                ys.append(y[half_overlap:])
+                ys.append(y[half_overlap_mask:])
 
                 x = torch.Tensor(x).to(device)
                 y = torch.Tensor(y[None]).to(device)
+                #print("X SHAPE", x.shape)
+                #print("Y SHAPE", y.shape)
 
                 # detect nan in tensors
-                if (torch.isnan(x).any() or torch.isnan(y).any()):
-                    logger.info(f"Detect nan in network input (test): {torch.isnan(x).any()}")
-                    logger.info(f"Detect nan in network annotation (test): {torch.isnan(y).any()}")
+                #if (torch.isnan(x).any() or torch.isnan(y).any()):
+                #    logger.info(f"Detect nan in network input (test): {torch.isnan(x).any()}")
+                #    logger.info(f"Detect nan in network annotation (test): {torch.isnan(y).any()}")
                 pred = network(x[None, None])
 
-                loss += criterion(pred[:,:,half_overlap:],
-                                 y[:,half_overlap:].long())
+                loss += criterion(pred[:,:,half_overlap_mask:],
+                                 y[:,half_overlap_mask:].long())
 
                 pred = pred[0].cpu().numpy()
-                preds.append(pred[:,half_overlap:])
+                preds.append(pred[:,half_overlap_mask:])
             else:
                 x,y = test_dataset[0]
                 xs.append(x)
@@ -352,12 +372,24 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
         ys = np.concatenate(ys, axis=0)
         preds = np.concatenate(preds, axis=1)
 
+        #print("MASK OUTPUT SHAPE BEFORE REMOVING PADDING", ys.shape)
+        #print("MASK PADDING", test_dataset.pad)
+        #print("REMOVED FRAMES", test_dataset.pad // num_channels)
+
+
         if test_dataset.pad != 0:
             xs = xs[:-test_dataset.pad]
-            ys = ys[:-test_dataset.pad]
-            preds = preds[:,:-test_dataset.pad]
+            if temporal_reduction:
+                ys = ys[:-(test_dataset.pad // num_channels)]
+                preds = preds[:,:-(test_dataset.pad // num_channels)]
+            else:
+                ys = ys[:-test_dataset.pad]
+                preds = preds[:,:-test_dataset.pad]
 
         # predictions have logarithmic values
+        #print("INPUT SHAPE", xs.shape)
+        #print("MASK SHAPE", ys.shape)
+        #print("OUTPUT SHAPE", preds.shape)
 
         # save preds as videos
         write_videos_on_disk(xs,ys,preds,training_name,test_dataset.video_name)
