@@ -11,7 +11,6 @@ from torch import nn
 import torch.nn.functional as F
 from torch import optim
 from torch.utils.data import DataLoader
-from tensorboardX import SummaryWriter
 import wandb
 
 import unet

@@ -177,7 +177,10 @@ def test_function(network, device, criterion, testing_datasets, logger,
         # predictions have logarithmic values
 
         # save preds as videos
-        #write_videos_on_disk(xs,ys,preds,training_name,test_dataset.video_name)
+        #write_videos_on_disk(xs=xs,ys=ys,preds=preds,
+                             training_name=training_name,
+                             video_name=test_dataset.video_name,
+                             path="predictions")
 
 
         # compute predicted sparks and correspondences
@@ -264,6 +267,8 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     duration = testing_datasets[0].duration
     step = testing_datasets[0].step
     half_overlap = (duration-step)//2 # to re-build videos from chunks
+    # (duration-step) has to be even
+    assert (duration-step)%2 == 0, "(duration-step) is not even"
 
     if temporal_reduction:
         assert half_overlap % num_channels == 0, \
@@ -273,10 +278,6 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
         half_overlap_mask = half_overlap
 
     #print(f"chunk duration = {duration}; step = {step}; half_overlap = {half_overlap}; half_overlap_mask = {half_overlap_mask}")
-
-    # (duration-step) has to be even
-    assert (duration-step)%2 == 0, "(duration-step) is not even"
-
 
     loss = 0.0
     metrics = [] # store metrics for each video
@@ -392,7 +393,10 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
         #print("OUTPUT SHAPE", preds.shape)
 
         # save preds as videos
-        write_videos_on_disk(xs,ys,preds,training_name,test_dataset.video_name)
+        write_videos_on_disk(xs=xs,ys=ys,preds=preds,
+                             training_name=training_name,
+                             video_name=test_dataset.video_name,
+                             path="predictions")
 
 
         # compute predicted sparks and correspondences

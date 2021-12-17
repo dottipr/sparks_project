@@ -1,5 +1,6 @@
 '''
 Get sparks locations from given .tif unet spark class prediction
+Write sparks locations in .csv file
 '''
 
 import sys

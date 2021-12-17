@@ -23,33 +23,30 @@ from metrics_tools import take_closest
 from focal_losses import FocalLoss
 from architecture import TempRedUNet
 
-
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
-#CONFIG_FILE = os.path.join(BASEDIR, "config.ini")
-
 logger = logging.getLogger(__name__)
-
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser("Spark & Puff detector using U-Net.")
 
+    ############################# load config file #############################
     parser.add_argument(
         'config',
         type=str,
         help="Input config file, used to configure training"
     )
-
     args = parser.parse_args()
 
     CONFIG_FILE = os.path.join(BASEDIR, args.config)
-
     c = configparser.ConfigParser()
     if os.path.isfile(CONFIG_FILE):
         logger.info(f"Loading {CONFIG_FILE}")
         c.read(CONFIG_FILE)
     else:
         logger.warning(f"No config file found at {CONFIG_FILE}, trying to use fallback values.")
+
+    ############################## set parameters ##############################
 
     parser.add_argument(
         '-v-', '--verbosity',
@@ -115,43 +112,13 @@ if __name__ == "__main__":
         help="Use this extent of the dataset for testing during training"
     )
 
-    parser.add_argument(
-        '-w0', '--weight-background',
-        type=float,
-        default=c.getfloat("data", "weight_background", fallback="1"),
-        help="Weight proportion for background"
-    )
-
-    parser.add_argument(
-        '-w1', '--weight-sparks',
-        type=float,
-        default=c.getfloat("data", "weight_sparks", fallback="1"),
-        help="Weight proportion for sparks"
-    )
-
-    parser.add_argument(
-        '-w2', '--weight-waves',
-        type=float,
-        default=c.getfloat("data", "weight_waves", fallback="1"),
-        help="Weight proportion for waves"
-    )
-
-    parser.add_argument(
-        '-w3', '--weight-puffs',
-        type=float,
-        default=c.getfloat("data", "weight_puffs", fallback="1"),
-        help="Weight proportion for puffs"
-    )
-
     args = parser.parse_args()
+
+    ############################# configure logger #############################
 
     level_map = {3: logging.DEBUG, 2: logging.INFO, 1: logging.WARNING, 0: logging.ERROR}
     log_level = level_map[args.verbosity]
     log_handlers = (logging.StreamHandler(sys.stdout), )
-
-    if c.getboolean("general", "wandb_enable", fallback="no"):
-        wandb.init(project=c.get("general", "wandb_project_name"), name=args.name)
-        logging.getLogger('wandb').setLevel(logging.DEBUG)
 
     if args.logfile:
         if not os.path.isdir(os.path.basename(args.logfile)):
@@ -178,11 +145,21 @@ if __name__ == "__main__":
         datefmt="%H:%M:%S",
         handlers=log_handlers)
 
+    ############################# configure wandb ##############################
+
+    if c.getboolean("general", "wandb_enable", fallback="no"):
+        wandb.init(project=c.get("general", "wandb_project_name"), name=args.name)
+        logging.getLogger('wandb').setLevel(logging.DEBUG)
+        wandb.save(CONFIG_FILE)
+
+    ############################# print parameters #############################
+
     logger.info("Command parameters:")
     for k, v in vars(args).items():
         logger.info(f"{k:>18s}: {v}")
         # TODO: AGGIUNGERE TUTTI I PARAMS NECESSARI DA PRINTARE
 
+    ############################ configure datasets ############################
 
     # detect CUDA devices
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -192,9 +169,13 @@ if __name__ == "__main__":
     # set if temporal reduction is used
     temporal_reduction = c.getboolean("network", "temporal_reduction", fallback="no")
     num_channels = c.getint("network", "num_channels", fallback=1)
+    if temporal_reduction:
+        logger.info(f"Using temporal reduction with {num_channels} channels")
 
-    # disable U-Net's logging to file
-    #unet.config_logger("/dev/null")
+    # normalize whole videos or chunks individually
+    norm_video = c.getboolean("data", "norm_video", fallback="no")
+    if norm_video:
+        logger.info("Normalizing whole video instead of single chunks")
 
     # initialize training dataset
     dataset_map = {'full': "", 'small': 'small_dataset', 'minimal': 'very_small_dataset'}
@@ -210,7 +191,8 @@ if __name__ == "__main__":
         duration=c.getint("data", "chunks_duration"),
         remove_background=c.getboolean("data", "remove_background"),
         temporal_reduction=temporal_reduction,
-        num_channels=num_channels
+        num_channels=num_channels,
+        normalize_video=norm_video
     )
 
     # apply transforms
@@ -228,20 +210,15 @@ if __name__ == "__main__":
             duration=c.getint("data", "chunks_duration"),
             remove_background=c.getboolean("data", "remove_background"),
             temporal_reduction=temporal_reduction,
-            num_channels=num_channels
+            num_channels=num_channels,
+            normalize_video=norm_video
         ) for f in test_file_names]
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
 
     # class weights
-    class_weights = compute_class_weights_puffs(
-        dataset,
-        w0=args.weight_background,
-        w1=args.weight_sparks,
-        w2=args.weight_waves,
-        w3=args.weight_puffs
-    )
+    class_weights = compute_class_weights_puffs(dataset)
     class_weights = torch.tensor(np.float32(class_weights))
 
     logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
@@ -253,7 +230,8 @@ if __name__ == "__main__":
         for test_dataset in testing_datasets
     ]
 
-    # configure unet
+    ############################## configure UNet ##############################
+
     unet_config = unet.UNetConfig(
         steps=c.getint("network", "step"),
         first_layer_channels=c.getint("network", "first_layer_channels"),
@@ -264,7 +242,6 @@ if __name__ == "__main__":
         batch_normalization=c.getboolean("network", "batch_normalization"),
         num_input_channels=c.getint("network", "num_channels", fallback=1),
     )
-    #unet_config.feature_map_shapes((c.getint("data", "chunks_duration"), 64, 512))
 
     if not temporal_reduction:
         network = unet.UNetClassifier(unet_config)
@@ -281,9 +258,24 @@ if __name__ == "__main__":
     if c.getboolean("network", "initialize_weights", fallback="no"):
         network.apply(weights_init)
 
-    # initialize training
+    ########################### set testing function ###########################
+
+    #thresholds = np.linspace(0, 1, num=21) # thresholds for events detection
+                                           # TODO: maybe change because
+                                           # nonmaxima supression is computed
+                                           # for every threshold (slow)
+    fixed_threshold = c.getfloat("testing", "fixed_threshold", fallback = 0.9)
+    #closest_t = take_closest(thresholds, fixed_threshold) # Compute idx of t in
+                                                          # thresholds list that
+                                                          # is closest to
+                                                          # fixed_threshold
+    #idx_fixed_t = list(thresholds).index(closest_t)
+
+    ########################### initialize training ############################
+
     optimizer = optim.Adam(network.parameters(), lr=1e-4)
     network.train()
+
     output_path = os.path.join(c.get("network", "output_relative_path"), args.name)
     logger.info(f"Output directory: {output_path}")
     summary_writer = SummaryWriter(os.path.join(output_path, "summary"), purge_step=0)
@@ -295,18 +287,6 @@ if __name__ == "__main__":
         criterion = FocalLoss(reduction='mean',
                               ignore_index=c.getint("data", "ignore_index"),
                               alpha=class_weights)
-
-    # configure testing
-    #thresholds = np.linspace(0, 1, num=21) # thresholds for events detection
-                                           # TODO: maybe change because
-                                           # nonmaxima supression is computed
-                                           # for every threshold (slow)
-    fixed_threshold = c.getfloat("testing", "fixed_threshold", fallback = 0.9)
-    #closest_t = take_closest(thresholds, fixed_threshold) # Compute idx of t in
-                                                          # thresholds list that
-                                                          # is closest to
-                                                          # fixed_threshold
-    #idx_fixed_t = list(thresholds).index(closest_t)
 
     trainer = unet.TrainingManager(
         # training items
@@ -348,7 +328,8 @@ if __name__ == "__main__":
         summary_writer=summary_writer
     )
 
-    # begin training
+    ############################## start training ##############################
+
     if args.load_epoch != 0:
         trainer.load(args.load_epoch)
 

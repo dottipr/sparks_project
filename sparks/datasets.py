@@ -48,8 +48,8 @@ class SparkDataset(Dataset):
     def __init__(self, base_path,
                  step = 4, duration = 16, smoothing = False,
                  resampling = False, resampling_rate = 150,
-                 remove_background = False,
-                 temporal_reduction = False, num_channels = 1):
+                 remove_background = False, temporal_reduction = False,
+                 num_channels = 1, normalize_video = False):
 
         # base_path is the folder containing the whole dataset (train and test)
         self.base_path = base_path
@@ -57,9 +57,12 @@ class SparkDataset(Dataset):
         # dataset parameters
         self.duration = duration
         self.step = step
-        if temporal_reduction:
-            self.temporal_reduction = temporal_reduction
+
+        self.temporal_reduction = temporal_reduction
+        if self.temporal_reduction:
             self.num_channels = num_channels
+
+        self.normalize_video = normalize_video
 
         # get videos and masks paths
         self.files = sorted(glob.glob(os.path.join(self.base_path,
@@ -98,6 +101,10 @@ class SparkDataset(Dataset):
                                                     resampling_rate)
                             for video,video_path in zip(self.data,self.files)]
 
+        if self.normalize_video:
+            self.data = [(video - video.min()) / (video.max() - video.min())
+                         for video in self.data]
+
         # pad movies whose length does not match chunks_duration and step params
         self.data = [self.pad_end_of_video(video) for video in self.data]
         self.annotations = [self.pad_end_of_video(mask, mask=True) for mask in self.annotations]
@@ -115,7 +122,7 @@ class SparkDataset(Dataset):
         #print("number of previous videos chunks", self.preceding_blocks)
 
         # if using temporal reduction, shorten the annotations duration
-        if temporal_reduction:
+        if self.temporal_reduction:
             self.annotations = [shrink_mask(mask, self.num_channels)
                                 for mask in self.annotations]
 
@@ -178,7 +185,11 @@ class SparkDataset(Dataset):
         chunks = get_chunks(self.lengths[vid_id],self.step,self.duration)
 
         chunk = self.data[vid_id][chunks[chunk_id]]
-        chunk = chunk / chunk.max()
+
+        if not self.normalize_video:
+            chunk = (chunk - chunk.min()) / (chunk.max() - chunk.min())
+        assert chunk.min() >= 0 and chunk.max() <= 1, \
+               "chunk values not normalized between 0 and 1"
         chunk = np.float32(chunk)
         #print("min and max value in chunk:", chunk.min(), chunk.max())
 
@@ -211,15 +222,19 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
                  step = 4, duration = 16, smoothing = False,
                  resampling = False, resampling_rate = 150,
                  remove_background = False, gt_available = True,
-                 temporal_reduction = False, num_channels = 1):
+                 temporal_reduction = False, num_channels = 1,
+                 normalize_video = False):
 
         # video_path is the complete path to the video
         # gt_available == True if ground truth annotations is available
 
         self.gt_available = gt_available
-        if temporal_reduction:
-            self.temporal_reduction = temporal_reduction
+
+        self.temporal_reduction = temporal_reduction
+        if self.temporal_reduction:
             self.num_channels = num_channels
+
+        self.normalize_video = normalize_video
 
         # get video path and array
         self.video_path = video_path
@@ -252,6 +267,9 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
             self.video = video_spline_interpolation(self.video, self.file,
                                                     resampling_rate)
 
+        if self.normalize_video:
+            self.video = (self.video-self.video.min())/(self.video.max()-self.video.min())
+
         self.step = step
         self.duration = duration
         self.length = self.video.shape[0]
@@ -279,7 +297,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         self.blocks_number = ((self.length-self.duration)//self.step)+1
 
         # if using temporal reduction, shorten the annotations duration
-        if temporal_reduction:
+        if self.temporal_reduction:
             self.mask = shrink_mask(self.mask, self.num_channels)
 
     def pad_short_video(self, video, mask):
@@ -302,7 +320,11 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
     def __getitem__(self, chunk_id):
         chunks = get_chunks(self.length, self.step, self.duration)
         chunk = self.video[chunks[chunk_id]]
-        chunk = chunk / chunk.max()
+
+        if not self.normalize_video:
+            chunk = (chunk - chunk.min()) / (chunk.max() - chunk.min())
+        assert chunk.min() >= 0 and chunk.max() <= 1, \
+               "chunk values not normalized between 0 and 1 (test)"
         chunk = np.float32(chunk)
         if self.gt_available:
 

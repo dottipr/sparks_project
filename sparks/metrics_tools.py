@@ -25,7 +25,11 @@ __all__ = ["Metrics",
            "write_videos_on_disk",
            "compute_prec_rec",
            "reduce_metrics_thresholds",
-           "take_closest"
+           "take_closest",
+           "process_spark_prediction",
+           "process_puff_prediction",
+           "process_wave_prediction",
+           "write_videos_on_disk"
            ]
 
 
@@ -34,12 +38,16 @@ __all__ = ["Metrics",
 
 def empty_marginal_frames(video, n_frames):
     # Set first and last n_frames of a video to zero
-    video = video[n_frames:-n_frames]
-    video = np.pad(video,((n_frames,),(0,),(0,)), mode='constant')
-    return video
+    new_video = video[n_frames:-n_frames]
+    new_video = np.pad(new_video,((n_frames,),(0,),(0,)), mode='constant')
+
+    assert(np.shape(video) == np.shape(new_video))
+
+    return new_video
 
 
-def write_videos_on_disk(xs, ys, preds, training_name, video_name):
+def write_videos_on_disk(training_name, video_name, path="predictions",
+                         xs=None, ys=None, preds=None):
     # Write all videos on disk
     # xs : input video used by network
     # ys: segmentation video used in loss function
@@ -47,16 +55,19 @@ def write_videos_on_disk(xs, ys, preds, training_name, video_name):
 
     out_name_root = training_name + "_" + video_name + "_"
 
-    imageio.volwrite(os.path.join("predictions", out_name_root + "xs.tif"),
-                                  xs)
-    imageio.volwrite(os.path.join("predictions", out_name_root + "ys.tif"),
-                                  np.uint8(ys))
-    imageio.volwrite(os.path.join("predictions", out_name_root + "sparks.tif"),
-                                  np.exp(preds[1]))
-    imageio.volwrite(os.path.join("predictions", out_name_root + "waves.tif"),
-                                  np.exp(preds[2]))
-    imageio.volwrite(os.path.join("predictions", out_name_root + "puffs.tif"),
-                                  np.exp(preds[3]))
+    if not isinstance(xs, type(None)):
+        imageio.volwrite(os.path.join(path, out_name_root + "xs.tif"),
+                                      xs)
+    if not isinstance(ys, type(None)):
+        imageio.volwrite(os.path.join(path, out_name_root + "ys.tif"),
+                                      np.uint8(ys))
+    if not isinstance(preds, type(None)):
+        imageio.volwrite(os.path.join(path, out_name_root + "sparks.tif"),
+                                      np.exp(preds[1]))
+        imageio.volwrite(os.path.join(path, out_name_root + "waves.tif"),
+                                      np.exp(preds[2]))
+        imageio.volwrite(os.path.join(path, out_name_root + "puffs.tif"),
+                                      np.exp(preds[3]))
 
 
 def take_closest(myList, myNumber):
@@ -95,7 +106,8 @@ def in_bounds(points, shape):
                                 for coords_i, shape_i in zip(points.T, shape)])
 
 
-def nonmaxima_suppression(img, return_mask=False, neighborhood_radius=5, threshold=0.5):
+def nonmaxima_suppression(img, return_mask=False,
+                          neighborhood_radius=5, threshold=0.5):
 
     smooth_img = ndi.gaussian_filter(img, 2) # 2 instead of 1
     dilated = ndi.grey_dilation(smooth_img, (neighborhood_radius,) * img.ndim)
@@ -109,19 +121,59 @@ def nonmaxima_suppression(img, return_mask=False, neighborhood_radius=5, thresho
     return argwhere, argmaxima
 
 
-def process_spark_prediction(pred, t_detection = 0.9, neighborhood_radius = 5, min_radius = 4, return_mask = False, return_clean_pred = False):
+def get_sparks_locations_from_mask(mask, ignore_frames=0):
+    '''
+    Get sparks coords from annotations mask.
+
+    mask : annotations mask (values 0,1,2,3,4)
+    ignore_frames: number of frames ignored by loss fct during training
+    '''
+
+    sparks_mask = np.where(mask == 1, 1.0, 0.0)
+    sparks_mask = sparks_mask[ignore_frames:-ignore_frames]
+    sparks_mask = np.pad(sparks_mask,((ignore_frames,),(0,),(0,)),
+                         mode='constant')
+
+    assert(np.shape(sparks_mask) == np.shape(mask))
+
+    coords = nonmaxima_suppression(sparks_mask)
+
+    return coords
+
+    
+def process_spark_prediction(pred, t_detection = 0.9,
+                             neighborhood_radius = 5,
+                             min_radius = 4,
+                             return_mask = False,
+                             return_clean_pred = False,
+                             ignore_frames = 0):
+    '''
+    Get sparks centres from preds: remove small events + nonmaxima suppression
+
+    pred: network's sparks predictions
+    neighborhood_radius: ??
+    min_radius: minimal 'radius' of a valid spark
+    return_mask: if True return mask and locations of sparks
+    return_clean_pred: if True only return preds without small events
+    ignore_frames: set preds in region ignored by loss fct to 0
+    '''
+
+    # set frames ignored by loss fct to 0
+    pred_sparks = empty_marginal_frames(pred, ignore_frames)
+
     # remove small objects
     min_size = (2 * min_radius) ** pred.ndim
 
-    pred_boolean = pred > t_detection
-    small_objs_removed = morphology.remove_small_objects(pred_boolean, min_size=min_size)
-    big_pred = np.where(small_objs_removed, pred, 0)
+    pred_boolean = pred_sparks > t_detection
+    small_objs_removed = morphology.remove_small_objects(pred_boolean,
+                                                         min_size=min_size)
+    big_pred = np.where(small_objs_removed, pred_sparks, 0)
 
     if return_clean_pred:
         return big_pred
 
-    gaussian = ndi.gaussian_filter(big_pred, 2)
-    dilated = ndi.grey_dilation(gaussian, (neighborhood_radius,) * pred.ndim)
+    gaussian = ndimage.gaussian_filter(big_pred, 2)
+    dilated = ndimage.grey_dilation(gaussian, (neighborhood_radius,)*pred.ndim)
 
     # detect events (nonmaxima suppression)
     argmaxima = np.logical_and(gaussian == dilated, big_pred > t_detection)
@@ -193,7 +245,7 @@ def reduce_metrics(results):
         recall = tp / tp_fn
     else:
         recall = 1.0
-        
+
     return Metrics(precision, recall, tp, tp_fp, tp_fn)
 
 
@@ -292,3 +344,39 @@ def separate_events(pred, t_detection=0.5, min_radius=4):
                                                  return_N=True)
 
     return labels, n_events
+
+
+def process_puff_prediction(pred, t_detection = 0.5,
+                            min_radius = 4,
+                            ignore_frames = 0):
+    '''
+    Get binary clean predictions of puffs (remove small preds)
+
+    pred: network's puffs predictions
+    min_radius : minimal 'radius' of a valid puff
+    ignore_frames: set preds in region ignored by loss fct to 0
+    '''
+
+    # set first and last frames to 0 according to ignore_frames
+    pred_puffs = empty_marginal_frames(pred, ignore_frames)
+
+    # remove small objects
+    min_size = (2 * min_radius) ** pred.ndim
+
+    pred_boolean = pred_puffs > t_detection
+    small_objs_removed = morphology.remove_small_objects(pred_boolean,
+                                                         min_size=min_size)
+
+    #big_pred = np.where(small_objs_removed, pred_puffs, 0) # not binary version
+
+
+    return small_objs_removed
+
+
+def process_wave_prediction(pred, t_detection = 0.5,
+                            min_radius = 4,
+                            ignore_frames = 0):
+
+    # for now: do the same as with puffs
+
+    return process_puff_prediction(pred, t_detection, min_radius, ignore_frames)
