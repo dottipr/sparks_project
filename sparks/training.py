@@ -147,10 +147,10 @@ if __name__ == "__main__":
 
     ############################# configure wandb ##############################
 
-    if c.getboolean("general", "wandb_enable", fallback="no"):
+    if c.getboolean("general", "wandb_enable", fallback=False):
         wandb.init(project=c.get("general", "wandb_project_name"), name=args.name)
         logging.getLogger('wandb').setLevel(logging.DEBUG)
-        wandb.save(CONFIG_FILE)
+        #wandb.save(CONFIG_FILE)
 
     ############################# print parameters #############################
 
@@ -167,13 +167,13 @@ if __name__ == "__main__":
     logger.info(f"Using torch device {device}, with {n_gpus} GPUs")
 
     # set if temporal reduction is used
-    temporal_reduction = c.getboolean("network", "temporal_reduction", fallback="no")
+    temporal_reduction = c.getboolean("network", "temporal_reduction", fallback=False)
     num_channels = c.getint("network", "num_channels", fallback=1)
     if temporal_reduction:
         logger.info(f"Using temporal reduction with {num_channels} channels")
 
     # normalize whole videos or chunks individually
-    norm_video = c.getboolean("data", "norm_video", fallback="no")
+    norm_video = c.getboolean("data", "norm_video", fallback=False)
     if norm_video:
         logger.info("Normalizing whole video instead of single chunks")
 
@@ -255,7 +255,7 @@ if __name__ == "__main__":
     if c.getboolean("general", "wandb_enable"):
         wandb.watch(network)
 
-    if c.getboolean("network", "initialize_weights", fallback="no"):
+    if c.getboolean("network", "initialize_weights", fallback=False):
         network.apply(weights_init)
 
     ########################### set testing function ###########################
@@ -298,7 +298,7 @@ if __name__ == "__main__":
             criterion,
             dataset_loader,
             ignore_frames=c.getint("data", "ignore_frames_loss"),
-            wandb_log=c.getboolean("general", "wandb_enable", fallback="no")
+            wandb_log=c.getboolean("general", "wandb_enable", fallback=False)
         ),
         save_every=c.getint("training", "save_every", fallback=5000),
         save_path=output_path,
@@ -318,7 +318,7 @@ if __name__ == "__main__":
             #thresholds,
             #idx_fixed_t,
             ignore_frames=c.getint("data", "ignore_frames_loss"),
-            wandb_log=c.getboolean("general", "wandb_enable", fallback="no"),
+            wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=c.get("general", "run_name"),
             temporal_reduction=temporal_reduction,
             num_channels=num_channels

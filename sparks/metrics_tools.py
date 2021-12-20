@@ -38,8 +38,10 @@ __all__ = ["Metrics",
 
 def empty_marginal_frames(video, n_frames):
     # Set first and last n_frames of a video to zero
-    new_video = video[n_frames:-n_frames]
-    new_video = np.pad(new_video,((n_frames,),(0,),(0,)), mode='constant')
+    if n_frames != 0:
+        new_video = video[n_frames:-n_frames]
+        new_video = np.pad(new_video,((n_frames,),(0,),(0,)), mode='constant')
+    else: new_video = video
 
     assert(np.shape(video) == np.shape(new_video))
 
@@ -140,7 +142,7 @@ def get_sparks_locations_from_mask(mask, ignore_frames=0):
 
     return coords
 
-    
+
 def process_spark_prediction(pred, t_detection = 0.9,
                              neighborhood_radius = 5,
                              min_radius = 4,
@@ -172,8 +174,8 @@ def process_spark_prediction(pred, t_detection = 0.9,
     if return_clean_pred:
         return big_pred
 
-    gaussian = ndimage.gaussian_filter(big_pred, 2)
-    dilated = ndimage.grey_dilation(gaussian, (neighborhood_radius,)*pred.ndim)
+    gaussian = ndi.gaussian_filter(big_pred, 2)
+    dilated = ndi.grey_dilation(gaussian, (neighborhood_radius,)*pred.ndim)
 
     # detect events (nonmaxima suppression)
     argmaxima = np.logical_and(gaussian == dilated, big_pred > t_detection)
