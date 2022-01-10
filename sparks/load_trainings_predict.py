@@ -15,7 +15,9 @@ might vary among different trainings
 
 import numpy as np
 import glob
+import sys
 import os
+import logging
 import configparser
 
 import torch
@@ -29,19 +31,35 @@ from architecture import TempRedUNet
 from metrics_tools import write_videos_on_disk
 from datasets import SparkTestDataset
 
+BASEDIR = os.path.dirname(os.path.realpath(__file__))
 
-BASEDIR = os.path.abspath('') # current folder
+### Configure logger
 
+logger = logging.getLogger(__name__)
+
+log_level = logging.DEBUG
+log_handlers = (logging.StreamHandler(sys.stdout), )
+
+logging.basicConfig(
+    level=log_level,
+    format='[{asctime}] [{levelname:^8s}] [{name:^12s}] <{lineno:^4d}> -- {message:s}',
+    style='{',
+    datefmt="%H:%M:%S",
+    handlers=log_handlers)
 
 ### Select trainings to load and config files to open
 
-training_names = ["temporal_reduction",
-                  "normalize_whole_video",
-                  "reduce_first_layer_channels_64"
+training_names = [#"temporal_reduction",
+                  #"normalize_whole_video",
+                  #"reduce_first_layer_channels_64",
+                  #"256_long_chunks_physio",
+                  "256_long_chunks_64_step_physio"
                   ]
-config_files = ["config_temporal_reduction.ini",
-                "config_normalize_whole_video.ini",
-                "config_reduce_first_layer_channels.ini"
+config_files = [#"config_temporal_reduction.ini",
+                #"config_normalize_whole_video.ini",
+                #"config_reduce_first_layer_channels.ini",
+                #"config_256_long_chunks_physio.ini",
+                "config_256_long_chunks_64_step_physio.ini"
                  ]
 
 
@@ -54,7 +72,7 @@ metrics_folder = "trainings_validation"
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 n_gpus = torch.cuda.device_count()
-print(f"Using device <<{device}>> with {n_gpus} GPUs")
+logger.info(f"Using device <<{device}>> with {n_gpus} GPUs")
 
 
 ## For all selected trainings, compute UNet outputs for test dataset
@@ -168,17 +186,17 @@ def get_preds(network, device, datasets, ignore_frames, temporal_reduction, num_
 
 for training_name, config_name in zip(training_names, config_files):
 
-    print(f"Processing training <<{training_name}>>...")
+    logger.info(f"Processing training <<{training_name}>>...")
 
     ########################### open config file ###########################
 
     CONFIG_FILE = os.path.join(BASEDIR, config_name)
     c = configparser.ConfigParser()
     if os.path.isfile(CONFIG_FILE):
-        print(f"\tLoading {CONFIG_FILE}")
+        logger.info(f"\tLoading {CONFIG_FILE}")
         c.read(CONFIG_FILE)
     else:
-        print(f"\tNo config file found at {CONFIG_FILE}, trying to use fallback values.")
+        logger.info(f"\tNo config file found at {CONFIG_FILE}, trying to use fallback values.")
 
     ########################### epoch ###########################
 
@@ -201,7 +219,7 @@ for training_name, config_name in zip(training_names, config_files):
     dataset_basedir = c.get("data", "relative_path")
     dataset_path = os.path.realpath(f"{BASEDIR}/{dataset_basedir}/{dataset_dir}")
 
-    print(f"\tUsing {dataset_size} dataset located in {dataset_path}")
+    logger.info(f"\tUsing {dataset_size} dataset located in {dataset_path}")
 
     # load train or test dataset
     test = True
@@ -209,7 +227,7 @@ for training_name, config_name in zip(training_names, config_files):
     try:
         test
     except:
-        print("SCRIPT ONLY IMPLEMENTED FOR TEST DATASET")
+        logger.info("SCRIPT ONLY IMPLEMENTED FOR TEST DATASET")
 
     test_string = "_test" if test else ""
 
@@ -229,7 +247,7 @@ for training_name, config_name in zip(training_names, config_files):
         ) for f in test_file_names]
 
     for i, tds in enumerate(testing_datasets):
-        print(f"\t\tTesting dataset {i} contains {len(tds)} samples")
+        logger.info(f"\t\tTesting dataset {i} contains {len(tds)} samples")
 
     # dataloader
     testing_dataset_loaders = [
@@ -265,6 +283,7 @@ for training_name, config_name in zip(training_names, config_files):
     ########################### load trained UNet params ###########################
 
     output_path = os.path.join(c.get("network", "output_relative_path"), training_name)
+    logger.info(f"OUTPUT_PATH: {output_path}")
     summary_writer = SummaryWriter(os.path.join(output_path, "summary"), purge_step=0)
 
     trainer = unet.TrainingManager(
@@ -275,13 +294,14 @@ for training_name, config_name in zip(training_names, config_files):
             summary_writer=summary_writer
         )
 
-    print(f"\tLoading training <<{training_name}>> at epoch {load_epoch}...")
+    logger.info(f"\tLoading training <<{training_name}>> at epoch {load_epoch}...")
+    logger.info(f"OUTPUT_PATH: {output_path}")
     trainer.load(load_epoch)
-    print(f"\tLoaded training located in <<{output_path}>>")
+    logger.info(f"\tLoaded training located in <<{output_path}>>")
 
     ########################### run dataset in UNet ###########################
 
-    print(f"\tProcessing samples in UNet...")
+    logger.info(f"\tProcessing samples in UNet...")
     _, ys, preds = get_preds(network,
                              device,
                              testing_datasets,
@@ -293,7 +313,7 @@ for training_name, config_name in zip(training_names, config_files):
 
     ########################### save preds on disk ###########################
 
-    print(f"\tSaving annotations and predictions on disk...")
+    logger.info(f"\tSaving annotations and predictions on disk...")
     for (video_name, pred), (_, ys) in zip(preds.items(), ys.items()):
         new_video_name = str(load_epoch) + "_" + video_name
 
@@ -302,4 +322,4 @@ for training_name, config_name in zip(training_names, config_files):
                              path=metrics_folder, preds=pred, ys=ys
                             )
 
-    print(f"Computed predicitions for training <<{training_name}>>")
+    logger.info(f"Computed predicitions for training <<{training_name}>>")

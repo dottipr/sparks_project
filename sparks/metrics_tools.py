@@ -251,18 +251,21 @@ def reduce_metrics(results):
     return Metrics(precision, recall, tp, tp_fp, tp_fn)
 
 
-def compute_prec_rec(annotations, preds, thresholds):
+def compute_prec_rec(annotations, preds, thresholds, ignore_frames=0,
+                     min_radius=3, match_distance=6):
     # annotations: video of sparks segmentation w/ values in {0,1}
     # preds: video of sparks preds w/ values in [0,1]
     # thresholds : list of thresholds applied to the preds over which events are kept
+    # min_radius : minimal "radius" of a valid event
+    # match_distance : maximal distance between annotation and pred
     # returns a list of Metrics tuples corresponding to thresholds and AUC
 
-    min_radius = 3 # minimal "radius" of a valid event
-    match_distance = 6
+    if ignore_frames != 0:
+        annotations = empty_marginal_frames(annotations, ignore_frames)
+        preds = empty_marginal_frames(preds, ignore_frames)
 
-    metrics = [] # list of 'Metrics' tuples: precision, recall, tp, tp_fp, tp_fn
-    #prec = []
-    #rec = []
+    metrics = {} # list of 'Metrics' tuples: precision, recall, tp, tp_fp, tp_fn
+                 # indexed by threshold value
 
     coords_true = nonmaxima_suppression(annotations)
 
@@ -276,7 +279,7 @@ def compute_prec_rec(annotations, preds, thresholds):
                                                              coords_preds,
                                                              match_distance))
 
-        metrics.append(prec_rec)
+        metrics[t] = prec_rec
         #print("threshold", t)
         #prec.append(prec_rec.precision)
         #rec.append(prec_rec.recall)
@@ -289,23 +292,24 @@ def compute_prec_rec(annotations, preds, thresholds):
 
 def reduce_metrics_thresholds(results):
     # apply metrics reduction to results corresponding to different thresholds
-    # results is a list that for every video contains a list of 'Metrics'
+    # results is a list of dicts
     # thresholds is the list of used thresholds
-    # returns a list of reduced 'Metrics' instances for every threshold
+    # returns dicts of reduced 'Metrics' instances for every threshold
 
-    results = list(map(list, zip(*results))) # "transpose" list
+    # list of dicts to dict of lists
+    results_t = {k: [dic[k] for dic in results] for k in results[0]}
 
-    reduced_metrics = []
-    prec = []
-    rec = []
+    reduced_metrics = {}
+    prec = {}
+    rec = {}
 
-    for idx_t, res in enumerate(results):
+    for t, res in results_t.items():
         # res is a list of 'Metrics' of all videos wrt a threshold
         reduced_res = reduce_metrics(res)
 
-        reduced_metrics.append(reduced_res)
-        prec.append(reduced_res.precision)
-        rec.append(reduced_res.recall)
+        reduced_metrics[t] = reduced_res
+        prec[t] = reduced_res.precision
+        rec[t] = reduced_res.recall
 
     # compute area under the curve for reduced metrics
     #print("REC",rec)

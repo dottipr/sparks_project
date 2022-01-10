@@ -31,6 +31,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser("Spark & Puff detector using U-Net.")
 
     ############################# load config file #############################
+
     parser.add_argument(
         'config',
         type=str,
@@ -48,87 +49,49 @@ if __name__ == "__main__":
 
     ############################## set parameters ##############################
 
-    parser.add_argument(
-        '-v-', '--verbosity',
-        type=int,
-        default=c.getint("general", "verbosity", fallback="0"),
-        help="Set verbosity level ([0, 3])"
-    )
+    params = {}
 
-    parser.add_argument(
-        '--logfile',
-        type=str,
-        default=None,
-        help="In addition to stdout, store all logs in this file"
-    )
+    # general params
+    params['name'] = c.get("general", "run_name", fallback="run") # Run name
 
-    parser.add_argument(
-        '-n', '--name',
-        type=str,
-        default=c.get("general", "run_name", fallback="run"),
-        help="Run name"
-    )
+    # training params
+    params['load_epoch'] = c.getint("state", "load_epoch", fallback=0)
+    params['train_epochs'] = c.getint("training", "epochs", fallback=5000)
+    params['training'] = c.getboolean("general", "training") # Run training procedure on data
+    params['testing'] = c.getboolean("general", "testing") # Run training procedure on data
+    params['loss_function'] = c.get("training", "criterion", fallback="nll_loss")
 
-    parser.add_argument(
-        '-T', '--training',
-        action='store_true',
-        default=c.getboolean("general", "training"),
-        help="Run training procedure on data"
-    )
+    # data params
+    params['dataset_basedir'] = c.get("data", "relative_path")
+    params['dataset_size'] = c.get("data", "size", fallback="full")
+    params['batch_size'] = c.getint("general", "batch_size", fallback="1")
+    params['data_duration'] = c.getint("data", "chunks_duration")
+    params['data_step'] = c.getint("data", "step")
+    params['ignore_frames_loss'] = c.getint("data", "ignore_frames_loss")
 
-    parser.add_argument(
-        '-t', '--testing',
-        action='store_true',
-        default=c.getboolean("general", "testing"),
-        help="Run training procedure on data"
-    )
-
-    parser.add_argument(
-        '-l', '--load-epoch',
-        type=int,
-        default=c.getint("state", "load_epoch", fallback=0),
-        help="Load the network state from this epoch"
-    )
-
-    parser.add_argument(
-        '-e', '--train-epochs',
-        type=int,
-        default=c.getint("training", "epochs", fallback=5000),
-        help="Train this many epochs"
-    )
-
-    parser.add_argument(
-        '-b', '--batch-size',
-        type=int,
-        default=c.getint("general", "batch_size", fallback="1"),
-        help="Use this batch size for training & evaluation."
-    )
-
-    parser.add_argument(
-        '-d', '--dataset-size',
-        type=str,
-        choices=('full', 'small', 'minimal'),
-        default=c.get("data", "size", fallback="full"),
-        help="Use this extent of the dataset for testing during training"
-    )
-
-    args = parser.parse_args()
+    # UNet params
+    params['unet_steps'] = c.getint("network", "step")
+    params['first_layer_channels'] = c.getint("network", "first_layer_channels")
+    params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
+    params['num_channels'] = c.getint("network", "num_channels", fallback=1)
 
     ############################# configure logger #############################
 
     level_map = {3: logging.DEBUG, 2: logging.INFO, 1: logging.WARNING, 0: logging.ERROR}
-    log_level = level_map[args.verbosity]
+    log_level = level_map[c.getint("general", "verbosity", fallback="0")]
     log_handlers = (logging.StreamHandler(sys.stdout), )
 
-    if args.logfile:
-        if not os.path.isdir(os.path.basename(args.logfile)):
-            logger.info("Creating parent directory for logs")
-            os.mkdir(os.path.basename(args.logfile))
+    logfile = c.get("general", "logfile", fallback=None)
 
-        if os.path.isdir(args.logfile):
-            logfile_path = os.path.abspath(os.path.join(args.logfile, f"{__name__}.log"))
+    if logfile:
+        if not os.path.isdir(os.path.basename(logfile)):
+            logger.info("Creating parent directory for logs")
+            os.mkdir(os.path.basename(logfile))
+
+        if os.path.isdir(logfile):
+            logfile_path = os.path.abspath(os.path.join(logfile, f"{__name__}.log"))
         else:
-            logfile_path = os.path.abspath(args.logfile)
+            logfile_path = os.path.abspath(logfile)
 
         logger.info(f"Storing logs in {logfile_path}")
         file_handler = logging.RotatingFileHandler(
@@ -148,14 +111,14 @@ if __name__ == "__main__":
     ############################# configure wandb ##############################
 
     if c.getboolean("general", "wandb_enable", fallback=False):
-        wandb.init(project=c.get("general", "wandb_project_name"), name=args.name)
+        wandb.init(project=c.get("general", "wandb_project_name"), name=params['name'])
         logging.getLogger('wandb').setLevel(logging.DEBUG)
         #wandb.save(CONFIG_FILE)
 
     ############################# print parameters #############################
 
     logger.info("Command parameters:")
-    for k, v in vars(args).items():
+    for k, v in params.items():
         logger.info(f"{k:>18s}: {v}")
         # TODO: AGGIUNGERE TUTTI I PARAMS NECESSARI DA PRINTARE
 
@@ -167,10 +130,8 @@ if __name__ == "__main__":
     logger.info(f"Using torch device {device}, with {n_gpus} GPUs")
 
     # set if temporal reduction is used
-    temporal_reduction = c.getboolean("network", "temporal_reduction", fallback=False)
-    num_channels = c.getint("network", "num_channels", fallback=1)
-    if temporal_reduction:
-        logger.info(f"Using temporal reduction with {num_channels} channels")
+    if params['temporal_reduction']:
+        logger.info(f"Using temporal reduction with {params['temporal_reduction']} channels")
 
     # normalize whole videos or chunks individually
     norm_video = c.getboolean("data", "norm_video", fallback=False)
@@ -179,19 +140,18 @@ if __name__ == "__main__":
 
     # initialize training dataset
     dataset_map = {'full': "", 'small': 'small_dataset', 'minimal': 'very_small_dataset'}
-    dataset_dir = dataset_map[args.dataset_size]
-    dataset_basedir = c.get("data", "relative_path")
-    dataset_path = os.path.realpath(f"{BASEDIR}/{dataset_basedir}/{dataset_dir}")
+    dataset_dir = dataset_map[params['dataset_size']]
+    dataset_path = os.path.realpath(f"{BASEDIR}/{params['dataset_basedir']}/{dataset_dir}")
     assert os.path.isdir(dataset_path), f"\"{dataset_path}\" is not a directory"
     logger.info(f"Using {dataset_path} as dataset root path")
     dataset = SparkDataset(
         base_path=dataset_path,
         smoothing='2d',
-        step=c.getint("data", "step"),
-        duration=c.getint("data", "chunks_duration"),
+        step=params['data_step'],
+        duration=params['data_duration'],
         remove_background=c.getboolean("data", "remove_background"),
-        temporal_reduction=temporal_reduction,
-        num_channels=num_channels,
+        temporal_reduction=params['temporal_reduction'],
+        num_channels=params['temporal_reduction'],
         normalize_video=norm_video
     )
 
@@ -206,11 +166,11 @@ if __name__ == "__main__":
         SparkTestDataset(
             video_path=f,
             smoothing='2d',
-            step=c.getint("data", "step"),
-            duration=c.getint("data", "chunks_duration"),
+            step=params['data_step'],
+            duration=params['data_duration'],
             remove_background=c.getboolean("data", "remove_background"),
-            temporal_reduction=temporal_reduction,
-            num_channels=num_channels,
+            temporal_reduction=params['temporal_reduction'],
+            num_channels=params['temporal_reduction'],
             normalize_video=norm_video
         ) for f in test_file_names]
 
@@ -224,29 +184,29 @@ if __name__ == "__main__":
     logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
 
     # initialize data loaders
-    dataset_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=c.getint("training", "num_workers"))
+    dataset_loader = DataLoader(dataset, batch_size=params['batch_size'], shuffle=True, num_workers=c.getint("training", "num_workers"))
     testing_dataset_loaders = [
-        DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=c.getint("training", "num_workers"))
+        DataLoader(test_dataset, batch_size=params['batch_size'], shuffle=False, num_workers=c.getint("training", "num_workers"))
         for test_dataset in testing_datasets
     ]
 
     ############################## configure UNet ##############################
 
     unet_config = unet.UNetConfig(
-        steps=c.getint("network", "step"),
-        first_layer_channels=c.getint("network", "first_layer_channels"),
+        steps=params['unet_steps'],
+        first_layer_channels=params['first_layer_channels'],
         num_classes=c.getint("network", "num_classes"),
         ndims=c.getint("network", "ndims"),
         dilation=c.getint("network", "dilation", fallback=1),
         border_mode=c.get("network", "border_mode"),
         batch_normalization=c.getboolean("network", "batch_normalization"),
-        num_input_channels=c.getint("network", "num_channels", fallback=1),
+        num_input_channels=params['num_channels'],
     )
 
-    if not temporal_reduction:
+    if not params['temporal_reduction']:
         network = unet.UNetClassifier(unet_config)
     else:
-        assert c.getint("data", "chunks_duration") % num_channels == 0, \
+        assert params['data_duration'] % params['temporal_reduction'] == 0, \
         "using temporal reduction chunks_duration must be a multiple of num_channels"
         network = TempRedUNet(unet_config)
 
@@ -276,14 +236,16 @@ if __name__ == "__main__":
     optimizer = optim.Adam(network.parameters(), lr=1e-4)
     network.train()
 
-    output_path = os.path.join(c.get("network", "output_relative_path"), args.name)
+    output_path = os.path.join(c.get("network", "output_relative_path"),
+                               params['name'])
     logger.info(f"Output directory: {output_path}")
-    summary_writer = SummaryWriter(os.path.join(output_path, "summary"), purge_step=0)
+    summary_writer = SummaryWriter(os.path.join(output_path, "summary"),
+                                   purge_step=0)
 
-    if c.get("training", "criterion", fallback="nll_loss") == "nll_loss":
+    if params['loss_function'] == "nll_loss":
         criterion = nn.NLLLoss(ignore_index=c.getint("data", "ignore_index"),
                                weight=class_weights.to(device))
-    elif c.get("training", "criterion", fallback="nll_loss") == "focal_loss":
+    elif params['loss_function'] == "focal_loss":
         criterion = FocalLoss(reduction='mean',
                               ignore_index=c.getint("data", "ignore_index"),
                               alpha=class_weights)
@@ -297,7 +259,7 @@ if __name__ == "__main__":
             device,
             criterion,
             dataset_loader,
-            ignore_frames=c.getint("data", "ignore_frames_loss"),
+            ignore_frames=params['ignore_frames_loss'],
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False)
         ),
         save_every=c.getint("training", "save_every", fallback=5000),
@@ -317,11 +279,11 @@ if __name__ == "__main__":
             fixed_threshold,
             #thresholds,
             #idx_fixed_t,
-            ignore_frames=c.getint("data", "ignore_frames_loss"),
+            ignore_frames=params['ignore_frames_loss'],
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=c.get("general", "run_name"),
-            temporal_reduction=temporal_reduction,
-            num_channels=num_channels
+            temporal_reduction=params['temporal_reduction'],
+            num_channels=params['temporal_reduction']
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),
@@ -330,16 +292,16 @@ if __name__ == "__main__":
 
     ############################## start training ##############################
 
-    if args.load_epoch != 0:
-        trainer.load(args.load_epoch)
+    if params['load_epoch'] != 0:
+        trainer.load(params['load_epoch'])
 
     logger.info("Validate network before training")
     trainer.run_validation()
 
-    if args.training:
+    if params['training']:
         logger.info("Starting training")
-        trainer.train(args.train_epochs, print_every=100)
+        trainer.train(params['train_epochs'], print_every=100)
 
-    if args.testing:
+    if params['testing']:
         logger.info("Starting final validation")
         trainer.run_validation()
