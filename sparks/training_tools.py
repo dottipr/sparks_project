@@ -437,8 +437,8 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
 
     #prec = precs[fixed_threshold_idx]
     #rec = recs[fixed_threshold_idx]
-    prec = precs[0]
-    rec = recs[0]
+    prec = precs[threshold]
+    rec = recs[threshold]
     logger.info("\tPrecision: {:.4g}".format(prec))
     logger.info("\tRecall: {:.4g}".format(rec))
     #logger.info("\tArea under the curve: {:.4g}".format(a_u_c))
