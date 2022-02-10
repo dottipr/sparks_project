@@ -155,14 +155,9 @@ if __name__ == "__main__":
         duration=params['data_duration'],
         remove_background=c.getboolean("data", "remove_background"),
         temporal_reduction=params['temporal_reduction'],
-<<<<<<< HEAD
-        num_channels=params['temporal_reduction'],
+        num_channels=params['num_channels'],
         normalize_video=norm_video,
         only_sparks=params['only_sparks']
-=======
-        num_channels=params['num_channels'],
-        normalize_video=norm_video
->>>>>>> add04132114afd1dfe07d67aa2b9dc5f16d1dc96
     )
 
     # apply transforms
@@ -180,14 +175,9 @@ if __name__ == "__main__":
             duration=params['data_duration'],
             remove_background=c.getboolean("data", "remove_background"),
             temporal_reduction=params['temporal_reduction'],
-<<<<<<< HEAD
-            num_channels=params['temporal_reduction'],
+            num_channels=params['num_channels'],
             normalize_video=norm_video,
             only_sparks=params['only_sparks']
-=======
-            num_channels=params['num_channels'],
-            normalize_video=norm_video
->>>>>>> add04132114afd1dfe07d67aa2b9dc5f16d1dc96
         ) for f in test_file_names]
 
     for i, tds in enumerate(testing_datasets):
@@ -303,12 +293,8 @@ if __name__ == "__main__":
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=c.get("general", "run_name"),
             temporal_reduction=params['temporal_reduction'],
-<<<<<<< HEAD
-            num_channels=params['temporal_reduction'],
+            num_channels=params['num_channels'],
             only_sparks=params['only_sparks']
-=======
-            num_channels=params['num_channels']
->>>>>>> add04132114afd1dfe07d67aa2b9dc5f16d1dc96
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),
