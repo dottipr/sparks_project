@@ -135,7 +135,7 @@ if __name__ == "__main__":
 
     # set if temporal reduction is used
     if params['temporal_reduction']:
-        logger.info(f"Using temporal reduction with {params['temporal_reduction']} channels")
+        logger.info(f"Using temporal reduction with {params['num_channels']} channels")
 
     # normalize whole videos or chunks individually
     norm_video = c.getboolean("data", "norm_video", fallback=False)
@@ -155,9 +155,14 @@ if __name__ == "__main__":
         duration=params['data_duration'],
         remove_background=c.getboolean("data", "remove_background"),
         temporal_reduction=params['temporal_reduction'],
+<<<<<<< HEAD
         num_channels=params['temporal_reduction'],
         normalize_video=norm_video,
         only_sparks=params['only_sparks']
+=======
+        num_channels=params['num_channels'],
+        normalize_video=norm_video
+>>>>>>> add04132114afd1dfe07d67aa2b9dc5f16d1dc96
     )
 
     # apply transforms
@@ -175,9 +180,14 @@ if __name__ == "__main__":
             duration=params['data_duration'],
             remove_background=c.getboolean("data", "remove_background"),
             temporal_reduction=params['temporal_reduction'],
+<<<<<<< HEAD
             num_channels=params['temporal_reduction'],
             normalize_video=norm_video,
             only_sparks=params['only_sparks']
+=======
+            num_channels=params['num_channels'],
+            normalize_video=norm_video
+>>>>>>> add04132114afd1dfe07d67aa2b9dc5f16d1dc96
         ) for f in test_file_names]
 
     for i, tds in enumerate(testing_datasets):
@@ -215,7 +225,7 @@ if __name__ == "__main__":
     if not params['temporal_reduction']:
         network = unet.UNetClassifier(unet_config)
     else:
-        assert params['data_duration'] % params['temporal_reduction'] == 0, \
+        assert params['data_duration'] % params['num_channels'] == 0, \
         "using temporal reduction chunks_duration must be a multiple of num_channels"
         network = TempRedUNet(unet_config)
 
@@ -293,8 +303,12 @@ if __name__ == "__main__":
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=c.get("general", "run_name"),
             temporal_reduction=params['temporal_reduction'],
+<<<<<<< HEAD
             num_channels=params['temporal_reduction'],
             only_sparks=params['only_sparks']
+=======
+            num_channels=params['num_channels']
+>>>>>>> add04132114afd1dfe07d67aa2b9dc5f16d1dc96
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),

@@ -305,7 +305,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                 #    logger.info(f"Detect nan in network annotation (test): {torch.isnan(y).any()}")
 
                 pred = network(x[None, None])
-
+                
                 loss += criterion(pred[:,:,:-half_overlap_mask],
                                  y[:,:-half_overlap_mask].long())
 
