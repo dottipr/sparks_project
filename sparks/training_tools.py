@@ -256,7 +256,7 @@ def test_function(network, device, criterion, testing_datasets, logger,
 def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                           summary_writer, threshold, ignore_frames, wandb_log,
                           training_name, temporal_reduction=False,
-                          num_channels=1):
+                          num_channels=1, only_sparks=False):
     # Requires a list of testing dataset as input
     # (every test video has its own dataset)
     # Compute precision and recall only for a fixed threshold
@@ -396,7 +396,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
         write_videos_on_disk(xs=xs,ys=ys,preds=preds,
                              training_name=training_name,
                              video_name=test_dataset.video_name,
-                             path="predictions")
+                             path="predictions", only_sparks=only_sparks)
 
 
         # compute predicted sparks and correspondences

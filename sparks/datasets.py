@@ -49,7 +49,8 @@ class SparkDataset(Dataset):
                  step = 4, duration = 16, smoothing = False,
                  resampling = False, resampling_rate = 150,
                  remove_background = False, temporal_reduction = False,
-                 num_channels = 1, normalize_video = False):
+                 num_channels = 1, normalize_video = False,
+                 only_sparks = False):
 
         # base_path is the folder containing the whole dataset (train and test)
         self.base_path = base_path
@@ -127,6 +128,11 @@ class SparkDataset(Dataset):
                                 for mask in self.annotations]
 
         #print("annotations shape", self.annotations[-1].shape)
+
+        # if training with sparks only, set puffs and waves to 0
+        if only_sparks:
+            self.annotations = [np.where(np.logical_or(mask==1, mask==4),
+                                         mask, 0) for mask in self.annotations]
 
     def pad_short_video(self, video):
         # pad videos shorter than chunk duration with zeros on both sides
@@ -223,7 +229,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
                  resampling = False, resampling_rate = 150,
                  remove_background = False, gt_available = True,
                  temporal_reduction = False, num_channels = 1,
-                 normalize_video = False):
+                 normalize_video = False, only_sparks = False):
 
         # video_path is the complete path to the video
         # gt_available == True if ground truth annotations is available
@@ -299,6 +305,12 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         # if using temporal reduction, shorten the annotations duration
         if self.temporal_reduction:
             self.mask = shrink_mask(self.mask, self.num_channels)
+
+        # if training with sparks only, set puffs and waves to 0
+        if only_sparks:
+            self.mask = np.where(np.logical_or(self.mask==1, self.mask==4),
+                                 self.mask, 0)
+
 
     def pad_short_video(self, video, mask):
         # pad videos shorter than chunk duration with zeros on both sides

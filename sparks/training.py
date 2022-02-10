@@ -16,7 +16,7 @@ from tensorboardX import SummaryWriter
 import wandb
 
 import unet
-from dataset_tools import random_flip, compute_class_weights_puffs, weights_init
+from dataset_tools import random_flip, compute_class_weights, compute_class_weights_sparks, weights_init
 from datasets import SparkDataset, SparkTestDataset
 from training_tools import training_step, test_function_fixed_t, sampler
 from metrics_tools import take_closest
@@ -68,6 +68,7 @@ if __name__ == "__main__":
     params['data_duration'] = c.getint("data", "chunks_duration")
     params['data_step'] = c.getint("data", "step")
     params['ignore_frames_loss'] = c.getint("data", "ignore_frames_loss")
+    params['only_sparks'] = c.getboolean("data", "only_sparks", fallback=False)
 
     # UNet params
     params['unet_steps'] = c.getint("network", "step")
@@ -125,7 +126,10 @@ if __name__ == "__main__":
     ############################ configure datasets ############################
 
     # detect CUDA devices
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if c.getboolean("general", "cuda", fallback=True):
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        device = 'cpu'
     n_gpus = torch.cuda.device_count()
     logger.info(f"Using torch device {device}, with {n_gpus} GPUs")
 
@@ -152,7 +156,8 @@ if __name__ == "__main__":
         remove_background=c.getboolean("data", "remove_background"),
         temporal_reduction=params['temporal_reduction'],
         num_channels=params['temporal_reduction'],
-        normalize_video=norm_video
+        normalize_video=norm_video,
+        only_sparks=params['only_sparks']
     )
 
     # apply transforms
@@ -171,14 +176,18 @@ if __name__ == "__main__":
             remove_background=c.getboolean("data", "remove_background"),
             temporal_reduction=params['temporal_reduction'],
             num_channels=params['temporal_reduction'],
-            normalize_video=norm_video
+            normalize_video=norm_video,
+            only_sparks=params['only_sparks']
         ) for f in test_file_names]
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
 
     # class weights
-    class_weights = compute_class_weights_puffs(dataset)
+    if params['only_sparks']:
+        class_weights = compute_class_weights_sparks(dataset)
+    else:
+        class_weights = compute_class_weights(dataset)
     class_weights = torch.tensor(np.float32(class_weights))
 
     logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
@@ -210,7 +219,8 @@ if __name__ == "__main__":
         "using temporal reduction chunks_duration must be a multiple of num_channels"
         network = TempRedUNet(unet_config)
 
-    network = nn.DataParallel(network).to(device)
+    if device != "cpu":
+        network = nn.DataParallel(network).to(device)
 
     if c.getboolean("general", "wandb_enable"):
         wandb.watch(network)
@@ -283,7 +293,8 @@ if __name__ == "__main__":
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=c.get("general", "run_name"),
             temporal_reduction=params['temporal_reduction'],
-            num_channels=params['temporal_reduction']
+            num_channels=params['temporal_reduction'],
+            only_sparks=params['only_sparks']
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),
