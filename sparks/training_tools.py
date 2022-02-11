@@ -256,7 +256,7 @@ def test_function(network, device, criterion, testing_datasets, logger,
 def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                           summary_writer, threshold, ignore_frames, wandb_log,
                           training_name, temporal_reduction=False,
-                          num_channels=1, only_sparks=False):
+                          num_channels=1):
     # Requires a list of testing dataset as input
     # (every test video has its own dataset)
     # Compute precision and recall only for a fixed threshold
@@ -305,7 +305,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                 #    logger.info(f"Detect nan in network annotation (test): {torch.isnan(y).any()}")
 
                 pred = network(x[None, None])
-                
+
                 loss += criterion(pred[:,:,:-half_overlap_mask],
                                  y[:,:-half_overlap_mask].long())
 
@@ -396,7 +396,8 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
         write_videos_on_disk(xs=xs,ys=ys,preds=preds,
                              training_name=training_name,
                              video_name=test_dataset.video_name,
-                             path="predictions", only_sparks=only_sparks)
+                             path="predictions"
+                             )
 
 
         # compute predicted sparks and correspondences

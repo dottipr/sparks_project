@@ -170,3 +170,4 @@ test*
 *LOCAL*
 *.png
 *.csv
+.Xauthority

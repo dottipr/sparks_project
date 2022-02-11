@@ -131,6 +131,7 @@ class SparkDataset(Dataset):
 
         # if training with sparks only, set puffs and waves to 0
         if only_sparks:
+            logger.info("Removing puff and wave annotations in training set")
             self.annotations = [np.where(np.logical_or(mask==1, mask==4),
                                          mask, 0) for mask in self.annotations]
 
@@ -308,6 +309,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
 
         # if training with sparks only, set puffs and waves to 0
         if only_sparks:
+            logger.info("Removing puff and wave annotations in testing sample")
             self.mask = np.where(np.logical_or(self.mask==1, self.mask==4),
                                  self.mask, 0)
 

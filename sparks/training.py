@@ -16,7 +16,7 @@ from tensorboardX import SummaryWriter
 import wandb
 
 import unet
-from dataset_tools import random_flip, compute_class_weights, compute_class_weights_sparks, weights_init
+from dataset_tools import random_flip, compute_class_weights, weights_init
 from datasets import SparkDataset, SparkTestDataset
 from training_tools import training_step, test_function_fixed_t, sampler
 from metrics_tools import take_closest
@@ -184,8 +184,6 @@ if __name__ == "__main__":
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
 
     # class weights
-    if params['only_sparks']:
-        class_weights = compute_class_weights_sparks(dataset)
     else:
         class_weights = compute_class_weights(dataset)
     class_weights = torch.tensor(np.float32(class_weights))
@@ -293,8 +291,7 @@ if __name__ == "__main__":
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=c.get("general", "run_name"),
             temporal_reduction=params['temporal_reduction'],
-            num_channels=params['num_channels'],
-            only_sparks=params['only_sparks']
+            num_channels=params['num_channels']
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),

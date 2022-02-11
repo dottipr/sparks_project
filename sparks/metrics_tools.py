@@ -49,7 +49,7 @@ def empty_marginal_frames(video, n_frames):
 
 
 def write_videos_on_disk(training_name, video_name, path="predictions",
-                         xs=None, ys=None, preds=None, only_sparks=False):
+                         xs=None, ys=None, preds=None):
     # Write all videos on disk
     # xs : input video used by network
     # ys: segmentation video used in loss function
@@ -66,11 +66,10 @@ def write_videos_on_disk(training_name, video_name, path="predictions",
     if not isinstance(preds, type(None)):
         imageio.volwrite(os.path.join(path, out_name_root + "sparks.tif"),
                                       np.exp(preds[1]))
-        if not only_sparks:
-            imageio.volwrite(os.path.join(path, out_name_root + "waves.tif"),
-                                          np.exp(preds[2]))
-            imageio.volwrite(os.path.join(path, out_name_root + "puffs.tif"),
-                                          np.exp(preds[3]))
+        imageio.volwrite(os.path.join(path, out_name_root + "waves.tif"),
+                                      np.exp(preds[2]))
+        imageio.volwrite(os.path.join(path, out_name_root + "puffs.tif"),
+                                      np.exp(preds[3]))
 
 
 def take_closest(myList, myNumber):

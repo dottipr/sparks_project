@@ -17,7 +17,6 @@ import torch
 __all__ = ["get_chunks",
            "random_flip",
            "compute_class_weights",
-           "compute_class_weights_sparks",
            "weights_init",
            "get_times",
            "get_fps",
@@ -81,26 +80,6 @@ def compute_class_weights(dataset, w0=1, w1=1, w2=1, w3=1):
     w3_new = w3*total/(4*count3) if count3 != 0 else 0
 
     weights = np.array([w0_new, w1_new, w2_new, w3_new])
-
-    return np.float64(weights)
-
-
-def compute_class_weights_sparks(dataset, w0=1, w1=1):
-    # For 2 classes
-    count0 = 0
-    count1 = 0
-
-    with torch.no_grad():
-        for _,y in dataset:
-            count0 += np.count_nonzero(y==0)
-            count1 += np.count_nonzero(y==1)
-
-    total = count0 + count1
-
-    w0_new = w0*total/(4*count0) if count0 != 0 else 0
-    w1_new = w1*total/(4*count1) if count1 != 0 else 0
-
-    weights = np.array([w0_new, w1_new])
 
     return np.float64(weights)
 
