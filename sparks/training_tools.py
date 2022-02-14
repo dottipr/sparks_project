@@ -260,6 +260,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     # Requires a list of testing dataset as input
     # (every test video has its own dataset)
     # Compute precision and recall only for a fixed threshold
+    # Compute IoU for puffs and waves classes
     # TODO: fix 'test_function' s.t. it works properly w.r.t. prec recall plot
 
     network.eval()
@@ -267,7 +268,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     duration = testing_datasets[0].duration
     step = testing_datasets[0].step
     half_overlap = (duration-step)//2 # to re-build videos from chunks
-    # (duration-step) has to be even
+
     assert (duration-step)%2 == 0, "(duration-step) is not even"
 
     if temporal_reduction:
@@ -280,7 +281,10 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     #print(f"chunk duration = {duration}; step = {step}; half_overlap = {half_overlap}; half_overlap_mask = {half_overlap_mask}")
 
     loss = 0.0
-    metrics = [] # store metrics for each video
+    metrics = {} # store metrics for each video
+    metrics['sparks'] = []
+    metrics['puffs'] = []
+    metrics['waves'] = []
 
     for test_dataset in testing_datasets:
 
@@ -399,51 +403,48 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                              path="predictions"
                              )
 
+        ################### compute metrics for single video ###################
 
-        # compute predicted sparks and correspondences
-        sparks = np.exp(preds[1])
-        #sparks = sparks[ignore_frames:-ignore_frames]
-        #sparks = np.pad(sparks,((ignore_frames,),(0,),(0,)), mode='constant')
-        sparks = empty_marginal_frames(sparks, ignore_frames)
+        # clean annotations
+        ys = empty_marginal_frames(ys, ignore_frames)
+        # get ignore mask ( = events labelled with 4)
+        ignore_mask = empty_marginal_frames(np.where(ys==4,1,0), ignore_frames)
 
-        #min_radius = 3 # minimal "radius" of a valid event
+        # Sparks metrics
 
-        #coords_preds = process_spark_prediction(sparks,
-        #                                        t_detection=(threshold),
-        #                                        min_radius=min_radius)
+        sparks = empty_marginal_frames(np.exp(preds[1]), ignore_frames) # preds
+        sparks_true = np.where(ys==1, 1.0, 0.0) # annotations
+        sparks_prec_rec = compute_prec_rec(sparks_true, sparks, [threshold])
+        metrics['sparks'].append(sparks_prec_rec)
+        # min_radius is 3 and match_distance is 6
 
-        #sparks_mask_true = ys[ignore_frames:-ignore_frames]
-        #sparks_mask_true = np.pad(sparks_mask_true,((ignore_frames,),(0,),(0,)),
-        #                          mode='constant')
-        sparks_mask_true = empty_marginal_frames(ys, ignore_frames)
-        sparks_mask_true = np.where(sparks_mask_true==1, 1.0, 0.0)
+        # Puffs & waves metrics
 
+        waves = empty_marginal_frames(np.exp(preds[2]), ignore_frames) # preds
+        waves_true = np.where(ys==2, 1, 0) # annotations
+        waves_iou = jaccard_score_exclusion_zone(waves_true, waves,
+                                                 exclusion_radius=0,
+                                                 ignore_mask=ignore_mask)
+        metrics['waves'].append(waves_iou)
 
-        #coords_true = nonmaxima_suppression(sparks_mask_true)
-
-        #metrics.append(Metrics(*correspondences_precision_recall(coords_true,
-        #                                    coords_preds, match_distance=6)))
-
-
-        #metrics.append(compute_prec_rec(sparks_mask_true, sparks, thresholds))
-        metrics.append(compute_prec_rec(sparks_mask_true, sparks, [threshold]))
-
+        puffs = empty_marginal_frames(np.exp(preds[3]), ignore_frames) # preds
+        puffs_true = np.where(ys==3, 1, 0) # annotations
+        puffs_iou = jaccard_score_exclusion_zone(puffs_true, puffs,
+                                                 exclusion_radius=0,
+                                                 ignore_mask=ignore_mask)
+        metrics['puffs'].append(puffs_iou)
 
     # Compute average validation loss
     loss = loss.item()
     loss /= len(testing_datasets)
 
-    # Compute metrics comparing ys and y_preds
-    _, precs, recs, a_u_c = reduce_metrics_thresholds(metrics)
+    ############################## reduce metrics ##############################
 
-    #prec = precs[fixed_threshold_idx]
-    #rec = recs[fixed_threshold_idx]
+    # Sparks metrics
+    _, precs, recs, a_u_c = reduce_metrics_thresholds(metrics['sparks'])
+
     prec = precs[threshold]
     rec = recs[threshold]
-    logger.info("\tPrecision: {:.4g}".format(prec))
-    logger.info("\tRecall: {:.4g}".format(rec))
-    #logger.info("\tArea under the curve: {:.4g}".format(a_u_c))
-    logger.info("\tValidation loss: {:.4g}".format(loss))
 
     '''
     # TODO: not working properly
@@ -463,9 +464,22 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     figure.savefig("prec_rec_plot.png")
     '''
 
+    # Puffs and waves metrics
+    puffs_iou = sum(metrics['puffs'])/len(metrics['puffs'])
+    waves_iou = sum(metrics['waves'])/len(metrics['waves'])
+
+    logger.info("\tPrecision: {:.4g}".format(prec))
+    logger.info("\tRecall: {:.4g}".format(rec))
+    #logger.info("\tArea under the curve: {:.4g}".format(a_u_c))
+    logger.info("\tPuffs IoU: {:.4g}".format(puffs_iou))
+    logger.info("\tWaves IoU: {:.4g}".format(waves_iou))
+    logger.info("\tValidation loss: {:.4g}".format(loss))
+
     results = {"sparks/precision": prec,
                "sparks/recall": rec,
                #"sparks/area_under_curve": a_u_c,
+               "puffs/iou": puffs_iou,
+               "waves/iou": waves_iou,
                "validation_loss": loss}
 
     if wandb_log:

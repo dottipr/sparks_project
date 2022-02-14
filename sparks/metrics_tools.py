@@ -29,7 +29,7 @@ __all__ = ["Metrics",
            "process_spark_prediction",
            "process_puff_prediction",
            "process_wave_prediction",
-           "write_videos_on_disk"
+           "jaccard_score_exclusion_zone"
            ]
 
 
@@ -386,3 +386,45 @@ def process_wave_prediction(pred, t_detection = 0.5,
     # for now: do the same as with puffs
 
     return process_puff_prediction(pred, t_detection, min_radius, ignore_frames)
+
+
+def jaccard_score_exclusion_zone(ys,preds,exclusion_radius,ignore_mask=None,sparks=False):
+    # ys is a binary mask
+    # preds has values between 0 and 1
+
+    # Compute intersection and union
+    intersection = np.logical_and(ys, preds)
+    union = np.logical_or(ys, preds)
+
+    if exclusion_radius != 0:
+        # Compute exclusion zone: 1 where Jaccard index has to be computed, 0 otherwise
+        dilated = binary_dilation(ys, iterations=exclusion_radius)
+
+        if not sparks:
+            eroded = binary_erosion(ys, iterations=exclusion_radius)
+            exclusion_mask = 1 - np.logical_xor(eroded,dilated)
+        else:
+            # Erosion is not computed for spark class
+            exclusion_mask = 1 - np.logical_xor(ys,dilated)
+
+        # If ignore mask is given, don't compute values where it is 1
+        if ignore_mask is not None:
+            # Compute dilation for ignore mask too (erosion not necessary)
+            ignore_mask = binary_dilation(ignore_mask, iterations=exclusion_radius)
+
+            # Ignore regions where ignore mask is 1
+            exclusion_mask = np.logical_and(1 - ignore_mask, exclusion_mask)
+
+        # Compute intersecion of exclusion mask with intersection and union
+        intersection = np.logical_and(intersection, exclusion_mask)
+        union = np.logical_and(union, exclusion_mask)
+
+    #print("Pixels in intersection:", np.count_nonzero(intersection))
+    #print("Pixels in union:", np.count_nonzero(union))
+
+    if np.count_nonzero(union) != 0:
+        iou = np.count_nonzero(intersection)/np.count_nonzero(union)
+    else:
+        iou = 1.
+
+    return iou
