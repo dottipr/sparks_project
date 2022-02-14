@@ -53,6 +53,7 @@ if __name__ == "__main__":
 
     # general params
     params['name'] = c.get("general", "run_name", fallback="run") # Run name
+    params['load_name'] = c.get("general", "load_run_name", fallback=None)
 
     # training params
     params['load_epoch'] = c.getint("state", "load_epoch", fallback=0)
@@ -247,8 +248,17 @@ if __name__ == "__main__":
     output_path = os.path.join(c.get("network", "output_relative_path"),
                                params['name'])
     logger.info(f"Output directory: {output_path}")
+
     summary_writer = SummaryWriter(os.path.join(output_path, "summary"),
                                    purge_step=0)
+
+    if params['load_name'] != None:
+        load_path = os.path.join(c.get("network", "output_relative_path"),
+                                   params['load_name'])
+        logger.info(f"Model loaded from directory: {load_path}")
+    else:
+        load_path = None
+
 
     if params['loss_function'] == "nll_loss":
         criterion = nn.NLLLoss(ignore_index=c.getint("data", "ignore_index"),
@@ -271,6 +281,7 @@ if __name__ == "__main__":
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False)
         ),
         save_every=c.getint("training", "save_every", fallback=5000),
+        load_path=load_path,
         save_path=output_path,
         managed_objects=unet.managed_objects({
             'network': network,
