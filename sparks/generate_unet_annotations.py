@@ -15,6 +15,10 @@ UPDATES:
 31.08.2021  Generate annotazioni con ignore_region == 1 per i nuovi video
             [12-14; 18-20; 29-30; 38-46]
 
+TODO:
+15.02.2022  Tenere sempre aggiornato rispetto al file salvato localmente (su
+            switchdrive), ad esempio ora il file usa gli smoothed videos invece
+            del video originale per calcolare il centro degli sparks.
 '''
 
 import os

@@ -255,7 +255,8 @@ def test_function(network, device, criterion, testing_datasets, logger,
 
 def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                           summary_writer, threshold, ignore_frames, wandb_log,
-                          training_name, temporal_reduction=False,
+                          training_name, sparks_min_radius, puffs_min_radius,
+                          waves_min_radius, temporal_reduction=False,
                           num_channels=1):
     # Requires a list of testing dataset as input
     # (every test video has its own dataset)
@@ -408,28 +409,42 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
         # clean annotations
         ys = empty_marginal_frames(ys, ignore_frames)
         # get ignore mask ( = events labelled with 4)
-        ignore_mask = empty_marginal_frames(np.where(ys==4,1,0), ignore_frames)
+        ignore_mask = np.where(ys==4,1,0)
 
         # Sparks metrics
 
-        sparks = empty_marginal_frames(np.exp(preds[1]), ignore_frames) # preds
+        sparks = np.exp(preds[1])  # preds
         sparks_true = np.where(ys==1, 1.0, 0.0) # annotations
-        sparks_prec_rec = compute_prec_rec(sparks_true, sparks, [threshold])
+        sparks_prec_rec = compute_prec_rec(annotations=sparks_true,
+                                           preds=sparks,
+                                           thresholds=[threshold],
+                                           ignore_frames=ignore_frames,
+                                           min_radius=sparks_min_radius)
         metrics['sparks'].append(sparks_prec_rec)
         # min_radius is 3 and match_distance is 6
 
         # Puffs & waves metrics
 
-        waves = empty_marginal_frames(np.exp(preds[2]), ignore_frames) # preds
+        waves = np.exp(preds[2]) # preds
+        waves_binary = process_wave_prediction(pred=waves,
+                                               t_detection=0.5,
+                                               min_radius=waves_min_radius,
+                                               ignore_frames=ignore_frames)
         waves_true = np.where(ys==2, 1, 0) # annotations
-        waves_iou = jaccard_score_exclusion_zone(waves_true, waves,
+        waves_iou = jaccard_score_exclusion_zone(ys=waves_true,
+                                                 preds=waves_binary,
                                                  exclusion_radius=0,
                                                  ignore_mask=ignore_mask)
         metrics['waves'].append(waves_iou)
 
-        puffs = empty_marginal_frames(np.exp(preds[3]), ignore_frames) # preds
+        puffs = np.exp(preds[3]) # preds
+        puffs_binary = process_puff_prediction(pred=puffs,
+                                               t_detection=0.5,
+                                               min_radius=puffs_min_radius,
+                                               ignore_frames=ignore_frames)
         puffs_true = np.where(ys==3, 1, 0) # annotations
-        puffs_iou = jaccard_score_exclusion_zone(puffs_true, puffs,
+        puffs_iou = jaccard_score_exclusion_zone(ys=puffs_true,
+                                                 preds=puffs_binary,
                                                  exclusion_radius=0,
                                                  ignore_mask=ignore_mask)
         metrics['puffs'].append(puffs_iou)

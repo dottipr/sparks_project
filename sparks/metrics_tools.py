@@ -145,7 +145,7 @@ def get_sparks_locations_from_mask(mask, ignore_frames=0):
 
 def process_spark_prediction(pred, t_detection = 0.9,
                              neighborhood_radius = 5,
-                             min_radius = 4,
+                             min_radius = 3,
                              return_mask = False,
                              return_clean_pred = False,
                              ignore_frames = 0):
@@ -364,7 +364,8 @@ def process_puff_prediction(pred, t_detection = 0.5,
     '''
 
     # set first and last frames to 0 according to ignore_frames
-    pred_puffs = empty_marginal_frames(pred, ignore_frames)
+    if ignore_frames != 0:
+        pred_puffs = empty_marginal_frames(pred, ignore_frames)
 
     # remove small objects
     min_size = (2 * min_radius) ** pred.ndim
@@ -389,8 +390,7 @@ def process_wave_prediction(pred, t_detection = 0.5,
 
 
 def jaccard_score_exclusion_zone(ys,preds,exclusion_radius,ignore_mask=None,sparks=False):
-    # ys is a binary mask
-    # preds has values between 0 and 1
+    # ys, preds and ignore_mask are binary masks
 
     # Compute intersection and union
     intersection = np.logical_and(ys, preds)

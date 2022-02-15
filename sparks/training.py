@@ -77,6 +77,11 @@ if __name__ == "__main__":
     params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
     params['num_channels'] = c.getint("network", "num_channels", fallback=1)
 
+    # Testing params
+    params['sparks_min_radius'] = c.getint("testing", "sparks_min_radius")
+    params['puffs_min_radius'] = c.getint("testing", "puffs_min_radius")
+    params['waves_min_radius'] = c.getint("testing", "waves_min_radius")
+
     ############################# configure logger #############################
 
     level_map = {3: logging.DEBUG, 2: logging.INFO, 1: logging.WARNING, 0: logging.ERROR}
@@ -301,6 +306,9 @@ if __name__ == "__main__":
             ignore_frames=params['ignore_frames_loss'],
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=c.get("general", "run_name"),
+            sparks_min_radius=params['sparks_min_radius'],
+            puffs_min_radius=params['puffs_min_radius'],
+            waves_min_radius=params['waves_min_radius'],
             temporal_reduction=params['temporal_reduction'],
             num_channels=params['num_channels']
         ),
