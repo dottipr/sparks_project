@@ -16,19 +16,19 @@ from tensorboardX import SummaryWriter
 import wandb
 
 import unet
-from dataset_tools import random_flip, compute_class_weights, weights_init
-from datasets import SparkDataset, SparkTestDataset
-from training_tools import training_step, test_function_fixed_t, sampler
+from dataset_tools import random_flip, weights_init#, compute_class_weights
+from datasets import DenoiseDataset, DenoiseTestDataset
+from training_tools import training_step, test_function, sampler
 from metrics_tools import take_closest
 from focal_losses import FocalLoss
-from architecture import TempRedUNet
+#from architecture import TempRedUNet
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
 logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser("Spark & Puff detector using U-Net.")
+    parser = argparse.ArgumentParser("Denoise Sparks data using U-Net.")
 
     ############################# load config file #############################
 
@@ -60,7 +60,7 @@ if __name__ == "__main__":
     params['train_epochs'] = c.getint("training", "epochs", fallback=5000)
     params['training'] = c.getboolean("general", "training") # Run training procedure on data
     params['testing'] = c.getboolean("general", "testing") # Run training procedure on data
-    params['loss_function'] = c.get("training", "criterion", fallback="nll_loss")
+    #params['loss_function'] = c.get("training", "criterion", fallback="nll_loss")
 
     # data params
     params['dataset_basedir'] = c.get("data", "relative_path")
@@ -69,18 +69,18 @@ if __name__ == "__main__":
     params['data_duration'] = c.getint("data", "chunks_duration")
     params['data_step'] = c.getint("data", "step")
     params['ignore_frames_loss'] = c.getint("data", "ignore_frames_loss")
-    params['only_sparks'] = c.getboolean("data", "only_sparks", fallback=False)
+    #params['only_sparks'] = c.getboolean("data", "only_sparks", fallback=False)
 
     # UNet params
     params['unet_steps'] = c.getint("network", "step")
     params['first_layer_channels'] = c.getint("network", "first_layer_channels")
-    params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
-    params['num_channels'] = c.getint("network", "num_channels", fallback=1)
+    #params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
+    #params['num_channels'] = c.getint("network", "num_channels", fallback=1)
 
     # Testing params
-    params['sparks_min_radius'] = c.getint("testing", "sparks_min_radius")
-    params['puffs_min_radius'] = c.getint("testing", "puffs_min_radius")
-    params['waves_min_radius'] = c.getint("testing", "waves_min_radius")
+    #params['sparks_min_radius'] = c.getint("testing", "sparks_min_radius")
+    #params['puffs_min_radius'] = c.getint("testing", "puffs_min_radius")
+    #params['waves_min_radius'] = c.getint("testing", "waves_min_radius")
 
     ############################# configure logger #############################
 
@@ -139,9 +139,10 @@ if __name__ == "__main__":
     n_gpus = torch.cuda.device_count()
     logger.info(f"Using torch device {device}, with {n_gpus} GPUs")
 
+    ''' non penso la temp reduction sia rilevante in questo caso
     # set if temporal reduction is used
     if params['temporal_reduction']:
-        logger.info(f"Using temporal reduction with {params['num_channels']} channels")
+        logger.info(f"Using temporal reduction with {params['num_channels']} channels")'''
 
     # normalize whole videos or chunks individually
     norm_video = c.getboolean("data", "norm_video", fallback=False)
@@ -154,16 +155,16 @@ if __name__ == "__main__":
     dataset_path = os.path.realpath(f"{BASEDIR}/{params['dataset_basedir']}/{dataset_dir}")
     assert os.path.isdir(dataset_path), f"\"{dataset_path}\" is not a directory"
     logger.info(f"Using {dataset_path} as dataset root path")
-    dataset = SparkDataset(
+    dataset = DenoiseDataset(
         base_path=dataset_path,
-        smoothing='2d',
+        #smoothing='2d',
         step=params['data_step'],
         duration=params['data_duration'],
-        remove_background=c.getboolean("data", "remove_background"),
-        temporal_reduction=params['temporal_reduction'],
-        num_channels=params['num_channels'],
+        #remove_background=c.getboolean("data", "remove_background"),
+        #temporal_reduction=params['temporal_reduction'],
+        #num_channels=params['num_channels'],
         normalize_video=norm_video,
-        only_sparks=params['only_sparks']
+        #only_sparks=params['only_sparks']
     )
 
     # apply transforms
@@ -177,27 +178,28 @@ if __name__ == "__main__":
     test_filenames = sorted(glob.glob(pattern_test_filenames))
 
     testing_datasets = [
-        SparkTestDataset(
+        DenoiseTestDataset(
             video_path=f,
-            smoothing='2d',
+            #smoothing='2d',
             step=params['data_step'],
             duration=params['data_duration'],
-            remove_background=c.getboolean("data", "remove_background"),
-            temporal_reduction=params['temporal_reduction'],
-            num_channels=params['num_channels'],
+            #remove_background=c.getboolean("data", "remove_background"),
+            #temporal_reduction=params['temporal_reduction'],
+            #num_channels=params['num_channels'],
             normalize_video=norm_video,
-            only_sparks=params['only_sparks']
-        ) for f in test_file_names]
+            #only_sparks=params['only_sparks']
+        ) for f in test_filenames]
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
 
+    ''' non ci sono classi per una regressione
     # class weights
     else:
         class_weights = compute_class_weights(dataset)
     class_weights = torch.tensor(np.float32(class_weights))
 
-    logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
+    logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))'''
 
     # initialize data loaders
     dataset_loader = DataLoader(dataset, batch_size=params['batch_size'], shuffle=True, num_workers=c.getint("training", "num_workers"))
@@ -211,20 +213,21 @@ if __name__ == "__main__":
     unet_config = unet.UNetConfig(
         steps=params['unet_steps'],
         first_layer_channels=params['first_layer_channels'],
-        num_classes=c.getint("network", "num_classes"),
+        num_classes=1, # NON SO SE È GIUSTO !?!
+        #num_classes=c.getint("network", "num_classes"),
         ndims=c.getint("network", "ndims"),
         dilation=c.getint("network", "dilation", fallback=1),
         border_mode=c.get("network", "border_mode"),
         batch_normalization=c.getboolean("network", "batch_normalization"),
-        num_input_channels=params['num_channels'],
+        #num_input_channels=params['num_channels'],
     )
 
-    if not params['temporal_reduction']:
-        network = unet.UNetClassifier(unet_config)
-    else:
+    '''if not params['temporal_reduction']:'''
+    network = unet.UNetRegressor(unet_config)
+    '''else:
         assert params['data_duration'] % params['num_channels'] == 0, \
         "using temporal reduction chunks_duration must be a multiple of num_channels"
-        network = TempRedUNet(unet_config)
+        network = TempRedUNet(unet_config)'''
 
     if device != "cpu":
         network = nn.DataParallel(network).to(device)
@@ -241,7 +244,7 @@ if __name__ == "__main__":
                                            # TODO: maybe change because
                                            # nonmaxima supression is computed
                                            # for every threshold (slow)
-    fixed_threshold = c.getfloat("testing", "fixed_threshold", fallback = 0.9)
+    '''fixed_threshold = c.getfloat("testing", "fixed_threshold", fallback = 0.9)'''
     #closest_t = take_closest(thresholds, fixed_threshold) # Compute idx of t in
                                                           # thresholds list that
                                                           # is closest to
@@ -268,13 +271,14 @@ if __name__ == "__main__":
         load_path = None
 
 
-    if params['loss_function'] == "nll_loss":
+    '''if params['loss_function'] == "nll_loss":
         criterion = nn.NLLLoss(ignore_index=c.getint("data", "ignore_index"),
                                weight=class_weights.to(device))
     elif params['loss_function'] == "focal_loss":
         criterion = FocalLoss(reduction='mean',
                               ignore_index=c.getint("data", "ignore_index"),
-                              alpha=class_weights)
+                              alpha=class_weights)'''
+    criterion = nn.MSELoss()
 
     trainer = unet.TrainingManager(
         # training items
@@ -289,31 +293,31 @@ if __name__ == "__main__":
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False)
         ),
         save_every=c.getint("training", "save_every", fallback=5000),
-        load_path=load_path,
+        #load_path=load_path,
         save_path=output_path,
         managed_objects=unet.managed_objects({
             'network': network,
             'optimizer': optimizer
         }),
         # testing items
-        test_function=lambda _: test_function_fixed_t(
+        test_function=lambda _: test_function(
             network,
             device,
             criterion,
             testing_datasets,
             logger,
             summary_writer,
-            fixed_threshold,
+            #fixed_threshold,
             #thresholds,
             #idx_fixed_t,
             ignore_frames=params['ignore_frames_loss'],
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=c.get("general", "run_name"),
-            sparks_min_radius=params['sparks_min_radius'],
-            puffs_min_radius=params['puffs_min_radius'],
-            waves_min_radius=params['waves_min_radius'],
-            temporal_reduction=params['temporal_reduction'],
-            num_channels=params['num_channels']
+            #sparks_min_radius=params['sparks_min_radius'],
+            #puffs_min_radius=params['puffs_min_radius'],
+            #waves_min_radius=params['waves_min_radius'],
+            #temporal_reduction=params['temporal_reduction'],
+            #num_channels=params['num_channels']
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),

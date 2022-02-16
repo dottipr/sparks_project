@@ -21,11 +21,12 @@ from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader
 
-from dataset_tools import (get_chunks, get_fps, video_spline_interpolation,
-                           remove_avg_background, shrink_mask)
+from dataset_tools import (get_chunks, #get_fps, video_spline_interpolation,
+                           remove_avg_background, #shrink_mask
+                           )
 
 
-__all__ = ["SparkDataset", "SparkTestDataset"]
+__all__ = ["DenoiseDataset", "DenoiseTestDataset"]
 
 
 basepath = os.path.dirname("__file__")
@@ -35,17 +36,19 @@ logger = logging.getLogger(__name__)
 '''
 Dataset videos are identified by an ID of the form XX
 Video filenames are: XX_video.tif
-Annotation filenames are: XX_video_mask.tif
+Annotation filenames are: XX_smoothed_video.tif
 '''
 
-class SparkDataset(Dataset):
+class DenoiseDataset(Dataset):
 
     def __init__(self, base_path,
-                 step = 4, duration = 16, smoothing = False,
-                 resampling = False, resampling_rate = 150,
-                 remove_background = False, temporal_reduction = False,
-                 num_channels = 1, normalize_video = False,
-                 only_sparks = False):
+                 step = 4, duration = 16, #smoothing = False,
+                 #resampling = False, resampling_rate = 150,
+                 #remove_background = False,
+                 normalize_video = False,
+                 #temporal_reduction = False, num_channels = 1,
+                 #only_sparks = False
+                 ):
 
         # base_path is the folder containing the whole dataset (train and test)
         self.base_path = base_path
@@ -54,9 +57,10 @@ class SparkDataset(Dataset):
         self.duration = duration
         self.step = step
 
+        ''' non penso la temp reduction sia rilevante in questo caso
         self.temporal_reduction = temporal_reduction
         if self.temporal_reduction:
-            self.num_channels = num_channels
+            self.num_channels = num_channels'''
 
         self.normalize_video = normalize_video
 
@@ -64,21 +68,24 @@ class SparkDataset(Dataset):
         self.files = sorted(glob.glob(os.path.join(self.base_path,
                                                    "videos", "[0-9][0-9]_video.tif")))
         self.annotations_files = sorted(glob.glob(os.path.join(self.base_path,
-                                              "videos", "[0-9][0-9]_video_mask.tif")))
+                                              "videos", "[0-9][0-9]_smoothed_video.tif")))
 
-        # check that video filenames correspond to annotation filenames
+        '''# check that video filenames correspond to annotation filenames
         assert ((os.path.splitext(v) + "_mask") == os.path.splitext(a)
                 for v,a in zip(self.files,self.annotations_files)), \
-               "Video and annotation filenames do not match"
+               "Video and annotation filenames do not match"'''
 
         # get videos and masks data
-        self.data = [np.asarray(imageio.volread(file)) for file in self.files]
-        self.annotations = [np.asarray(imageio.volread(f)).astype('int')
+        self.data = [np.asarray(imageio.volread(f)) for f in self.files]
+        self.annotations = [np.asarray(imageio.volread(f))
                             for f in self.annotations_files]
 
         # preprocess videos if necessary
+        ''' TODO (in case): remove background from annotations as well
         if remove_background:
-            self.data = [remove_avg_background(video) for video in self.data]
+            self.data = [remove_avg_background(video) for video in self.data]'''
+
+        ''' non ha senso visto che lo scopo è il denoising
         if smoothing == '2d':
             _smooth_filter = torch.tensor(([1/16,1/16,1/16],
                                            [1/16,1/2,1/16],
@@ -90,16 +97,21 @@ class SparkDataset(Dataset):
         if smoothing == '3d':
             _smooth_filter = 1/52*np.ones((3,3,3))
             _smooth_filter[1,1,1] = 1/2
-            self.data = [convolve(video, _smooth_filter) for video in self.data]
+            self.data = [convolve(video, _smooth_filter) for video in self.data]'''
+
+        ''' non penso sia necessario, se caso TODO: resampling delle annotations
         if resampling:
             self.fps = [get_fps(file) for file in self.files]
             self.data = [video_spline_interpolation(video, video_path,
                                                     resampling_rate)
-                            for video,video_path in zip(self.data,self.files)]
+                            for video,video_path in zip(self.data,self.files)]'''
 
         if self.normalize_video:
-            self.data = [(video - video.min()) / (video.max() - video.min())
+            self.data = [(video-video.min()) / (video.max()-video.min())
                          for video in self.data]
+            # normalize annotations too
+            self.annotations = [(video-video.min()) / (video.max()-video.min())
+                                for video in self.annotations]
 
         # pad movies whose length does not match chunks_duration and step params
         self.data = [self.pad_end_of_video(video) for video in self.data]
@@ -117,18 +129,20 @@ class SparkDataset(Dataset):
         #print("num chunks", self.tot_blocks)
         #print("number of previous videos chunks", self.preceding_blocks)
 
+        ''' non penso la temp reduction sia rilevante in questo caso
         # if using temporal reduction, shorten the annotations duration
         if self.temporal_reduction:
             self.annotations = [shrink_mask(mask, self.num_channels)
-                                for mask in self.annotations]
+                                for mask in self.annotations]'''
 
         #print("annotations shape", self.annotations[-1].shape)
 
+        ''' non ha senso qui
         # if training with sparks only, set puffs and waves to 0
         if only_sparks:
             logger.info("Removing puff and wave annotations in training set")
             self.annotations = [np.where(np.logical_or(mask==1, mask==4),
-                                         mask, 0) for mask in self.annotations]
+                                         mask, 0) for mask in self.annotations]'''
 
     def pad_short_video(self, video):
         # pad videos shorter than chunk duration with zeros on both sides
@@ -199,6 +213,7 @@ class SparkDataset(Dataset):
         #print("chunk id", chunk_id)
         #print("chunks", chunks[chunk_id])
 
+        ''' non penso la temp reduction sia rilevante in questo caso
         if self.temporal_reduction:
             assert self.lengths[vid_id] % self.num_channels == 0, \
                    "video length must be a multiple of num_channels"
@@ -213,28 +228,37 @@ class SparkDataset(Dataset):
 
             #print("mask chunk", masks_chunks[chunk_id])
             labels = self.annotations[vid_id][masks_chunks[chunk_id]]
-        else:
-            labels = self.annotations[vid_id][chunks[chunk_id]]
+        else:'''
+        labels = self.annotations[vid_id][chunks[chunk_id]]
+
+        # normalize annotations too
+        if not self.normalize_video:
+            labels = (labels - labels.min()) / (labels.max() - labels.min())
+        assert labels.min() >= 0 and labels.max() <= 1, \
+               "labels values not normalized between 0 and 1"
+        labels = np.float32(labels)
 
         return chunk, labels
 
-class SparkTestDataset(Dataset): # dataset that load a single video for testing
+class DenoiseTestDataset(Dataset): # dataset that load a single video for testing
 
     def __init__(self, video_path,
-                 step = 4, duration = 16, smoothing = False,
-                 resampling = False, resampling_rate = 150,
-                 remove_background = False, gt_available = True,
-                 temporal_reduction = False, num_channels = 1,
-                 normalize_video = False, only_sparks = False):
+                 step = 4, duration = 16, #smoothing = False,
+                 #resampling = False, resampling_rate = 150,
+                 #remove_background = False,
+                 gt_available = True,
+                 #temporal_reduction = False, num_channels = 1,
+                 normalize_video = False, #only_sparks = False
+                 ):
 
         # video_path is the complete path to the video
         # gt_available == True if ground truth annotations is available
 
         self.gt_available = gt_available
 
-        self.temporal_reduction = temporal_reduction
+        '''self.temporal_reduction = temporal_reduction
         if self.temporal_reduction:
-            self.num_channels = num_channels
+            self.num_channels = num_channels'''
 
         self.normalize_video = normalize_video
 
@@ -248,14 +272,14 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
 
         # get mask path and array
         if self.gt_available:
-            mask_filename = filename[:2]+"_video_mask.tif"
+            mask_filename = filename[:2]+"_smoothed_video.tif"
             mask_path = os.path.join(path, mask_filename)
             self.mask = imageio.volread(mask_path)
 
-        # perform some preprocessing on videos, if required
+        '''# perform some preprocessing on videos, if required
         if remove_background:
-            self.video = remove_avg_background(self.video)
-        if smoothing == '2d':
+            self.video = remove_avg_background(self.video)'''
+        '''if smoothing == '2d':
             _smooth_filter = torch.tensor(([1/16,1/16,1/16],
                                            [1/16,1/2,1/16],
                                            [1/16,1/16,1/16]))
@@ -265,14 +289,16 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         if smoothing == '3d':
             _smooth_filter = 1/52*np.ones((3,3,3))
             _smooth_filter[1,1,1] = 1/2
-            self.video = convolve(self.video, _smooth_filter)
-        if resampling:
+            self.video = convolve(self.video, _smooth_filter)'''
+        '''if resampling:
             self.fps = get_fps(self.file)
             self.video = video_spline_interpolation(self.video, self.file,
-                                                    resampling_rate)
+                                                    resampling_rate)'''
 
         if self.normalize_video:
             self.video = (self.video-self.video.min())/(self.video.max()-self.video.min())
+            # normalize annotations too
+            self.mask = (self.mask-self.mask.min())/(self.mask.max()-self.mask.min())
 
         self.step = step
         self.duration = duration
@@ -300,15 +326,15 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         # blocks in the video :
         self.blocks_number = ((self.length-self.duration)//self.step)+1
 
-        # if using temporal reduction, shorten the annotations duration
+        '''# if using temporal reduction, shorten the annotations duration
         if self.temporal_reduction:
-            self.mask = shrink_mask(self.mask, self.num_channels)
+            self.mask = shrink_mask(self.mask, self.num_channels)'''
 
-        # if training with sparks only, set puffs and waves to 0
+        '''# if training with sparks only, set puffs and waves to 0
         if only_sparks:
             logger.info("Removing puff and wave annotations in testing sample")
             self.mask = np.where(np.logical_or(self.mask==1, self.mask==4),
-                                 self.mask, 0)
+                                 self.mask, 0)'''
 
 
     def pad_short_video(self, video, mask):
@@ -339,7 +365,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         chunk = np.float32(chunk)
         if self.gt_available:
 
-            if self.temporal_reduction:
+            '''if self.temporal_reduction:
                 assert self.length % self.num_channels == 0, \
                        "video length must be a multiple of num_channels (test)"
                 assert self.step % self.num_channels == 0, \
@@ -352,8 +378,15 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
                                           self.duration//self.num_channels)
 
                 labels = self.mask[masks_chunks[chunk_id]]
-            else:
-                labels = self.mask[chunks[chunk_id]]
+            else:'''
+            labels = self.mask[chunks[chunk_id]]
+
+            # normalize annotations too
+            if not self.normalize_video:
+                labels = (labels - labels.min()) / (labels.max() - labels.min())
+            assert labels.min() >= 0 and labels.max() <= 1, \
+                   "labels values not normalized between 0 and 1 (test)"
+            labels = np.float32(labels)
 
             return chunk, labels
 

@@ -16,14 +16,15 @@ import torch
 
 __all__ = ["get_chunks",
            "random_flip",
-           "compute_class_weights",
+           #"compute_class_weights",
            "weights_init",
-           "get_times",
-           "get_fps",
-           "video_spline_interpolation",
+           #"get_times",
+           #"get_fps",
+           #"video_spline_interpolation",
            "remove_avg_background",
-           "shrink_mask",
-           "get_new_voxel_label"]
+           #"shrink_mask",
+           #"get_new_voxel_label"
+           ]
 
 
 ### functions for data preproccesing ###
@@ -58,7 +59,7 @@ def remove_avg_background(video):
 ### functions related to U-Net hyperparameters ###
 
 
-def compute_class_weights(dataset, w0=1, w1=1, w2=1, w3=1):
+'''def compute_class_weights(dataset, w0=1, w1=1, w2=1, w3=1):
     # For 4 classes
     count0 = 0
     count1 = 0
@@ -81,7 +82,7 @@ def compute_class_weights(dataset, w0=1, w1=1, w2=1, w3=1):
 
     weights = np.array([w0_new, w1_new, w2_new, w3_new])
 
-    return np.float64(weights)
+    return np.float64(weights)'''
 
 
 def weights_init(m):
@@ -90,7 +91,7 @@ def weights_init(m):
         m.weight.data.normal_(m.weight, std=stdv)
 
 
-### functions for video resampling ###
+'''### functions for video resampling ###
 
 
 def get_times(video_path):
@@ -115,10 +116,10 @@ def video_spline_interpolation(video, video_path, new_fps=150):
     f = interp1d(frames_time, video, kind='linear', axis=0)
     assert(len(frames_time) == video.shape[0])
     frames_new = np.linspace(frames_time[0], frames_time[-1], int(frames_time[-1]*new_fps))
-    return f(frames_new)
+    return f(frames_new)'''
 
 
-### functions for temporal reduction ###
+'''### functions for temporal reduction ###
 
 
 def shrink_mask(mask, num_channels):
@@ -165,4 +166,4 @@ def get_new_voxel_label(voxel_seq):
     elif 3 in voxel_seq:
         return 3
     else:
-        return np.max(voxel_seq)
+        return np.max(voxel_seq)'''
