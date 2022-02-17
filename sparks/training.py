@@ -187,7 +187,7 @@ if __name__ == "__main__":
             num_channels=params['num_channels'],
             normalize_video=norm_video,
             only_sparks=params['only_sparks']
-        ) for f in test_file_names]
+        ) for f in test_filenames]
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
