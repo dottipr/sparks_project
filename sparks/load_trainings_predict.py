@@ -53,19 +53,33 @@ training_names = [#"temporal_reduction",
                   #"normalize_whole_video",
                   #"reduce_first_layer_channels_64",
                   #"256_long_chunks_physio",
-                  "256_long_chunks_64_step_physio"
+                  #"256_long_chunks_64_step_physio",
+                  #"temporal_reduction_ubelix",
+                  #"256_long_chunks_ubelix",
+                  #"focal_loss_ubelix",
+                  #"pretrained_only_sparks_ubelix",
+                  "only_sparks_ubelix"
                   ]
 config_files = [#"config_temporal_reduction.ini",
                 #"config_normalize_whole_video.ini",
                 #"config_reduce_first_layer_channels.ini",
                 #"config_256_long_chunks_physio.ini",
-                "config_256_long_chunks_64_step_physio.ini"
+                #"config_256_long_chunks_64_step_physio.ini",
+                #"config_temporal_reduction_ubelix.ini",
+                #"config_256_long_chunks_ubelix.ini",
+                #"config_focal_loss_ubelix.ini",
+                #"config_pretrained_only_sparks_ubelix.ini",
+                "config_only_sparks_ubelix.ini"
                  ]
 
 
 ### Configure output folder
 
 metrics_folder = "trainings_validation"
+
+### Configure config files folder
+
+config_folder = "config_files"
 
 
 ### Detect GPU, if available
@@ -190,7 +204,7 @@ for training_name, config_name in zip(training_names, config_files):
 
     ########################### open config file ###########################
 
-    CONFIG_FILE = os.path.join(BASEDIR, config_name)
+    CONFIG_FILE = os.path.join(BASEDIR, config_folder, config_name)
     c = configparser.ConfigParser()
     if os.path.isfile(CONFIG_FILE):
         logger.info(f"\tLoading {CONFIG_FILE}")
@@ -207,7 +221,7 @@ for training_name, config_name in zip(training_names, config_files):
     batch_size = c.getint("testing", "batch_size", fallback="1")
     ignore_frames = c.getint("data", "ignore_frames_loss")
 
-    temporal_reduction = c.getboolean("network", "temporal_reduction", fallback="no")
+    temporal_reduction = c.getboolean("network", "temporal_reduction", fallback=False)
     num_channels = c.getint("network", "num_channels", fallback=1) if temporal_reduction else 1
 
     ########################### load dataset ###########################
@@ -231,8 +245,9 @@ for training_name, config_name in zip(training_names, config_files):
 
     test_string = "_test" if test else ""
 
-    test_file_names = sorted(glob.glob(f"{dataset_path}/videos{test_string}/*[!_mask].tif"))
-    test_file_names
+    pattern_test_filenames = os.path.join(f"{dataset_path}","videos_test",
+                                           "[0-9][0-9]_video.tif")
+    test_filenames = sorted(glob.glob(pattern_test_filenames))
 
     # create dataset
     testing_datasets = [
@@ -244,7 +259,7 @@ for training_name, config_name in zip(training_names, config_files):
             remove_background=c.getboolean("data", "remove_background"),
             temporal_reduction=temporal_reduction,
             num_channels=num_channels
-        ) for f in test_file_names]
+        ) for f in test_filenames]
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"\t\tTesting dataset {i} contains {len(tds)} samples")
@@ -270,7 +285,6 @@ for training_name, config_name in zip(training_names, config_files):
         batch_normalization=c.getboolean("network", "batch_normalization"),
         num_input_channels=num_channels,
     )
-
     if not temporal_reduction:
         network = unet.UNetClassifier(unet_config)
     else:
@@ -295,7 +309,6 @@ for training_name, config_name in zip(training_names, config_files):
         )
 
     logger.info(f"\tLoading training <<{training_name}>> at epoch {load_epoch}...")
-    logger.info(f"OUTPUT_PATH: {output_path}")
     trainer.load(load_epoch)
     logger.info(f"\tLoaded training located in <<{output_path}>>")
 

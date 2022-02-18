@@ -39,7 +39,8 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    CONFIG_FILE = os.path.join(BASEDIR, args.config)
+    config_directory = "config_files"
+    CONFIG_FILE = os.path.join(BASEDIR, "config_files", args.config)
     c = configparser.ConfigParser()
     if os.path.isfile(CONFIG_FILE):
         logger.info(f"Loading {CONFIG_FILE}")

@@ -51,3 +51,25 @@ class TempRedUNet(nn.Module):
         x = self.unet(x)
         #print("output shape", x.shape)
         return x
+
+class DenoiseUNet(nn.Module):
+    def __init__(self, unet_config):
+        super().__init__()
+
+        padding = {'valid': 0, 'same': unet_config.dilation}[unet_config.border_mode]
+
+        self.unet = unet.UNetClassifier(unet_config)
+        # TODO: vedere se ha senso continuare....
+
+
+
+
+    def forward(self, x):
+        #print("input shape", x.shape)
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = self.conv3(x)
+        #print("unet input shape", x.shape)
+        x = self.unet(x)
+        #print("output shape", x.shape)
+        return x
