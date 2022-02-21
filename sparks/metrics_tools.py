@@ -6,6 +6,7 @@ from collections import namedtuple
 import numpy as np
 import cc3d
 from scipy import ndimage as ndi
+from scipy.ndimage.morphology import binary_dilation, binary_erosion
 from scipy import optimize, spatial
 from skimage import morphology
 from sklearn.metrics import roc_auc_score
@@ -160,16 +161,13 @@ def process_spark_prediction(pred, t_detection = 0.9,
     ignore_frames: set preds in region ignored by loss fct to 0
     '''
 
-    # set frames ignored by loss fct to 0
-    pred_sparks = empty_marginal_frames(pred, ignore_frames)
-
     # remove small objects
     min_size = (2 * min_radius) ** pred.ndim
 
-    pred_boolean = pred_sparks > t_detection
+    pred_boolean = pred > t_detection
     small_objs_removed = morphology.remove_small_objects(pred_boolean,
                                                          min_size=min_size)
-    big_pred = np.where(small_objs_removed, pred_sparks, 0)
+    big_pred = np.where(small_objs_removed, pred, 0)
 
     if return_clean_pred:
         return big_pred
@@ -183,6 +181,9 @@ def process_spark_prediction(pred, t_detection = 0.9,
 
     if not return_mask:
         return argwhere
+
+    # set frames ignored by loss fct to 0
+    argmaxima = empty_marginal_frames(argmaxima, ignore_frames)
 
     return argwhere, argmaxima
 

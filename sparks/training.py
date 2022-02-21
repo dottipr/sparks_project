@@ -62,6 +62,8 @@ if __name__ == "__main__":
     params['training'] = c.getboolean("general", "training") # Run training procedure on data
     params['testing'] = c.getboolean("general", "testing") # Run training procedure on data
     params['loss_function'] = c.get("training", "criterion", fallback="nll_loss")
+    if params['loss_function'] == 'focal_loss':
+        params['gamma'] = c.getint("training", "gamma", fallback=2)
 
     # data params
     params['dataset_basedir'] = c.get("data", "relative_path")
@@ -275,7 +277,8 @@ if __name__ == "__main__":
     elif params['loss_function'] == "focal_loss":
         criterion = FocalLoss(reduction='mean',
                               ignore_index=c.getint("data", "ignore_index"),
-                              alpha=class_weights)
+                              alpha=class_weights,
+                              gamma=params['gamma'])
 
     trainer = unet.TrainingManager(
         # training items

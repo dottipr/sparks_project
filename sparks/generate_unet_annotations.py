@@ -34,24 +34,6 @@ import matplotlib.pyplot as plt
 
 import argparse
 
-parser = argparse.ArgumentParser(description="Generate u-net segmentations")
-
-parser.add_argument("sample_ids", metavar='sample IDs', nargs='+',
-        help="select sample ids for which .tif segmentation will be generated")
-
-args = parser.parse_args()
-
-print(args.sample_ids)
-
-tif_folder = "tif_files"
-out_folder = "unet_masks"
-
-# events paramenters
-radius_event = 3
-radius_ignore = 1
-#radius_ignore = 3
-ignore_index = 4
-
 def nonmaxima_suppression(img, return_mask=False, neighborhood_radius=5, threshold=0.5):
 
     smooth_img = ndi.gaussian_filter(img, 2)
@@ -98,28 +80,48 @@ def get_new_mask(video, mask, radius_event=3, radius_ignore=2, ignore_index=4,
 
     return new_mask
 
-for id in args.sample_ids:
-    old_mask_name = id+"_corrected_mask.tif"
-    old_mask_path = os.path.join(tif_folder, old_mask_name)
-    old_mask = np.asarray(imageio.volread(old_mask_path)).astype('int')
 
-    video_name = id+"_video.tif"
-    video_path = os.path.join(tif_folder, video_name)
-    video = np.asarray(imageio.volread(video_path)).astype('int')
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate u-net segmentations")
 
-    if old_mask.shape != video.shape:
-        video_name = id+"_cut_video.tif"
+    parser.add_argument("sample_ids", metavar='sample IDs', nargs='+',
+            help="select sample ids for which .tif segmentation will be generated")
+
+    args = parser.parse_args()
+
+    print(args.sample_ids)
+
+    tif_folder = "tif_files"
+    out_folder = "unet_masks"
+
+    # events paramenters
+    radius_event = 3
+    radius_ignore = 1
+    #radius_ignore = 3
+    ignore_index = 4
+    
+    for id in args.sample_ids:
+        old_mask_name = id+"_corrected_mask.tif"
+        old_mask_path = os.path.join(tif_folder, old_mask_name)
+        old_mask = np.asarray(imageio.volread(old_mask_path)).astype('int')
+
+        video_name = id+"_video.tif"
         video_path = os.path.join(tif_folder, video_name)
         video = np.asarray(imageio.volread(video_path)).astype('int')
 
-    print("Processing mask "+id+"...")
-    print("\tOld values:", np.unique(old_mask))
+        if old_mask.shape != video.shape:
+            video_name = id+"_cut_video.tif"
+            video_path = os.path.join(tif_folder, video_name)
+            video = np.asarray(imageio.volread(video_path)).astype('int')
 
-    mask = get_new_mask(video, old_mask,
-                        radius_event=radius_event,
-                        radius_ignore=radius_ignore)
+        print("Processing mask "+id+"...")
+        print("\tOld values:", np.unique(old_mask))
 
-    print("\tNew values:", np.unique(mask))
+        mask = get_new_mask(video, old_mask,
+                            radius_event=radius_event,
+                            radius_ignore=radius_ignore)
 
-    out_path = os.path.join(out_folder, id+"_unet_mask.tif")
-    imageio.volwrite(out_path, np.uint8(mask))
+        print("\tNew values:", np.unique(mask))
+
+        out_path = os.path.join(out_folder, id+"_unet_mask.tif")
+        imageio.volwrite(out_path, np.uint8(mask))
