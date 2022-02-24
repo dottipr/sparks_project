@@ -254,7 +254,8 @@ def test_function(network, device, criterion, testing_datasets, logger,
     return results'''
 
 def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
-                          summary_writer, threshold, ignore_frames, wandb_log,
+                          summary_writer, ignore_frames, wandb_log,
+                          t_sparks, t_puffs, t_waves,
                           training_name, sparks_min_radius, puffs_min_radius,
                           waves_min_radius, temporal_reduction=False,
                           num_channels=1):
@@ -417,7 +418,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
         sparks_true = np.where(ys==1, 1.0, 0.0) # annotations
         sparks_prec_rec = compute_prec_rec(annotations=sparks_true,
                                            preds=sparks,
-                                           thresholds=[threshold],
+                                           thresholds=[t_sparks],
                                            ignore_frames=ignore_frames,
                                            min_radius=sparks_min_radius)
         metrics['sparks'].append(sparks_prec_rec)
@@ -427,7 +428,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
 
         waves = np.exp(preds[2]) # preds
         waves_binary = process_wave_prediction(pred=waves,
-                                               t_detection=0.5,
+                                               t_detection=t_waves,
                                                min_radius=waves_min_radius,
                                                ignore_frames=ignore_frames)
         waves_true = np.where(ys==2, 1, 0) # annotations
@@ -439,7 +440,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
 
         puffs = np.exp(preds[3]) # preds
         puffs_binary = process_puff_prediction(pred=puffs,
-                                               t_detection=0.5,
+                                               t_detection=t_puffs,
                                                min_radius=puffs_min_radius,
                                                ignore_frames=ignore_frames)
         puffs_true = np.where(ys==3, 1, 0) # annotations
@@ -458,8 +459,8 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     # Sparks metrics
     _, precs, recs, a_u_c = reduce_metrics_thresholds(metrics['sparks'])
 
-    prec = precs[threshold]
-    rec = recs[threshold]
+    prec = precs[t_sparks]
+    rec = recs[t_sparks]
 
     '''
     # TODO: not working properly

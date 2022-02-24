@@ -72,6 +72,9 @@ if __name__ == "__main__":
     params['data_duration'] = c.getint("data", "chunks_duration")
     params['data_step'] = c.getint("data", "step")
     params['ignore_frames_loss'] = c.getint("data", "ignore_frames_loss")
+    params['data_smoothing'] = c.get("data", "smoothing", fallback="2d")
+    params['norm_video'] = c.getboolean("data", "norm_video", fallback=False)
+    params['remove_background'] = c.get("data", "remove_background", fallback='average')
     params['only_sparks'] = c.getboolean("data", "only_sparks", fallback=False)
 
     # UNet params
@@ -81,6 +84,9 @@ if __name__ == "__main__":
     params['num_channels'] = c.getint("network", "num_channels", fallback=1)
 
     # Testing params
+    params['t_detection_sparks'] = c.getfloat("testing", "t_sparks")
+    params['t_detection_puffs'] = c.getfloat("testing", "t_puffs")
+    params['t_detection_waves'] = c.getfloat("testing", "t_waves")
     params['sparks_min_radius'] = c.getint("testing", "sparks_min_radius")
     params['puffs_min_radius'] = c.getint("testing", "puffs_min_radius")
     params['waves_min_radius'] = c.getint("testing", "waves_min_radius")
@@ -147,8 +153,7 @@ if __name__ == "__main__":
         logger.info(f"Using temporal reduction with {params['num_channels']} channels")
 
     # normalize whole videos or chunks individually
-    norm_video = c.getboolean("data", "norm_video", fallback=False)
-    if norm_video:
+    if params['norm_video']:
         logger.info("Normalizing whole video instead of single chunks")
 
     # initialize training dataset
@@ -159,13 +164,13 @@ if __name__ == "__main__":
     logger.info(f"Using {dataset_path} as dataset root path")
     dataset = SparkDataset(
         base_path=dataset_path,
-        smoothing='2d',
+        smoothing=params['data_smoothing'],
         step=params['data_step'],
         duration=params['data_duration'],
-        remove_background=c.getboolean("data", "remove_background"),
+        remove_background=params['remove_background'],
         temporal_reduction=params['temporal_reduction'],
         num_channels=params['num_channels'],
-        normalize_video=norm_video,
+        normalize_video=params['norm_video'],
         only_sparks=params['only_sparks']
     )
 
@@ -182,13 +187,13 @@ if __name__ == "__main__":
     testing_datasets = [
         SparkTestDataset(
             video_path=f,
-            smoothing='2d',
+            smoothing=params['data_smoothing'],
             step=params['data_step'],
             duration=params['data_duration'],
-            remove_background=c.getboolean("data", "remove_background"),
+            remove_background=params['remove_background'],
             temporal_reduction=params['temporal_reduction'],
             num_channels=params['num_channels'],
-            normalize_video=norm_video,
+            normalize_video=params['norm_video'],
             only_sparks=params['only_sparks']
         ) for f in test_filenames]
 
@@ -301,15 +306,15 @@ if __name__ == "__main__":
         }),
         # testing items
         test_function=lambda _: test_function_fixed_t(
-            network,
-            device,
-            criterion,
-            testing_datasets,
-            logger,
-            summary_writer,
-            fixed_threshold,
-            #thresholds,
-            #idx_fixed_t,
+            network=network,
+            device=device,
+            criterion=criterion,
+            testing_datasets=testing_datasets,
+            logger=logger,
+            summary_writer=summary_writer,
+            t_sparks=params['t_detection_sparks'],
+            t_puffs=params['t_detection_puffs'],
+            t_waves=params['t_detection_waves'],
             ignore_frames=params['ignore_frames_loss'],
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=c.get("general", "run_name"),

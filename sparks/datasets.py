@@ -43,7 +43,7 @@ class SparkDataset(Dataset):
     def __init__(self, base_path,
                  step = 4, duration = 16, smoothing = False,
                  resampling = False, resampling_rate = 150,
-                 remove_background = False, temporal_reduction = False,
+                 remove_background = 'average', temporal_reduction = False,
                  num_channels = 1, normalize_video = False,
                  only_sparks = False):
 
@@ -59,6 +59,7 @@ class SparkDataset(Dataset):
             self.num_channels = num_channels
 
         self.normalize_video = normalize_video
+        self.remove_background = remove_background
 
         # get videos and masks paths
         self.files = sorted(glob.glob(os.path.join(self.base_path,
@@ -77,8 +78,9 @@ class SparkDataset(Dataset):
                             for f in self.annotations_files]
 
         # preprocess videos if necessary
-        if remove_background:
+        if self.remove_background == 'average':
             self.data = [remove_avg_background(video) for video in self.data]
+
         if smoothing == '2d':
             _smooth_filter = torch.tensor(([1/16,1/16,1/16],
                                            [1/16,1/2,1/16],
@@ -188,6 +190,12 @@ class SparkDataset(Dataset):
 
         chunk = self.data[vid_id][chunks[chunk_id]]
 
+        if self.remove_background == 'average':
+            # remove the background of the single chunk
+            # !! se migliora molto i risultati, farlo nel preprocessing che se
+            #    no è super lento
+            chunk = remove_avg_background(chunk)
+
         if not self.normalize_video:
             chunk = (chunk - chunk.min()) / (chunk.max() - chunk.min())
         assert chunk.min() >= 0 and chunk.max() <= 1, \
@@ -223,7 +231,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
     def __init__(self, video_path,
                  step = 4, duration = 16, smoothing = False,
                  resampling = False, resampling_rate = 150,
-                 remove_background = False, gt_available = True,
+                 remove_background = 'average', gt_available = True,
                  temporal_reduction = False, num_channels = 1,
                  normalize_video = False, only_sparks = False):
 
@@ -237,6 +245,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
             self.num_channels = num_channels
 
         self.normalize_video = normalize_video
+        self.remove_background = remove_background
 
         # get video path and array
         self.video_path = video_path
@@ -253,7 +262,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
             self.mask = imageio.volread(mask_path)
 
         # perform some preprocessing on videos, if required
-        if remove_background:
+        if self.remove_background == 'average':
             self.video = remove_avg_background(self.video)
         if smoothing == '2d':
             _smooth_filter = torch.tensor(([1/16,1/16,1/16],
@@ -331,6 +340,12 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
     def __getitem__(self, chunk_id):
         chunks = get_chunks(self.length, self.step, self.duration)
         chunk = self.video[chunks[chunk_id]]
+
+        if self.remove_background == 'average':
+            # remove the background of the single chunk
+            # !! se migliora molto i risultati, farlo nel preprocessing che se
+            #    no è super lento
+            chunk = remove_avg_background(chunk)
 
         if not self.normalize_video:
             chunk = (chunk - chunk.min()) / (chunk.max() - chunk.min())
