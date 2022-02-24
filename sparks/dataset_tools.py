@@ -23,10 +23,70 @@ __all__ = ["get_chunks",
            "video_spline_interpolation",
            "remove_avg_background",
            "shrink_mask",
-           "get_new_voxel_label"]
+           "get_new_voxel_label",
+           "final_mask",
+           "get_new_mask"
+           ]
+
+
+### functions for unet masks creation ###
+
+
+def final_mask(mask, radius1=2.5, radius2=3.5, ignore_ind=2): # SLOW
+    '''
+    add annotation region around spark peaks
+    '''
+    dt = ndi.distance_transform_edt(1 - mask)
+    new_mask = np.zeros(mask.shape, dtype=np.int64)
+    new_mask[dt < radius2] = ignore_ind
+    new_mask[dt < radius1] = 1
+
+    return new_mask
+
+
+def get_new_mask(video, mask, min_dist_xy, min_dist_t,
+                 radius_event=3, radius_ignore=2, ignore_index=4,
+                 return_loc=False, return_loc_mask=False):
+    '''
+    from raw segmentation masks get masks where sparks are annotated by peaks
+    '''
+
+    # get spark centres
+    if 1 in mask:
+        sparks_mask = np.where(mask == 1, video, 0).astype(np.float32)
+        sparks_loc, sparks_mask = nonmaxima_suppression(sparks_mask,
+                                                        min_dist_xy, min_dist_t,
+                                                        return_mask=True)
+
+        print("\t\tNum of sparks:", len(sparks_loc))
+
+        if return_loc:
+            return sparks_loc
+
+        sparks_mask = final_mask(sparks_mask, radius1=radius_event,
+                             radius2=radius_event+radius_ignore,
+                             ignore_ind=ignore_index)
+    else:
+        if return_loc:
+            return 0
+
+        return mask
+
+    # remove sparks from old mask
+    no_sparks_mask = np.where(mask == 1, 0, mask)
+
+    # create new mask
+    new_mask = np.where(sparks_mask != 0, sparks_mask, no_sparks_mask)
+
+    if return_loc_mask:
+        return sparks_loc, new_mask
+
+    return new_mask
 
 
 ### functions for data preproccesing ###
+
+
 def get_chunks(video_length, step, duration):
     n_blocks = ((video_length-duration)//(step))+1
 

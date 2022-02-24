@@ -34,11 +34,26 @@ __all__ = ["Metrics",
            ]
 
 
+################################ Global params #################################
+
+# physiological params to get sparks locations
+# these have to be coherent in the whole project
+
+PIXEL_SIZE = 0.2 # 1 pixel = 0.2 um x 0.2 um
+global MIN_DIST_XY
+MIN_DIST_XY = round(1.8 / PIXEL_SIZE) # min distance in space between sparks
+TIME_FRAME = 6.8 # 1 frame = 6.8 ms
+global MIN_DIST_T
+MIN_DIST_T = round(20 / TIME_FRAME) # min distance in time between sparks
+
+
 ################################ Generic utils #################################
 
 
 def empty_marginal_frames(video, n_frames):
-    # Set first and last n_frames of a video to zero
+    '''
+    Set first and last n_frames of a video to zero.
+    '''
     if n_frames != 0:
         new_video = video[n_frames:-n_frames]
         new_video = np.pad(new_video,((n_frames,),(0,),(0,)), mode='constant')
@@ -51,11 +66,12 @@ def empty_marginal_frames(video, n_frames):
 
 def write_videos_on_disk(training_name, video_name, path="predictions",
                          xs=None, ys=None, preds=None):
-    # Write all videos on disk
-    # xs : input video used by network
-    # ys: segmentation video used in loss function
-    # preds : all u-net preds [bg preds, sparks preds, puffs preds, waves preds]
-
+    '''
+     Write all videos on disk
+     xs : input video used by network
+     ys: segmentation video used in loss function
+     preds : all u-net preds [bg preds, sparks preds, puffs preds, waves preds]
+    '''
     out_name_root = training_name + "_" + video_name + "_"
 
     if not isinstance(xs, type(None)):
@@ -103,17 +119,33 @@ Utils for computing metrics related to sparks, e.g.
 Metrics = namedtuple('Metrics', ['precision', 'recall', 'tp', 'tp_fp', 'tp_fn'])
 
 
-def in_bounds(points, shape):
+#def in_bounds(points, shape):
+#
+#    return np.logical_and.reduce([(coords_i >= 0) & (coords_i < shape_i)
+#                                for coords_i, shape_i in zip(points.T, shape)])
 
-    return np.logical_and.reduce([(coords_i >= 0) & (coords_i < shape_i)
-                                for coords_i, shape_i in zip(points.T, shape)])
 
+def nonmaxima_suppression(img,
+                          min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T,
+                          return_mask=False, threshold=0.5, sigma=2):
+    '''
+    Extract local maxima from input array (t,x,y).
+    img : input array
+    min_dist_xy : minimal spatial distance between two maxima
+    min_dist_t : minimal temporal distance between two maxima
+    return_mask : if True return both masks with maxima and locations, if False
+                  only returns locations
+    threshold : minimal value of maximum points
+    sigma : sigma parameter of gaussian filter
+    '''
 
-def nonmaxima_suppression(img, return_mask=False,
-                          neighborhood_radius=5, threshold=0.5):
+    smooth_img = ndi.gaussian_filter(img, sigma)
+    #smooth_img = img
 
-    smooth_img = ndi.gaussian_filter(img, 2) # 2 instead of 1
-    dilated = ndi.grey_dilation(smooth_img, (neighborhood_radius,) * img.ndim)
+    min_dist = ellipsoid(min_dist_t/2, min_dist_xy/2, min_dist_xy/2)
+    #dilated = ndi.grey_dilation(smooth_img,
+    dilated = ndi.maximum_filter(smooth_img,
+                                footprint=min_dist)
     argmaxima = np.logical_and(smooth_img == dilated, img > threshold)
 
     argwhere = np.argwhere(argmaxima)
@@ -132,20 +164,18 @@ def get_sparks_locations_from_mask(mask, ignore_frames=0):
     ignore_frames: number of frames ignored by loss fct during training
     '''
 
-    sparks_mask = np.where(mask == 1, 1.0, 0.0)
-    sparks_mask = sparks_mask[ignore_frames:-ignore_frames]
-    sparks_mask = np.pad(sparks_mask,((ignore_frames,),(0,),(0,)),
-                         mode='constant')
+    np.where(mask == 1, 1.0, 0.0)
+    sparks_mask = empty_marginal_frames(mask, ignore_frames)
 
-    assert(np.shape(sparks_mask) == np.shape(mask))
-
-    coords = nonmaxima_suppression(sparks_mask)
+    coords = nonmaxima_suppression(sparks_mask, min_dist_xy, min_dist_t)
 
     return coords
 
 
-def process_spark_prediction(pred, t_detection = 0.9,
-                             neighborhood_radius = 5,
+def process_spark_prediction(pred,
+                             t_detection = 0.9,
+                             min_dist_xy = MIN_DIST_XY,
+                             min_dist_t = MIN_DIST_T,
                              min_radius = 3,
                              return_mask = False,
                              return_clean_pred = False,
@@ -154,7 +184,9 @@ def process_spark_prediction(pred, t_detection = 0.9,
     Get sparks centres from preds: remove small events + nonmaxima suppression
 
     pred: network's sparks predictions
-    neighborhood_radius: ??
+    t_detection: sparks detection threshold
+    min_dist_xy : minimal spatial distance between two maxima
+    min_dist_t : minimal temporal distance between two maxima
     min_radius: minimal 'radius' of a valid spark
     return_mask: if True return mask and locations of sparks
     return_clean_pred: if True only return preds without small events
@@ -167,17 +199,20 @@ def process_spark_prediction(pred, t_detection = 0.9,
     pred_boolean = pred > t_detection
     small_objs_removed = morphology.remove_small_objects(pred_boolean,
                                                          min_size=min_size)
+    # oginal preds without small objects:
     big_pred = np.where(small_objs_removed, pred, 0)
 
     if return_clean_pred:
+        big_pred = empty_marginal_frames(big_pred, ignore_frames)
         return big_pred
 
-    gaussian = ndi.gaussian_filter(big_pred, 2)
-    dilated = ndi.grey_dilation(gaussian, (neighborhood_radius,)*pred.ndim)
-
     # detect events (nonmaxima suppression)
-    argmaxima = np.logical_and(gaussian == dilated, big_pred > t_detection)
-    argwhere = np.argwhere(argmaxima)
+    argwhere, argmaxima = nonmaxima_suppression(img=big_pred,
+                                                min_dist_xy=min_dist_xy,
+                                                min_dist_t=min_dist_t,
+                                                return_mask=True,
+                                                threshold=t_detection,
+                                                sigma=2)
 
     if not return_mask:
         return argwhere
@@ -188,20 +223,20 @@ def process_spark_prediction(pred, t_detection = 0.9,
     return argwhere, argmaxima
 
 
-def inverse_argwhere(coords, shape, dtype):
-    """
-    Creates an array with given shape and dtype such that
-
-    np.argwhere(inverse_argwhere(coords, shape, dtype)) == coords
-
-    up to a rounding of `coords`.
-    """
-
-    res = np.zeros(shape, dtype=dtype)
-    intcoords = np.int_(np.round(coords))
-    intcoords = intcoords[in_bounds(intcoords, shape)]
-    res[intcoords[:, 0], intcoords[:, 1], intcoords[:, 2]] = 1
-    return res
+#def inverse_argwhere(coords, shape, dtype):
+#    """
+#    Creates an array with given shape and dtype such that
+#
+#    np.argwhere(inverse_argwhere(coords, shape, dtype)) == coords
+#
+#    up to a rounding of `coords`.
+#    """
+#
+#    res = np.zeros(shape, dtype=dtype)
+#    intcoords = np.int_(np.round(coords))
+#    intcoords = intcoords[in_bounds(intcoords, shape)]
+#    res[intcoords[:, 0], intcoords[:, 1], intcoords[:, 2]] = 1
+#    return res
 
 
 def correspondences_precision_recall(coords_real, coords_pred, match_distance):
@@ -252,23 +287,26 @@ def reduce_metrics(results):
     return Metrics(precision, recall, tp, tp_fp, tp_fn)
 
 
-def compute_prec_rec(annotations, preds, thresholds, ignore_frames=0,
-                     min_radius=3, match_distance=6):
-    # annotations: video of sparks segmentation w/ values in {0,1}
-    # preds: video of sparks preds w/ values in [0,1]
-    # thresholds : list of thresholds applied to the preds over which events are kept
-    # min_radius : minimal "radius" of a valid event
-    # match_distance : maximal distance between annotation and pred
-    # returns a list of Metrics tuples corresponding to thresholds and AUC
+def compute_prec_rec(annotations, preds, thresholds,
+                     min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T,
+                     min_radius=3, match_distance=6, ignore_frames=0):
+    '''
+    annotations: video of sparks segmentation w/ values in {0,1}
+    preds: video of sparks preds w/ values in [0,1]
+    thresholds : list of thresholds applied to the preds over which events are kept
+    min_radius : minimal "radius" of a valid event
+    match_distance : maximal distance between annotation and pred
+    returns a dict of Metrics tuples corresponding to thresholds and AUC
+    '''
 
     if ignore_frames != 0:
         annotations = empty_marginal_frames(annotations, ignore_frames)
         preds = empty_marginal_frames(preds, ignore_frames)
 
-    metrics = {} # list of 'Metrics' tuples: precision, recall, tp, tp_fp, tp_fn
+    metrics = {} # dict of 'Metrics' tuples: precision, recall, tp, tp_fp, tp_fn
                  # indexed by threshold value
 
-    coords_true = nonmaxima_suppression(annotations)
+    coords_true = nonmaxima_suppression(annotations, min_dist_xy, min_dist_t)
 
     # compute prec and rec for every threshold
     for t in thresholds:
@@ -292,10 +330,12 @@ def compute_prec_rec(annotations, preds, thresholds, ignore_frames=0,
     return metrics#, area_under_curve
 
 def reduce_metrics_thresholds(results):
-    # apply metrics reduction to results corresponding to different thresholds
-    # results is a list of dicts
-    # thresholds is the list of used thresholds
-    # returns dicts of reduced 'Metrics' instances for every threshold
+    '''
+    apply metrics reduction to results corresponding to different thresholds
+    results is a list of dicts
+    thresholds is the list of used thresholds
+    returns dicts of reduced 'Metrics' instances for every threshold
+    '''
 
     # list of dicts to dict of lists
     results_t = {k: [dic[k] for dic in results] for k in results[0]}
