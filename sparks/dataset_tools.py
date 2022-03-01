@@ -7,7 +7,7 @@ the spark datasets and compute the weights of the network.
 import numpy as np
 import torch
 from torch import nn
-from scipy import ndimage
+from scipy import ndimage as ndi
 from scipy.interpolate import interp1d
 from PIL import Image
 
