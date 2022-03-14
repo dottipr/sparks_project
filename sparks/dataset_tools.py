@@ -3,6 +3,9 @@ Functions needed to preprocess the csv files, create the structure of data in
 the spark datasets and compute the weights of the network.
 """
 
+import os
+import imageio
+import glob
 
 import numpy as np
 import torch
@@ -12,6 +15,8 @@ from scipy.interpolate import interp1d
 from PIL import Image
 
 import torch
+
+from metrics_tools import nonmaxima_suppression
 
 
 __all__ = ["get_chunks",
@@ -25,7 +30,12 @@ __all__ = ["get_chunks",
            "shrink_mask",
            "get_new_voxel_label",
            "final_mask",
-           "get_new_mask"
+           "get_new_mask",
+           "load_movies",
+           "load_movies_ids",
+           "load_annotations",
+           "load_predictions",
+           "load_predictions_all_trainings"
            ]
 
 
@@ -226,3 +236,182 @@ def get_new_voxel_label(voxel_seq):
         return 3
     else:
         return np.max(voxel_seq)
+
+
+################################ Loading utils #################################
+
+'''
+Use this functions to load predictions (ys, sparks, puffs, preds) or just
+annotations ys
+'''
+
+def load_movies(data_folder):
+    '''
+    Load all movies in data_folder whose name start with [0-9].
+
+    data_folder: folder where movies are saved, movies are saved as
+                 "[0-9][0-9]*.tif"
+    '''
+    xs_all_trainings = {}
+
+    xs_filenames = sorted(glob.glob(os.path.join(data_folder,
+                                                 "[0-9][0-9]*.tif")))
+
+    for f in xs_filenames:
+        video_id = os.path.split(f)[1][:2]
+        xs_all_trainings[video_id] = np.asarray(imageio.volread(f))
+
+    return xs_all_trainings
+
+def load_movies_ids(data_folder, ids):
+    '''
+    Same as load_movies but load only movies corresponding to a given list of
+    indices.
+
+    data_folder: folder where movies are saved, movies are saved as
+                 "[0-9][0-9]*.tif"
+    ids : list of movies IDs (of the form "[0-9][0-9]")
+    '''
+    xs_all_trainings = {}
+
+    xs_filenames = [os.path.join(data_folder,movie_name)
+                    for movie_name in os.listdir(data_folder)
+                    if movie_name.startswith(tuple(ids))]
+
+    for f in xs_filenames:
+        video_id = os.path.split(f)[1][:2]
+        xs_all_trainings[video_id] = np.asarray(imageio.volread(f))
+
+    return xs_all_trainings
+
+def load_annotations(data_folder, mask_names="video_mask"):
+    '''
+    open and process annotations (original version, sparks not processed)
+
+    data_folder: folder where annotations are saved, annotations are saved as
+                 "[0-9][0-9]_video_mask.tif"
+    '''
+    ys_all_trainings = {}
+
+    ys_filenames = sorted(glob.glob(os.path.join(data_folder,
+                                            "[0-9][0-9]_"+mask_names+".tif")))
+
+    for f in ys_filenames:
+        video_id = os.path.split(f)[1][:2]
+        ys_all_trainings[video_id] = np.asarray(imageio.volread(f)).astype('int')
+
+    return ys_all_trainings
+
+def load_predictions(training_name, epoch, metrics_folder):
+    '''
+    open and process annotations (where sparks have been processed), predicted
+    sparks, puffs and waves for a given training name
+    !!! the predictions movies have to be saved in metrics_folder for the given
+        training name !!!
+
+    training_name: saved training name
+    epoch: training epoch whose predictions have to be loaded
+    metrics_folder: folder where predictions and annotations are saved,
+                    annotations are saved as "[0-9]*_ys.tif"
+                    sparks are saved as "<base name>_[0-9][0-9]_sparks.tif"
+                    puffs are saved as "<base name>_[0-9][0-9]_puffs.tif"
+                    waves are saved as "<base name>_[0-9][0-9]_waves.tif"
+    '''
+
+    # Import .tif files as numpy array
+    base_name = os.path.join(metrics_folder,training_name+"_"+str(epoch)+"_")
+
+    if "temporal_reduction" in training_name:
+        # need to use annotations from another training
+        # TODO: implement a solution ....
+        print('''!!! method is using temporal reduction, processed annotations
+                     have a different shape !!!''')
+
+
+    # get predictions and annotations filenames
+    ys_filenames = sorted(glob.glob(base_name+"[0-9][0-9]_video_ys.tif"))
+    sparks_filenames = sorted(glob.glob(base_name+"[0-9][0-9]_video_sparks.tif"))
+    puffs_filenames = sorted(glob.glob(base_name+"[0-9][0-9]_video_puffs.tif"))
+    waves_filenames = sorted(glob.glob(base_name+"[0-9][0-9]_video_waves.tif"))
+
+    # create dictionaires to store loaded data for each movie
+    training_ys = {}
+    training_sparks = {}
+    training_puffs = {}
+    training_waves = {}
+
+    for y,s,p,w in zip(ys_filenames,
+                       sparks_filenames,
+                       puffs_filenames,
+                       waves_filenames):
+
+        # get movie name
+        video_id = y.replace(base_name,"")[:2]
+
+        ys_loaded = np.asarray(imageio.volread(y)).astype('int')
+        training_ys[video_id] = ys_loaded
+
+        if "temporal_reduction" in training_name:
+            # repeat each frame 4 times
+            print("training using temporal reduction, extending predictions...")
+            s_preds = np.asarray(imageio.volread(s))
+            p_preds = np.asarray(imageio.volread(p))
+            w_preds = np.asarray(imageio.volread(w))
+
+            # repeat predicted frames x4
+            s_preds = np.repeat(s_preds,4,0)
+            p_preds = np.repeat(p_preds,4,0)
+            w_preds = np.repeat(w_preds,4,0)
+
+            # TODO: can't crop until annotations loading is fixed
+            # if original length %4 != 0, crop preds
+            #if ys_loaded.shape != s_preds.shape:
+            #    duration = ys_loaded.shape[0]
+            #    s_preds = s_preds[:duration]
+            #    p_preds = p_preds[:duration]
+            #    w_preds = w_preds[:duration]
+
+            # TODO: can't check until annotations loading is fixed
+            #assert ys_loaded.shape == s_preds.shape
+            #assert ys_loaded.shape == p_preds.shape
+            #assert ys_loaded.shape == w_preds.shape
+
+            training_sparks[video_id] = s_preds
+            training_puffs[video_id] = p_preds
+            training_waves[video_id] = w_preds
+        else:
+            training_sparks[video_id] = np.asarray(imageio.volread(s))
+            training_puffs[video_id] = np.asarray(imageio.volread(p))
+            training_waves[video_id] = np.asarray(imageio.volread(w))
+
+    return training_ys, training_sparks, training_puffs, training_waves
+
+def load_predictions_all_trainings(training_names, epochs, metrics_folder):
+    '''
+    open and process annotations (where sparks have been processed), predicted
+    sparks, puffs and waves for a list of training names
+    !!! the predictions movies have to be saved in metrics_folder for the given
+        training name !!!
+
+    training_names: list of saved training names
+    epochs: list of training epochs whose predictions have to be loaded
+            corresponding to the training names
+    metrics_folder: folder where predictions and annotations are saved,
+                    annotations are saved as "[0-9][0-9]_ys.tif"
+                    sparks are saved as "<base name>_[0-9][0-9]_sparks.tif"
+                    puffs are saved as "<base name>_[0-9][0-9]_puffs.tif"
+                    waves are saved as "<base name>_[0-9][0-9]_waves.tif"
+    '''
+    # dicts with "shapes":
+    # num trainings (dict) x num videos (dict) x video shape
+    ys = {}
+    s = {} # sparks
+    p = {} # puffs
+    w = {} # waves
+
+    for name, epoch in zip(training_names, epochs):
+        ys[name],s[name],p[name],w[name] = load_predictions(training_name,
+                                                            epoch,
+                                                            metrics_folder)
+
+    return ys, s, p, w

@@ -23,18 +23,17 @@ UPDATES:
             nonmaxima_suppression. Procedimento di nuovo utilizzando i video
             originali.
 
+REMARKS:
+01.03.2022  Questo codice ora è adattato a PC232.
+
 '''
 
 import os
-import glob
 import argparse
 import imageio
 import numpy as np
-from scipy import ndimage as ndi
-from skimage.draw import ellipsoid
 
-from metrics_tools import nonmaxima_suppression
-from dataset_tools import final_mask, get_new_mask
+from dataset_tools import get_new_mask, load_movies_ids
 
 
 if __name__ == "__main__":
@@ -47,10 +46,11 @@ if __name__ == "__main__":
 
     print(args.sample_ids)
 
-    old_mask_folder = "original_masks"
+    raw_data_directory = os.path.join("..", "data", "raw_data_and_processing")
+    old_mask_folder = os.path.join(raw_data_directory,"original_masks")
     #video_folder = "smoothed_movies"
-    video_folder = "original_movies"
-    out_folder = "unet_masks"
+    video_folder = os.path.join(raw_data_directory,"original_movies")
+    out_folder = os.path.join(raw_data_directory,"unet_masks")
 
     # events paramenters
     radius_event = 3
@@ -72,16 +72,8 @@ if __name__ == "__main__":
         old_mask_path = os.path.join(old_mask_folder, old_mask_name)
         old_mask = np.asarray(imageio.volread(old_mask_path)).astype('int')
 
-        #video_name = id+"_smoothed_video.tif"
-        video_name = id+".tif"
-        video_path = os.path.join(video_folder, video_name)
-        video = np.asarray(imageio.volread(video_path))
-
-        if old_mask.shape != video.shape:
-            #video_name = id+"_cut_smoothed_video.tif"
-            video_name = id+"_cut.tif"
-            video_path = os.path.join(video_folder, video_name)
-            video = np.asarray(imageio.volread(video_path))
+        video = load_movies_ids(video_folder, [id])[id]
+        print("\tVideo shape", video.shape)
 
         print("\tOld values:", np.unique(old_mask))
 

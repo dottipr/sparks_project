@@ -5,7 +5,7 @@ import glob
 import imageio
 import os
 
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 
 import numpy as np
 import cc3d
@@ -14,13 +14,12 @@ from scipy.ndimage.morphology import binary_dilation, binary_erosion
 from scipy import optimize, spatial
 from skimage import morphology
 from skimage.draw import ellipsoid
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import auc
 from bisect import bisect_left
 
 
 __all__ = ["Metrics",
            "nonmaxima_suppression",
-           "process_spark_prediction",
            "inverse_argwhere",
            "correspondences_precision_recall",
            "reduce_metrics",
@@ -29,15 +28,11 @@ __all__ = ["Metrics",
            "compute_prec_rec",
            "reduce_metrics_thresholds",
            "take_closest",
+           "get_sparks_locations_from_mask",
            "process_spark_prediction",
            "process_puff_prediction",
            "process_wave_prediction",
-           "jaccard_score_exclusion_zone",
-           "load_movies",
-           "load_movies_ids",
-           "load_annotations",
-           "load_predictions",
-           "load_predictions_all_trainings"
+           "jaccard_score_exclusion_zone"
            ]
 
 
@@ -115,183 +110,25 @@ def take_closest(myList, myNumber):
        return before
 
 
-################################ Loading utils #################################
+def diff(l1, l2):
+    # l1 and l2 are lists
+    # return l1 - l2
+    return list(map(list,(set(map(tuple,l1))).difference(set(map(tuple,l2)))))
 
-'''
-Use this functions to load predictions (ys, sparks, puffs, preds) or just
-annotations ys
-'''
 
-def load_movies(data_folder):
+def flood_fill_hull(image):
     '''
-    Load all movies in data_folder whose name start with [0-9].
-
-    data_folder: folder where movies are saved, movies are saved as
-                 "[0-9][0-9]*.tif"
+    Compute convex hull of a Numpy array.
     '''
-    xs_all_trainings = {}
+    points = np.transpose(np.where(image))
+    hull = spatial.ConvexHull(points)
+    deln = spatial.Delaunay(points[hull.vertices])
+    idx = np.stack(np.indices(image.shape), axis = -1)
+    out_idx = np.nonzero(deln.find_simplex(idx) + 1)
+    out_img = np.zeros(image.shape)
+    out_img[out_idx] = 1
+    return out_img, hull
 
-    xs_filenames = sorted(glob.glob(os.path.join(data_folder,
-                                                 "[0-9][0-9]*.tif")))
-
-    for f in xs_filenames:
-        video_id = os.path.split(f)[1][:2]
-        xs_all_trainings[video_id] = np.asarray(imageio.volread(f))
-
-    return xs_all_trainings
-
-def load_movies_ids(data_folder, ids):
-    '''
-    Same as load_movies but load only movies corresponding to a given list of
-    indices.
-
-    data_folder: folder where movies are saved, movies are saved as
-                 "[0-9][0-9]*.tif"
-    ids : list of movies IDs (of the form "[0-9][0-9]")
-    '''
-    xs_all_trainings = {}
-
-    xs_filenames = [os.path.join(data_folder,movie_name)
-                    for movie_name in os.listdir(data_folder)
-                    if movie_name.startswith(tuple(ids))]
-
-    for f in xs_filenames:
-        video_id = os.path.split(f)[1][:2]
-        xs_all_trainings[video_id] = np.asarray(imageio.volread(f))
-
-    return xs_all_trainings
-
-def load_annotations(data_folder):
-    '''
-    open and process annotations (original version, sparks not processed)
-
-    data_folder: folder where annotations are saved, annotations are saved as
-                 "[0-9][0-9]_video_mask.tif"
-    '''
-    ys_all_trainings = {}
-
-    ys_filenames = sorted(glob.glob(os.path.join(data_folder,
-                                                 "[0-9][0-9]_video_mask.tif")))
-
-    for f in ys_filenames:
-        video_id = os.path.split(f)[1][:2]
-        ys_all_trainings[video_id] = np.asarray(imageio.volread(f)).astype('int')
-
-    return ys_all_trainings
-
-def load_predictions(training_name, epoch, metrics_folder):
-    '''
-    open and process annotations (where sparks have been processed), predicted
-    sparks, puffs and waves for a given training name
-    !!! the predictions movies have to be saved in metrics_folder for the given
-        training name !!!
-
-    training_name: saved training name
-    epoch: training epoch whose predictions have to be loaded
-    metrics_folder: folder where predictions and annotations are saved,
-                    annotations are saved as "[0-9]*_ys.tif"
-                    sparks are saved as "<base name>_[0-9][0-9]_sparks.tif"
-                    puffs are saved as "<base name>_[0-9][0-9]_puffs.tif"
-                    waves are saved as "<base name>_[0-9][0-9]_waves.tif"
-    '''
-
-    # Import .tif files as numpy array
-    base_name = os.path.join(metrics_folder,training_name+"_"+str(epoch)+"_")
-
-    if "temporal_reduction" in training_name:
-        # need to use annotations from another training
-        # TODO: implement a solution ....
-        print('''!!! method is using temporal reduction, processed annotations
-                     have a different shape !!!''')
-
-
-    # get predictions and annotations filenames
-    ys_filenames = sorted(glob.glob(base_name+"[0-9][0-9]_video_ys.tif"))
-    sparks_filenames = sorted(glob.glob(base_name+"[0-9][0-9]_video_sparks.tif"))
-    puffs_filenames = sorted(glob.glob(base_name+"[0-9][0-9]_video_puffs.tif"))
-    waves_filenames = sorted(glob.glob(base_name+"[0-9][0-9]_video_waves.tif"))
-
-    # create dictionaires to store loaded data for each movie
-    training_ys = {}
-    training_sparks = {}
-    training_puffs = {}
-    training_waves = {}
-
-    for y,s,p,w in zip(ys_filenames,
-                       sparks_filenames,
-                       puffs_filenames,
-                       waves_filenames):
-
-        # get movie name
-        video_id = y.replace(base_name,"")[:2]
-
-        ys_loaded = np.asarray(imageio.volread(y)).astype('int')
-        training_ys[video_id] = ys_loaded
-
-        if "temporal_reduction" in training_name:
-            # repeat each frame 4 times
-            print("training using temporal reduction, extending predictions...")
-            s_preds = np.asarray(imageio.volread(s))
-            p_preds = np.asarray(imageio.volread(p))
-            w_preds = np.asarray(imageio.volread(w))
-
-            # repeat predicted frames x4
-            s_preds = np.repeat(s_preds,4,0)
-            p_preds = np.repeat(p_preds,4,0)
-            w_preds = np.repeat(w_preds,4,0)
-
-            # TODO: can't crop until annotations loading is fixed
-            # if original length %4 != 0, crop preds
-            #if ys_loaded.shape != s_preds.shape:
-            #    duration = ys_loaded.shape[0]
-            #    s_preds = s_preds[:duration]
-            #    p_preds = p_preds[:duration]
-            #    w_preds = w_preds[:duration]
-
-            # TODO: can't check until annotations loading is fixed
-            #assert ys_loaded.shape == s_preds.shape
-            #assert ys_loaded.shape == p_preds.shape
-            #assert ys_loaded.shape == w_preds.shape
-
-            training_sparks[video_id] = s_preds
-            training_puffs[video_id] = p_preds
-            training_waves[video_id] = w_preds
-        else:
-            training_sparks[video_id] = np.asarray(imageio.volread(s))
-            training_puffs[video_id] = np.asarray(imageio.volread(p))
-            training_waves[video_id] = np.asarray(imageio.volread(w))
-
-    return training_ys, training_sparks, training_puffs, training_waves
-
-def load_predictions_all_trainings(training_names, epochs, metrics_folder):
-    '''
-    open and process annotations (where sparks have been processed), predicted
-    sparks, puffs and waves for a list of training names
-    !!! the predictions movies have to be saved in metrics_folder for the given
-        training name !!!
-
-    training_names: list of saved training names
-    epochs: list of training epochs whose predictions have to be loaded
-            corresponding to the training names
-    metrics_folder: folder where predictions and annotations are saved,
-                    annotations are saved as "[0-9][0-9]_ys.tif"
-                    sparks are saved as "<base name>_[0-9][0-9]_sparks.tif"
-                    puffs are saved as "<base name>_[0-9][0-9]_puffs.tif"
-                    waves are saved as "<base name>_[0-9][0-9]_waves.tif"
-    '''
-    # dicts with "shapes":
-    # num trainings (dict) x num videos (dict) x video shape
-    ys = {}
-    s = {} # sparks
-    p = {} # puffs
-    w = {} # waves
-
-    for name, epoch in zip(training_names, epochs):
-        ys[name],s[name],p[name],w[name] = load_predictions(training_name,
-                                                            epoch,
-                                                            metrics_folder)
-
-    return ys, s, p, w
 
 ################################ Sparks metrics ################################
 
@@ -383,8 +220,11 @@ def process_spark_prediction(pred,
     min_size = (2 * min_radius) ** pred.ndim
 
     pred_boolean = pred > t_detection
-    small_objs_removed = morphology.remove_small_objects(pred_boolean,
-                                                         min_size=min_size)
+    if min_size > 0:
+        small_objs_removed = morphology.remove_small_objects(pred_boolean,
+                                                             min_size=min_size)
+    else:
+        small_objs_removed = pred_boolean
     # oginal preds without small objects:
     big_pred = np.where(small_objs_removed, pred, 0)
 
@@ -427,13 +267,16 @@ def process_spark_prediction(pred,
 
 def correspondences_precision_recall(coords_real, coords_pred,
                                      match_distance_t = MIN_DIST_T,
-                                     match_distance_xy = MIN_DIST_XY):
+                                     match_distance_xy = MIN_DIST_XY,
+                                     return_pairs_coords = False):
     """
     Compute best matches given two sets of coordinates, one from the
     ground-truth and another one from the network predictions. A match is
     considered correct if the Euclidean distance between coordinates is smaller
     than `match_distance`. With the computed matches, it estimates the precision
     and recall of the prediction.
+
+    If return_pairs_coords == True, return paired sparks coordinated
     """
     # convert coords to arrays
     coords_real = np.asarray(coords_real, dtype=float)
@@ -453,21 +296,46 @@ def correspondences_precision_recall(coords_real, coords_pred,
     w[w > 1] = 9999999 # NEW
     row_ind, col_ind = optimize.linear_sum_assignment(w)
 
-    tp = np.count_nonzero(w[row_ind, col_ind] <= 1)
-    tp_fp = len(coords_pred)
-    tp_fn = len(coords_real)
+    if return_pairs_coords:
+        # multiply coords by match distances
+        coords_real[:,0] *= match_distance_t
+        coords_real[:,1] *= match_distance_xy
+        coords_real[:,2] *= match_distance_xy
 
-    if tp_fp > 0:
-        precision = tp / tp_fp
+        coords_pred[:,0] *= match_distance_t
+        coords_pred[:,1] *= match_distance_xy
+        coords_pred[:,2] *= match_distance_xy
+
+        # true positive pairs:
+        paired_real = [coords_real[i].tolist()
+                       for i,j in zip(row_ind,col_ind) if w[i,j]<=1]
+        paired_pred = [coords_pred[j].tolist()
+                       for i,j in zip(row_ind,col_ind) if w[i,j]<=1]
+
+        # false positive (predictions):
+        false_positives = sorted(diff(coords_pred, paired_pred))
+
+        # false negative (annotations):
+        false_negatives = sorted(diff(coords_real, paired_real))
+
+        return paired_real, paired_pred, false_positives, false_negatives
+
     else:
-        precision = 1.0
+        tp = np.count_nonzero(w[row_ind, col_ind] <= 1)
+        tp_fp = len(coords_pred)
+        tp_fn = len(coords_real)
 
-    if tp_fn > 0:
-        recall = tp / tp_fn
-    else:
-        recall = 1.0
+        if tp_fp > 0:
+            precision = tp / tp_fp
+        else:
+            precision = 1.0
 
-    return precision, recall, tp, tp_fp, tp_fn
+        if tp_fn > 0:
+            recall = tp / tp_fn
+        else:
+            recall = 1.0
+
+        return precision, recall, tp, tp_fp, tp_fn
 
 
 def reduce_metrics(results):
@@ -487,67 +355,84 @@ def reduce_metrics(results):
 
     return Metrics(precision, recall, tp, tp_fp, tp_fn)
 
-
 def compute_prec_rec(annotations, preds, thresholds,
                      min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T,
-                     min_radius=3, match_distance=6, ignore_frames=0):
+                     min_radius=3, ignore_frames=0, ignore_mask=None):
     '''
     annotations: video of sparks segmentation w/ values in {0,1}
     preds: video of sparks preds w/ values in [0,1]
-    thresholds : list of thresholds applied to the preds over which events are kept
+    thresholds : list of thresholds applied to the preds above which events are kept
+    min_dist_xy : minimal spatial distance between two distinct events
+    min_dist_t : minimal temporal distance between two distinct events
     min_radius : minimal "radius" of a valid event
-    match_distance : maximal distance between annotation and pred
-    returns a dict of Metrics tuples corresponding to thresholds and AUC
+    ignore_frames : number of frames ignored at beginning and end of movie
+    ignore_mask: binary mask indicating where to ignore the values
+    returns : list of Metrics tuples corresponding to thresholds and AUC
     '''
 
     if ignore_frames != 0:
         annotations = empty_marginal_frames(annotations, ignore_frames)
         preds = empty_marginal_frames(preds, ignore_frames)
 
-    metrics = {} # dict of 'Metrics' tuples: precision, recall, tp, tp_fp, tp_fn
+    # if using an ignore mask, remove predictions inside ignore regions
+    if ignore_mask is not None:
+        preds = preds * (1 - ignore_mask)
+
+    metrics = {} # list of 'Metrics' tuples: precision, recall, tp, tp_fp, tp_fn
                  # indexed by threshold value
 
     coords_true = nonmaxima_suppression(annotations, min_dist_xy, min_dist_t)
 
     # compute prec and rec for every threshold
+    prec = []
+    rec = []
     for t in thresholds:
         coords_preds = process_spark_prediction(preds,
                                                 t_detection=t,
+                                                min_dist_xy=min_dist_xy,
+                                                min_dist_t=min_dist_t,
                                                 min_radius=min_radius)
 
-        prec_rec = Metrics(*correspondences_precision_recall(coords_true,
-                                                             coords_preds,
-                                                             match_distance))
+        prec_rec = Metrics(*correspondences_precision_recall(coords_real=coords_true,
+                                                             coords_pred=coords_preds,
+                                                             match_distance_t=min_dist_t,
+                                                             match_distance_xy=min_dist_xy))
 
         metrics[t] = prec_rec
         #print("threshold", t)
-        #prec.append(prec_rec.precision)
-        #rec.append(prec_rec.recall)
+        prec.append(prec_rec.precision)
+        rec.append(prec_rec.recall)
 
 
     # compute AUC for this sample
-    #area_under_curve = auc(rec, prec)
+    #print("PREC", prec)
+    #print("REC", rec)
+    area_under_curve = auc(rec, prec)
 
-    return metrics#, area_under_curve
+    # TODO: adattare altri scripts che usano questa funzione!!!!
+    return metrics, area_under_curve
+
 
 def reduce_metrics_thresholds(results):
     '''
     apply metrics reduction to results corresponding to different thresholds
-    results is a list of dicts
-    thresholds is the list of used thresholds
-    returns dicts of reduced 'Metrics' instances for every threshold
-    '''
 
-    # list of dicts to dict of lists
-    results_t = {k: [dic[k] for dic in results] for k in results[0]}
+    results: dict of Metrics object, indexed by video name (?? TODO: Check!!)
+    returns: list of dictionaires for every threshold [reduced_metrics, prec, rec, (auc)]
+    '''
+    # revert nested dictionaires
+    results_t = defaultdict(dict)
+    for video_id, video_metrics in results.items():
+        for t, t_metrics in video_metrics.items():
+            results_t[t][video_id] = t_metrics
 
     reduced_metrics = {}
     prec = {}
     rec = {}
 
     for t, res in results_t.items():
-        # res is a list of 'Metrics' of all videos wrt a threshold
-        reduced_res = reduce_metrics(res)
+        # res is a dict of 'Metrics' for all videos
+        reduced_res = reduce_metrics(list(res.values()))
 
         reduced_metrics[t] = reduced_res
         prec[t] = reduced_res.precision
@@ -556,10 +441,11 @@ def reduce_metrics_thresholds(results):
     # compute area under the curve for reduced metrics
     #print("REC",rec)
     #print("PREC",prec)
-    #area_under_curve = roc_auc_score(rec, prec)
+    area_under_curve = auc(list(prec.values()), list(rec.values()))
     #print("AREA UNDER CURVE", area_under_curve)
 
-    return reduced_metrics, prec, rec, None
+    # TODO: adattare altri scripts che usano questa funzione!!!!
+    return reduced_metrics, prec, rec, area_under_curve
 
 
 
@@ -596,30 +482,33 @@ def separate_events(pred, t_detection=0.5, min_radius=4):
 
 def process_puff_prediction(pred, t_detection = 0.5,
                             min_radius = 4,
-                            ignore_frames = 0):
+                            ignore_frames = 0,
+                            convex_hull = False):
     '''
     Get binary clean predictions of puffs (remove small preds)
 
-    pred: network's puffs predictions
-    min_radius : minimal 'radius' of a valid puff
-    ignore_frames: set preds in region ignored by loss fct to 0
+    pred :          network's puffs predictions
+    min_radius :    minimal 'radius' of a valid puff
+    ignore_frames : set preds in region ignored by loss fct to 0
+    convex_hull :   if true remove holes inside puffs
     '''
+    # get binary predictions
+    pred_boolean = pred > t_detection
 
-    # set first and last frames to 0 according to ignore_frames
-    if ignore_frames != 0:
-        pred_puffs = empty_marginal_frames(pred, ignore_frames)
+    if convex_hull:
+        # remove holes inside puffs (compute convex hull)
+        pred_boolean = binary_dilation(pred_boolean, iterations=5)
+        pred_boolean = binary_erosion(pred_boolean, iterations=5, border_value=1)
 
-    # remove small objects
     min_size = (2 * min_radius) ** pred.ndim
-
-    pred_boolean = pred_puffs > t_detection
     small_objs_removed = morphology.remove_small_objects(pred_boolean,
                                                          min_size=min_size)
 
-    #big_pred = np.where(small_objs_removed, pred_puffs, 0) # not binary version
+    # set first and last frames to 0 according to ignore_frames
+    if ignore_frames != 0:
+        pred_puffs = empty_marginal_frames(small_objs_removed, ignore_frames)
 
-
-    return small_objs_removed
+    return pred_puffs
 
 
 def process_wave_prediction(pred, t_detection = 0.5,
@@ -631,8 +520,12 @@ def process_wave_prediction(pred, t_detection = 0.5,
     return process_puff_prediction(pred, t_detection, min_radius, ignore_frames)
 
 
-def jaccard_score_exclusion_zone(ys,preds,exclusion_radius,ignore_mask=None,sparks=False):
-    # ys, preds and ignore_mask are binary masks
+def jaccard_score_exclusion_zone(ys,preds,exclusion_radius,
+                                 ignore_mask=None,sparks=False):
+    '''
+    compute IoU score adding exclusion zone if necessary
+    ys, preds and ignore_mask are binary masks
+    '''
 
     # Compute intersection and union
     intersection = np.logical_and(ys, preds)
