@@ -298,7 +298,7 @@ if __name__ == "__main__":
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False)
         ),
         save_every=c.getint("training", "save_every", fallback=5000),
-        load_path=load_path,
+        #load_path=load_path,
         save_path=output_path,
         managed_objects=unet.managed_objects({
             'network': network,

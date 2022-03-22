@@ -56,7 +56,7 @@ def final_mask(mask, radius1=2.5, radius2=3.5, ignore_ind=2): # SLOW
 
 def get_new_mask(video, mask, min_dist_xy, min_dist_t,
                  radius_event=3, radius_ignore=2, ignore_index=4,
-                 return_loc=False, return_loc_mask=False):
+                 sigma=2, return_loc=False, return_loc_mask=False):
     '''
     from raw segmentation masks get masks where sparks are annotated by peaks
     '''
@@ -66,7 +66,8 @@ def get_new_mask(video, mask, min_dist_xy, min_dist_t,
         sparks_mask = np.where(mask == 1, video, 0).astype(np.float32)
         sparks_loc, sparks_mask = nonmaxima_suppression(sparks_mask,
                                                         min_dist_xy, min_dist_t,
-                                                        return_mask=True)
+                                                        return_mask=True,
+                                                        sigma=sigma)
 
         print("\t\tNum of sparks:", len(sparks_loc))
 

@@ -284,9 +284,9 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
 
     loss = 0.0
     metrics = {} # store metrics for each video
-    metrics['sparks'] = []
-    metrics['puffs'] = []
-    metrics['waves'] = []
+    metrics['sparks'] = {}
+    metrics['puffs'] = {}
+    metrics['waves'] = {}
 
     for test_dataset in testing_datasets:
 
@@ -418,10 +418,11 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
         sparks_true = np.where(ys==1, 1.0, 0.0) # annotations
         sparks_prec_rec = compute_prec_rec(annotations=sparks_true,
                                            preds=sparks,
+                                           movie=xs,
                                            thresholds=[t_sparks],
                                            ignore_frames=ignore_frames,
                                            min_radius=sparks_min_radius)
-        metrics['sparks'].append(sparks_prec_rec)
+        metrics['sparks'][test_dataset.video_name] = sparks_prec_rec
         # min_radius is 3 and match_distance is 6
 
         # Puffs & waves metrics
@@ -432,11 +433,11 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                                                min_radius=waves_min_radius,
                                                ignore_frames=ignore_frames)
         waves_true = np.where(ys==2, 1, 0) # annotations
-        waves_iou = jaccard_score_exclusion_zone(ys=waves_true,
-                                                 preds=waves_binary,
-                                                 exclusion_radius=0,
-                                                 ignore_mask=ignore_mask)
-        metrics['waves'].append(waves_iou)
+        waves_iou = compute_puff_wave_metrics(ys=waves_true,
+                                              preds=waves_binary,
+                                              exclusion_radius=0,
+                                              ignore_mask=ignore_mask)['iou']
+        metrics['waves'][test_dataset.video_name] = waves_iou
 
         puffs = np.exp(preds[3]) # preds
         puffs_binary = process_puff_prediction(pred=puffs,
@@ -444,11 +445,11 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                                                min_radius=puffs_min_radius,
                                                ignore_frames=ignore_frames)
         puffs_true = np.where(ys==3, 1, 0) # annotations
-        puffs_iou = jaccard_score_exclusion_zone(ys=puffs_true,
-                                                 preds=puffs_binary,
-                                                 exclusion_radius=0,
-                                                 ignore_mask=ignore_mask)
-        metrics['puffs'].append(puffs_iou)
+        puffs_iou = compute_puff_wave_metrics(ys=puffs_true,
+                                              preds=puffs_binary,
+                                              exclusion_radius=0,
+                                              ignore_mask=ignore_mask)['iou']
+        metrics['puffs'][test_dataset.video_name] = puffs_iou
 
     # Compute average validation loss
     loss = loss.item()
@@ -457,10 +458,11 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     ############################## reduce metrics ##############################
 
     # Sparks metrics
-    _, precs, recs, a_u_c = reduce_metrics_thresholds(metrics['sparks'])
+    _, precs, recs, f1_scores = reduce_metrics_thresholds(metrics['sparks'])
 
     prec = precs[t_sparks]
     rec = recs[t_sparks]
+    f1_score = f1_scores[t_sparks]
 
     '''
     # TODO: not working properly
@@ -481,11 +483,12 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     '''
 
     # Puffs and waves metrics
-    puffs_iou = sum(metrics['puffs'])/len(metrics['puffs'])
-    waves_iou = sum(metrics['waves'])/len(metrics['waves'])
+    puffs_iou = sum(metrics['puffs'].values())/len(metrics['puffs'])
+    waves_iou = sum(metrics['waves'].values())/len(metrics['waves'])
 
     logger.info("\tPrecision: {:.4g}".format(prec))
     logger.info("\tRecall: {:.4g}".format(rec))
+    logger.info("\tF1 score: {:.4g}".format(f1_score))
     #logger.info("\tArea under the curve: {:.4g}".format(a_u_c))
     logger.info("\tPuffs IoU: {:.4g}".format(puffs_iou))
     logger.info("\tWaves IoU: {:.4g}".format(waves_iou))
@@ -493,6 +496,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
 
     results = {"sparks/precision": prec,
                "sparks/recall": rec,
+               "sparks/f1_score": f1_score,
                #"sparks/area_under_curve": a_u_c,
                "puffs/iou": puffs_iou,
                "waves/iou": waves_iou,

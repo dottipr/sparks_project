@@ -57,7 +57,8 @@ training_names = [#"temporal_reduction",
                   #"temporal_reduction_ubelix",
                   #"256_long_chunks_ubelix",
                   #"focal_loss_ubelix",
-                  "focal_loss_gamma_5_ubelix",
+                  #"focal_loss_gamma_5_ubelix",
+                  "focal_loss_new_sparks_ubelix",
                   #"pretrained_only_sparks_ubelix",
                   #"only_sparks_ubelix"
                   ]
@@ -70,13 +71,14 @@ config_files = [#"config_temporal_reduction.ini",
                 #"config_256_long_chunks_ubelix.ini",
                 "config_focal_loss_ubelix.ini",
                 #"config_pretrained_only_sparks_ubelix.ini",
-                "config_only_sparks_ubelix.ini"
+                #"config_only_sparks_ubelix.ini"
                  ]
 
 
 ### Configure output folder
 
 metrics_folder = "trainings_validation"
+os.makedirs(metrics_folder, exist_ok=True)
 
 ### Configure config files folder
 
@@ -257,7 +259,7 @@ for training_name, config_name in zip(training_names, config_files):
             smoothing='2d',
             step=c.getint("data", "step"),
             duration=c.getint("data", "chunks_duration"),
-            remove_background=c.getboolean("data", "remove_background"),
+            remove_background=c.get("data", "remove_background"),
             temporal_reduction=temporal_reduction,
             num_channels=num_channels
         ) for f in test_filenames]
@@ -328,12 +330,15 @@ for training_name, config_name in zip(training_names, config_files):
     ########################### save preds on disk ###########################
 
     logger.info(f"\tSaving annotations and predictions on disk...")
+    save_folder = os.path.join(metrics_folder, training_name)
+    os.makedirs(save_folder, exist_ok=True)
+
     for (video_name, pred), (_, ys) in zip(preds.items(), ys.items()):
         new_video_name = str(load_epoch) + "_" + video_name
 
         # preds are in logarithmic scale -> exp computed while writing on disk
         write_videos_on_disk(training_name=training_name, video_name=new_video_name,
-                             path=metrics_folder, preds=pred, ys=ys
+                             path=save_folder, preds=pred, ys=ys
                             )
 
     logger.info(f"Computed predicitions for training <<{training_name}>>")

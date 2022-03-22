@@ -22,6 +22,7 @@ UPDATES:
 23.02.2022  Corretto bug (video importato con valori interi) e perfezionato
             nonmaxima_suppression. Procedimento di nuovo utilizzando i video
             originali.
+22.03.2022  Generato nuovamente annotazioni con sigma = 2 per sicurezza.
 
 REMARKS:
 01.03.2022  Questo codice ora è adattato a PC232.
@@ -80,7 +81,8 @@ if __name__ == "__main__":
         mask = get_new_mask(video=video, mask=old_mask,
                             min_dist_xy=min_dist_xy, min_dist_t=min_dist_t,
                             radius_event=radius_event,
-                            radius_ignore=radius_ignore)
+                            radius_ignore=radius_ignore,
+                            sigma=2)
 
         print("\tNew values:", np.unique(mask))
 

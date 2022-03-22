@@ -93,6 +93,7 @@ class SparkDataset(Dataset):
             _smooth_filter = 1/52*np.ones((3,3,3))
             _smooth_filter[1,1,1] = 1/2
             self.data = [convolve(video, _smooth_filter) for video in self.data]
+            
         if resampling:
             self.fps = [get_fps(file) for file in self.files]
             self.data = [video_spline_interpolation(video, video_path,
