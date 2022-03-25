@@ -58,9 +58,10 @@ training_names = [#"temporal_reduction",
                   #"256_long_chunks_ubelix",
                   #"focal_loss_ubelix",
                   #"focal_loss_gamma_5_ubelix",
-                  "focal_loss_new_sparks_ubelix",
+                  #"focal_loss_new_sparks_ubelix",
                   #"pretrained_only_sparks_ubelix",
-                  #"only_sparks_ubelix"
+                  #"only_sparks_ubelix",
+                  "no_smoothing_physio",
                   ]
 config_files = [#"config_temporal_reduction.ini",
                 #"config_normalize_whole_video.ini",
@@ -69,9 +70,10 @@ config_files = [#"config_temporal_reduction.ini",
                 #"config_256_long_chunks_64_step_physio.ini",
                 #"config_temporal_reduction_ubelix.ini",
                 #"config_256_long_chunks_ubelix.ini",
-                "config_focal_loss_ubelix.ini",
+                #"config_focal_loss_ubelix.ini",
                 #"config_pretrained_only_sparks_ubelix.ini",
-                #"config_only_sparks_ubelix.ini"
+                #"config_only_sparks_ubelix.ini",
+                "config_no_smoothing_physio.ini",
                  ]
 
 

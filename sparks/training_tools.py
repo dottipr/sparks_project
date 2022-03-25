@@ -422,8 +422,10 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                                            thresholds=[t_sparks],
                                            ignore_frames=ignore_frames,
                                            min_radius=sparks_min_radius)
+        # Remark: dipending on normalisation, xs could have amplitude jumps
+        # when chunks changes !! (so metrics are not 100% accurate)
+        # This is not a problem when using the original movie
         metrics['sparks'][test_dataset.video_name] = sparks_prec_rec
-        # min_radius is 3 and match_distance is 6
 
         # Puffs & waves metrics
 

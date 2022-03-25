@@ -165,9 +165,13 @@ slurm*
 test*
 2020*
 2021*
+2022*
 *old*
 *OLD*
 *LOCAL*
 *.png
 *.csv
 .Xauthority
+*.txt
+*.json
+*.jpg

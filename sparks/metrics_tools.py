@@ -245,9 +245,9 @@ def process_spark_prediction(pred,
                                                 min_dist_xy=min_dist_xy,
                                                 min_dist_t=min_dist_t,
                                                 return_mask=True,
-                                                threshold=t_detection,
+                                                threshold=0,
                                                 sigma=2)
-
+                                                
     if not return_mask:
         return argwhere
 
@@ -298,7 +298,7 @@ def correspondences_precision_recall(coords_real, coords_pred,
 
     coords_pred[:,0] /= match_distance_t
     coords_pred[:,1] /= match_distance_xy
-    coords_pred[:,2] /= match_distance_xy
+    coords_pred[:,2] /= match_distance_xy # check if integer!!!!!!!!!!!
 
     w = spatial.distance_matrix(coords_real, coords_pred)
     w[w > 1] = 9999999 # NEW
