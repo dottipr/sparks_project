@@ -21,6 +21,7 @@ from metrics_tools import nonmaxima_suppression
 
 __all__ = ["get_chunks",
            "random_flip",
+           "random_flip_noise",
            "compute_class_weights",
            "weights_init",
            "get_times",
@@ -105,7 +106,7 @@ def get_chunks(video_length, step, duration):
 
 
 def random_flip(x, y):
-
+    # flip movie and annotation mask
     if np.random.uniform() > 0.5:
         x = x[..., ::-1]
         y = y[..., ::-1]
@@ -116,6 +117,31 @@ def random_flip(x, y):
 
     x = np.ascontiguousarray(x)
     y = np.ascontiguousarray(y)
+
+    return x, y
+
+
+def random_flip_noise(x, y):
+    # flip movie and annotation mask
+    x, y = random_flip(x, y)
+
+    # add noise to movie with a 50% chance
+    if np.random.uniform() > 0.5:
+        # 50/50 of being normal or Poisson noise
+        if np.random.uniform() > 0.5:
+            noise = np.random.normal(size=x.shape)
+        else:
+            noise = np.random.poisson(size=x.shape)
+        x = x+noise
+        x = x.astype('float32')
+
+    # denoise input with a 50% chance
+    if np.random.uniform() > 0.5:
+        # 50/50 of gaussian filtering or median filtering
+        if np.random.uniform() > 0.5:
+            x = ndi.gaussian_filter(x, sigma=1)
+        else:
+            x = ndi.median_filter(x, size=2)
 
     return x, y
 

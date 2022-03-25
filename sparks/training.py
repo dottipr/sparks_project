@@ -16,7 +16,7 @@ from tensorboardX import SummaryWriter
 import wandb
 
 import unet
-from dataset_tools import random_flip, compute_class_weights, weights_init
+from dataset_tools import random_flip, random_flip_noise, compute_class_weights, weights_init
 from datasets import SparkDataset, SparkTestDataset
 from training_tools import training_step, test_function_fixed_t, sampler
 from metrics_tools import take_closest
@@ -76,6 +76,7 @@ if __name__ == "__main__":
     params['norm_video'] = c.getboolean("data", "norm_video", fallback=False)
     params['remove_background'] = c.get("data", "remove_background", fallback='average')
     params['only_sparks'] = c.getboolean("data", "only_sparks", fallback=False)
+    params['noise_data_augmentation'] = c.getboolean("data", "noise_data_augmentation", fallback=False)
 
     # UNet params
     params['unet_steps'] = c.getint("network", "step")
@@ -175,7 +176,10 @@ if __name__ == "__main__":
     )
 
     # apply transforms
-    dataset = unet.TransformedDataset(dataset, random_flip)
+    if params['noise_data_augmentation']:
+        dataset = unet.TransformedDataset(dataset, random_flip_noise)
+    else:
+        dataset = unet.TransformedDataset(dataset, random_flip)
 
     logger.info(f"Samples in training dataset: {len(dataset)}")
 
