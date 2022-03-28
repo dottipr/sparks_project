@@ -16,7 +16,7 @@ from PIL import Image
 
 import torch
 
-from metrics_tools import nonmaxima_suppression
+from metrics_tools import nonmaxima_suppression, get_sparks_locations_from_mask
 
 
 __all__ = ["get_chunks",
@@ -64,20 +64,23 @@ def get_new_mask(video, mask, min_dist_xy, min_dist_t,
 
     # get spark centres
     if 1 in mask:
-        sparks_mask = np.where(mask == 1, video, 0).astype(np.float32)
-        sparks_loc, sparks_mask = nonmaxima_suppression(sparks_mask,
-                                                        min_dist_xy, min_dist_t,
+        sparks_maxima_mask = np.where(mask == 1, 1, 0)
+        sparks_loc, sparks_mask = nonmaxima_suppression(img=video,
+                                                        maxima_mask=sparks_maxima_mask,
+                                                        min_dist_xy=min_dist_xy,
+                                                        min_dist_t=min_dist_t,
                                                         return_mask=True,
+                                                        threshold=0,
                                                         sigma=sigma)
-
-        print("\t\tNum of sparks:", len(sparks_loc))
-
-        if return_loc:
-            return sparks_loc
 
         sparks_mask = final_mask(sparks_mask, radius1=radius_event,
                              radius2=radius_event+radius_ignore,
                              ignore_ind=ignore_index)
+
+        print("\t\tNum of sparks:", len(sparks_loc))
+        #print(sparks_loc)
+        if return_loc:
+            return sparks_loc
     else:
         if return_loc:
             return 0

@@ -44,7 +44,7 @@ class SparkDataset(Dataset):
                  step = 4, duration = 16, smoothing = False,
                  resampling = False, resampling_rate = 150,
                  remove_background = 'average', temporal_reduction = False,
-                 num_channels = 1, normalize_video = False,
+                 num_channels = 1, normalize_video = 'chunk',
                  only_sparks = False):
 
         # base_path is the folder containing the whole dataset (train and test)
@@ -100,8 +100,12 @@ class SparkDataset(Dataset):
                                                     resampling_rate)
                             for video,video_path in zip(self.data,self.files)]
 
-        if self.normalize_video:
+        if self.normalize_video == 'movie':
             self.data = [(video - video.min()) / (video.max() - video.min())
+                         for video in self.data]
+        elif self.normalize == 'abs_max':
+            absolute_max = np.iinfo(np.uint16).max # 65535
+            self.data = [(video-video.min())/(absolute_max-video.min())
                          for video in self.data]
 
         # pad movies whose length does not match chunks_duration and step params
@@ -197,7 +201,7 @@ class SparkDataset(Dataset):
             #    no è super lento
             chunk = remove_avg_background(chunk)
 
-        if not self.normalize_video:
+        if self.normalize_video == 'chunk':
             chunk = (chunk - chunk.min()) / (chunk.max() - chunk.min())
         assert chunk.min() >= 0 and chunk.max() <= 1, \
                "chunk values not normalized between 0 and 1"
@@ -234,7 +238,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
                  resampling = False, resampling_rate = 150,
                  remove_background = 'average', gt_available = True,
                  temporal_reduction = False, num_channels = 1,
-                 normalize_video = False, only_sparks = False):
+                 normalize_video = 'chunk', only_sparks = False):
 
         # video_path is the complete path to the video
         # gt_available == True if ground truth annotations is available
@@ -281,8 +285,11 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
             self.video = video_spline_interpolation(self.video, self.file,
                                                     resampling_rate)
 
-        if self.normalize_video:
+        if self.normalize_video == 'video':
             self.video = (self.video-self.video.min())/(self.video.max()-self.video.min())
+        elif self.normalize == 'abs_max':
+            absolute_max = np.iinfo(np.uint16).max # 65535
+            self.video = (self.video-self.video.min())/(absolute_max-self.video.min())
 
         self.step = step
         self.duration = duration
@@ -348,7 +355,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
             #    no è super lento
             chunk = remove_avg_background(chunk)
 
-        if not self.normalize_video:
+        if self.normalize_video == 'chunk':
             chunk = (chunk - chunk.min()) / (chunk.max() - chunk.min())
         assert chunk.min() >= 0 and chunk.max() <= 1, \
                "chunk values not normalized between 0 and 1 (test)"

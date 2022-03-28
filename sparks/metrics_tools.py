@@ -149,28 +149,42 @@ Metrics = namedtuple('Metrics', ['precision', 'recall', 'f1_score', 'tp', 'tp_fp
 #                                for coords_i, shape_i in zip(points.T, shape)])
 
 
-def nonmaxima_suppression(img,
+def nonmaxima_suppression(img,maxima_mask=None,
                           min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T,
                           return_mask=False, threshold=0.5, sigma=2):
     '''
     Extract local maxima from input array (t,x,y).
-    img : input array
-    min_dist_xy : minimal spatial distance between two maxima
-    min_dist_t : minimal temporal distance between two maxima
-    return_mask : if True return both masks with maxima and locations, if False
-                  only returns locations
-    threshold : minimal value of maximum points
-    sigma : sigma parameter of gaussian filter
+    img :           input array
+    maxima_mask :   if not None, look for local maxima only inside the mask
+    min_dist_xy :   minimal spatial distance between two maxima
+    min_dist_t :    minimal temporal distance between two maxima
+    return_mask :   if True return both masks with maxima and locations, if
+                    False only returns locations
+    threshold :     minimal value of maximum points
+    sigma :         sigma parameter of gaussian filter
     '''
+    img = img.astype(np.float)
 
-    smooth_img = ndi.gaussian_filter(img, sigma)
-    #smooth_img = img
+    if maxima_mask is not None:
+        # apply dilation to mask
+        maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=sigma)
+        # set pixels outside maxima_mask to zero
+        masked_img = np.where(maxima_mask_dilated, img, 0.)
+        imageio.volwrite("TEST_masked_video.tif", masked_img)
+    else:
+        masked_img = img
+
+    # smooth input image
+
+    smooth_img = ndi.gaussian_filter(masked_img, sigma=sigma)
+    imageio.volwrite("TEST_smooth_video.tif", smooth_img)
 
     min_dist = ellipsoid(min_dist_t/2, min_dist_xy/2, min_dist_xy/2)
-    #dilated = ndi.grey_dilation(smooth_img,
     dilated = ndi.maximum_filter(smooth_img,
                                  footprint=min_dist)
-    argmaxima = np.logical_and(smooth_img == dilated, img > threshold)
+    imageio.volwrite("TEST_dilated.tif", dilated)
+    argmaxima = np.logical_and(smooth_img == dilated, masked_img > threshold)
+    imageio.volwrite("TEST_maxima.tif", np.uint8(argmaxima))
 
     argwhere = np.argwhere(argmaxima)
 
@@ -191,8 +205,10 @@ def get_sparks_locations_from_mask(mask, min_dist_xy, min_dist_t,
 
     sparks_mask = np.where(mask == 1, 1.0, 0.0)
     sparks_mask = empty_marginal_frames(sparks_mask, ignore_frames)
-
-    coords = nonmaxima_suppression(sparks_mask, min_dist_xy, min_dist_t)
+    coords = nonmaxima_suppression(img=sparks_mask,
+                                   min_dist_xy=min_dist_xy,
+                                   min_dist_t=min_dist_t,
+                                   sigma=1)
 
     return coords
 
@@ -205,7 +221,8 @@ def process_spark_prediction(pred,
                              min_radius = 3,
                              return_mask = False,
                              return_clean_pred = False,
-                             ignore_frames = 0):
+                             ignore_frames = 0,
+                             sigma = 2):
     '''
     Get sparks centres from preds: remove small events + nonmaxima suppression
 
@@ -218,36 +235,40 @@ def process_spark_prediction(pred,
     return_mask: if True return mask and locations of sparks
     return_clean_pred: if True only return preds without small events
     ignore_frames: set preds in region ignored by loss fct to 0
+    sigma: sigma value used in gaussian smoothing in nonmaxima suppression
     '''
     # get binary preds
     pred_boolean = pred > t_detection
 
     # remove small objects and get clean binary preds
-    min_size = (2 * min_radius) ** pred.ndim
-    if min_size > 0:
+    if min_radius > 0:
+        min_size = (2 * min_radius) ** pred.ndim
         small_objs_removed = morphology.remove_small_objects(pred_boolean,
                                                              min_size=min_size)
     else:
         small_objs_removed = pred_boolean
 
-    # oginal movie without small objects:
-    sparks_movie = np.where(small_objs_removed, movie, 0)
 
-    # remove ignored first and last frames
-    sparks_movie = empty_marginal_frames(sparks_movie, ignore_frames)
+    # remove first and last object from sparks mask
+    small_objs_removed = empty_marginal_frames(small_objs_removed,
+                                               ignore_frames)
 
+    imageio.volwrite("TEST_small_objs_removed.tif", np.uint8(small_objs_removed))
+    imageio.volwrite("TEST_clean_preds.tif", np.where(small_objs_removed, pred, 0))
     if return_clean_pred:
-        big_pred = empty_marginal_frames(sparks_movie, ignore_frames)
+        # original movie without small objects:
+        big_pred = np.where(small_objs_removed, pred, 0)
         return big_pred
 
     # detect events (nonmaxima suppression)
-    argwhere, argmaxima = nonmaxima_suppression(img=sparks_movie,
+    argwhere, argmaxima = nonmaxima_suppression(img=movie,
+                                                maxima_mask=small_objs_removed,
                                                 min_dist_xy=min_dist_xy,
                                                 min_dist_t=min_dist_t,
                                                 return_mask=True,
                                                 threshold=0,
-                                                sigma=2)
-                                                
+                                                sigma=sigma)
+
     if not return_mask:
         return argwhere
 
@@ -393,7 +414,9 @@ def compute_prec_rec(annotations, preds, movie, thresholds,
     metrics = {} # list of 'Metrics' tuples: precision, recall, f1_score, tp, tp_fp, tp_fn
                  # indexed by threshold value
 
-    coords_true = nonmaxima_suppression(annotations, min_dist_xy, min_dist_t)
+    coords_true = get_sparks_locations_from_mask(annotations,
+                                                 min_dist_xy,
+                                                 min_dist_t)
 
     # compute prec and rec for every threshold
     prec = []

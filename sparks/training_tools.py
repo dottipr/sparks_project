@@ -264,7 +264,6 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     # Compute precision and recall only for a fixed threshold
     # Compute IoU for puffs and waves classes
     # TODO: fix 'test_function' s.t. it works properly w.r.t. prec recall plot
-
     network.eval()
 
     duration = testing_datasets[0].duration

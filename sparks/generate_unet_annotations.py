@@ -23,6 +23,9 @@ UPDATES:
             nonmaxima_suppression. Procedimento di nuovo utilizzando i video
             originali.
 22.03.2022  Generato nuovamente annotazioni con sigma = 2 per sicurezza.
+28.03.2022  Generato nuovamente annotazioni usando la versione corretta di
+            nonmaxima_suppression (il gaussian filter è ora applicato alla
+            versione dilated dell'annotation mask).
 
 REMARKS:
 01.03.2022  Questo codice ora è adattato a PC232.
@@ -82,6 +85,7 @@ if __name__ == "__main__":
                             min_dist_xy=min_dist_xy, min_dist_t=min_dist_t,
                             radius_event=radius_event,
                             radius_ignore=radius_ignore,
+                            ignore_index=ignore_index,
                             sigma=2)
 
         print("\tNew values:", np.unique(mask))

@@ -73,7 +73,7 @@ if __name__ == "__main__":
     params['data_step'] = c.getint("data", "step")
     params['ignore_frames_loss'] = c.getint("data", "ignore_frames_loss")
     params['data_smoothing'] = c.get("data", "smoothing", fallback="2d")
-    params['norm_video'] = c.getboolean("data", "norm_video", fallback=False)
+    params['norm_video'] = c.get("data", "norm_video", fallback="chunk")
     params['remove_background'] = c.get("data", "remove_background", fallback='average')
     params['only_sparks'] = c.getboolean("data", "only_sparks", fallback=False)
     params['noise_data_augmentation'] = c.getboolean("data", "noise_data_augmentation", fallback=False)
@@ -154,8 +154,12 @@ if __name__ == "__main__":
         logger.info(f"Using temporal reduction with {params['num_channels']} channels")
 
     # normalize whole videos or chunks individually
-    if params['norm_video']:
-        logger.info("Normalizing whole video instead of single chunks")
+    if params['norm_video'] == 'chunk':
+        logger.info("Normalizing each chunk using min and max")
+    elif params['norm_video'] == 'movie':
+        logger.info("Normalizing whole video using min and max")
+    elif params['norm_video'] == 'abs_max':
+        logger.info("Normalizing whole video using 16-bit absolute max")
 
     # initialize training dataset
     dataset_map = {'full': "", 'small': 'small_dataset', 'minimal': 'very_small_dataset'}
