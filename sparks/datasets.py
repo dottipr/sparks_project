@@ -103,7 +103,7 @@ class SparkDataset(Dataset):
         if self.normalize_video == 'movie':
             self.data = [(video - video.min()) / (video.max() - video.min())
                          for video in self.data]
-        elif self.normalize == 'abs_max':
+        elif self.normalize_video == 'abs_max':
             absolute_max = np.iinfo(np.uint16).max # 65535
             self.data = [(video-video.min())/(absolute_max-video.min())
                          for video in self.data]
@@ -195,7 +195,7 @@ class SparkDataset(Dataset):
 
         chunk = self.data[vid_id][chunks[chunk_id]]
 
-        if self.remove_background == 'average':
+        if self.remove_background == 'moving':
             # remove the background of the single chunk
             # !! se migliora molto i risultati, farlo nel preprocessing che se
             #    no è super lento
@@ -287,7 +287,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
 
         if self.normalize_video == 'video':
             self.video = (self.video-self.video.min())/(self.video.max()-self.video.min())
-        elif self.normalize == 'abs_max':
+        elif self.normalize_video == 'abs_max':
             absolute_max = np.iinfo(np.uint16).max # 65535
             self.video = (self.video-self.video.min())/(absolute_max-self.video.min())
 
@@ -349,7 +349,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         chunks = get_chunks(self.length, self.step, self.duration)
         chunk = self.video[chunks[chunk_id]]
 
-        if self.remove_background == 'average':
+        if self.remove_background == 'moving':
             # remove the background of the single chunk
             # !! se migliora molto i risultati, farlo nel preprocessing che se
             #    no è super lento
