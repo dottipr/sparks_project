@@ -32,6 +32,7 @@ __all__ = ["get_chunks",
            "get_new_voxel_label",
            "final_mask",
            "get_new_mask",
+           "get_new_mask_raw_sparks"
            "load_movies",
            "load_movies_ids",
            "load_annotations",
@@ -86,6 +87,69 @@ def get_new_mask(video, mask, min_dist_xy, min_dist_t,
             return 0
 
         return mask
+
+    # remove sparks from old mask
+    no_sparks_mask = np.where(mask == 1, 0, mask)
+
+    # create new mask
+    new_mask = np.where(sparks_mask != 0, sparks_mask, no_sparks_mask)
+
+    if return_loc_mask:
+        return sparks_loc, new_mask
+
+    return new_mask
+
+
+def get_new_mask_raw_sparks(mask,
+                            radius_ignore_sparks=1,
+                            radius_ignore_puffs=3,
+                            radius_ignore_waves=5,
+                            ignore_index=4):
+    '''
+    from raw segmentation masks get masks where each event has an ignore region
+    around itself
+    '''
+
+    ignore_mask_sparks = None
+    if 1 in mask:
+        sparks_mask = np.where(mask == 1, 1, 0)
+        dilated_mask = ndi.binary_dilation(sparks_mask,
+                                           iterations=radius_ignore_sparks)
+        eroded_mask = ndi.binary_erosion(sparks_mask,
+                                         iterations=radius_ignore_sparks)
+        ignore_mask_sparks = np.logical_xor(dilated_mask, eroded_mask)
+        imageio.volwrite("TEST_IGNORE_MASK_SPARKS.tif", np.uint8(ignore_mask_sparks))
+
+    ignore_mask_waves = None
+    if 2 in mask:
+        waves_mask = np.where(mask == 2, 1, 0)
+        dilated_mask = ndi.binary_dilation(waves_mask,
+                                           iterations=radius_ignore_waves)
+        eroded_mask = ndi.binary_erosion(waves_mask,
+                                         iterations=radius_ignore_waves)
+        ignore_mask_waves = np.logical_xor(dilated_mask, eroded_mask)
+        imageio.volwrite("TEST_IGNORE_MASK_WAVES.tif", np.uint8(ignore_mask_waves))
+
+
+    ignore_mask_puffs = None
+    if 3 in mask:
+        puffs_mask = np.where(mask == 3, 1, 0)
+        dilated_mask = ndi.binary_dilation(puffs_mask,
+                                           iterations=radius_ignore_puffs)
+        eroded_mask = ndi.binary_erosion(puffs_mask,
+                                         iterations=radius_ignore_puffs)
+        ignore_mask_puffs = np.logical_xor(dilated_mask, eroded_mask)
+        imageio.volwrite("TEST_IGNORE_MASK_PUFFS.tif", np.uint8(ignore_mask_puffs))
+
+
+    if ignore_mask_sparks is not None:
+        mask = np.where(ignore_mask_sparks, ignore_index, mask)
+    if ignore_mask_puffs is not None:
+        mask = np.where(ignore_mask_puffs, ignore_index, mask)
+    if ignore_mask_waves is not None:
+        mask = np.where(ignore_mask_waves, ignore_index, mask)
+
+    return mask
 
     # remove sparks from old mask
     no_sparks_mask = np.where(mask == 1, 0, mask)

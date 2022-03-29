@@ -60,24 +60,36 @@ compute_joined_puff_wave_ious = True
 compute_joined_spark_puff_ious = True
 compute_joined_all_classes_ious = True
 compute_puff_no_holes_ious = True
-compute_sparks_prec_rec = False
-compute_sparks_on_puffs_prec_rec = False
+compute_sparks_prec_rec = True
+compute_sparks_on_puffs_prec_rec = True
 
 
 ############################### LOAD STORED DATA ###############################
 
 # Select predictions to load
 training_names = [#"256_long_chunks_ubelix",
-                  #"focal_loss_gamma_5_ubelix",
+                  "focal_loss_gamma_5_ubelix",
                   #"focal_loss_new_sparks_ubelix",
-                  "no_smoothing_physio"
+                  # "no_smoothing_physio"
                   ]
+
+# Load training or testing dataset
+use_train_data = True
+if use_train_data:
+    print("Predict outputs for training data")
+else:
+    print("Predict outputs for testing data")
+
 
 epoch = 100000
 
 # Set folder where data is loaded and saved
-metrics_folder = "trainings_validation"
+if not use_train_data:
+    metrics_folder = "trainings_validation"
+else :
+    metrics_folder = os.path.join("trainings_validation", "train_samples")
 os.makedirs(metrics_folder, exist_ok=True)
+
 
 # Load raw annotations (sparks unprocessed)
 ys_all_trainings = load_annotations(metrics_folder, mask_names="mask")

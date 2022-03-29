@@ -57,11 +57,11 @@ training_names = [#"temporal_reduction",
                   #"temporal_reduction_ubelix",
                   #"256_long_chunks_ubelix",
                   #"focal_loss_ubelix",
-                  #"focal_loss_gamma_5_ubelix",
+                  "focal_loss_gamma_5_ubelix",
                   #"focal_loss_new_sparks_ubelix",
                   #"pretrained_only_sparks_ubelix",
                   #"only_sparks_ubelix",
-                  "no_smoothing_physio",
+                  #"no_smoothing_physio",
                   ]
 config_files = [#"config_temporal_reduction.ini",
                 #"config_normalize_whole_video.ini",
@@ -70,17 +70,31 @@ config_files = [#"config_temporal_reduction.ini",
                 #"config_256_long_chunks_64_step_physio.ini",
                 #"config_temporal_reduction_ubelix.ini",
                 #"config_256_long_chunks_ubelix.ini",
-                #"config_focal_loss_ubelix.ini",
+                "config_focal_loss_ubelix.ini",
                 #"config_pretrained_only_sparks_ubelix.ini",
                 #"config_only_sparks_ubelix.ini",
-                "config_no_smoothing_physio.ini",
+                #"config_no_smoothing_physio.ini",
                  ]
+
+
+### Select if prediction are computed for training or testing dataset
+
+use_train_data = True
+if use_train_data:
+    logger.info("Predict outputs for training data")
+else:
+    logger.info("Predict outputs for testing data")
 
 
 ### Configure output folder
 
-metrics_folder = "trainings_validation"
+if not use_train_data:
+    metrics_folder = "trainings_validation"
+else :
+    metrics_folder = os.path.join("trainings_validation", "train_samples")
+
 os.makedirs(metrics_folder, exist_ok=True)
+
 
 ### Configure config files folder
 
@@ -240,18 +254,13 @@ for training_name, config_name in zip(training_names, config_files):
 
     logger.info(f"\tUsing {dataset_size} dataset located in {dataset_path}")
 
-    # load train or test dataset
-    test = True
+    if not use_train_data:
+        pattern_test_filenames = os.path.join(f"{dataset_path}","videos_test",
+                                               "[0-9][0-9]_video.tif")
+    else:
+        pattern_test_filenames = os.path.join(f"{dataset_path}","videos",
+                                               "[0-9][0-9]_video.tif")
 
-    try:
-        test
-    except:
-        logger.info("SCRIPT ONLY IMPLEMENTED FOR TEST DATASET")
-
-    test_string = "_test" if test else ""
-
-    pattern_test_filenames = os.path.join(f"{dataset_path}","videos_test",
-                                           "[0-9][0-9]_video.tif")
     test_filenames = sorted(glob.glob(pattern_test_filenames))
 
     # create dataset
@@ -302,7 +311,7 @@ for training_name, config_name in zip(training_names, config_files):
     ########################### load trained UNet params ###########################
 
     output_path = os.path.join(c.get("network", "output_relative_path"), training_name)
-    logger.info(f"OUTPUT_PATH: {output_path}")
+    logger.info(f"Saved model path: {output_path}")
     summary_writer = SummaryWriter(os.path.join(output_path, "summary"), purge_step=0)
 
     trainer = unet.TrainingManager(

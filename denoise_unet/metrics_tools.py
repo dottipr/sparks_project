@@ -394,10 +394,10 @@ def jaccard_score_exclusion_zone(ys,preds,exclusion_radius,ignore_mask=None,spar
 
     if exclusion_radius != 0:
         # Compute exclusion zone: 1 where Jaccard index has to be computed, 0 otherwise
-        dilated = binary_dilation(ys, iterations=exclusion_radius)
+        dilated = ndi.binary_dilation(ys, iterations=exclusion_radius)
 
         if not sparks:
-            eroded = binary_erosion(ys, iterations=exclusion_radius)
+            eroded = ndi.binary_erosion(ys, iterations=exclusion_radius)
             exclusion_mask = 1 - np.logical_xor(eroded,dilated)
         else:
             # Erosion is not computed for spark class
@@ -406,7 +406,7 @@ def jaccard_score_exclusion_zone(ys,preds,exclusion_radius,ignore_mask=None,spar
         # If ignore mask is given, don't compute values where it is 1
         if ignore_mask is not None:
             # Compute dilation for ignore mask too (erosion not necessary)
-            ignore_mask = binary_dilation(ignore_mask, iterations=exclusion_radius)
+            ignore_mask = ndi.binary_dilation(ignore_mask, iterations=exclusion_radius)
 
             # Ignore regions where ignore mask is 1
             exclusion_mask = np.logical_and(1 - ignore_mask, exclusion_mask)
