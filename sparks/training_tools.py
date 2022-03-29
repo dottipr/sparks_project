@@ -258,7 +258,7 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
                           t_sparks, t_puffs, t_waves,
                           training_name, sparks_min_radius, puffs_min_radius,
                           waves_min_radius, temporal_reduction=False,
-                          num_channels=1):
+                          num_channels=1, sparks_type='peaks'):
     # Requires a list of testing dataset as input
     # (every test video has its own dataset)
     # Compute precision and recall only for a fixed threshold
@@ -415,16 +415,29 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
 
         sparks = np.exp(preds[1])  # preds
         sparks_true = np.where(ys==1, 1.0, 0.0) # annotations
-        sparks_prec_rec = compute_prec_rec(annotations=sparks_true,
-                                           preds=sparks,
-                                           movie=xs,
-                                           thresholds=[t_sparks],
-                                           ignore_frames=ignore_frames,
-                                           min_radius=sparks_min_radius)
-        # Remark: dipending on normalisation, xs could have amplitude jumps
-        # when chunks changes !! (so metrics are not 100% accurate)
-        # This is not a problem when using the original movie
-        metrics['sparks'][test_dataset.video_name] = sparks_prec_rec
+
+        if sparks_type == 'peaks':
+            sparks_prec_rec = compute_prec_rec(annotations=sparks_true,
+                                               preds=sparks,
+                                               movie=xs,
+                                               thresholds=[t_sparks],
+                                               ignore_frames=ignore_frames,
+                                               min_radius=sparks_min_radius)
+            # Remark: dipending on normalisation, xs could have amplitude jumps
+            # when chunks changes !! (so metrics are not 100% accurate)
+            # This is not a problem when using the original movie
+            metrics['sparks'][test_dataset.video_name] = sparks_prec_rec
+        elif sparks_type == 'raw':
+            sparks_binary = process_puff_prediction(pred=sparks,
+                                                    t_detection=t_sparks,
+                                                    min_radius=sparks_min_radius,
+                                                    ignore_frames=ignore_frames)
+            sparks_true = np.where(ys==1, 1, 0) # annotations
+            sparks_iou = compute_puff_wave_metrics(ys=sparks_true,
+                                                   preds=sparks_binary,
+                                                   exclusion_radius=0,
+                                                   ignore_mask=ignore_mask)['iou']
+            metrics['sparks'][test_dataset.video_name] = sparks_iou
 
         # Puffs & waves metrics
 
@@ -459,49 +472,62 @@ def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
     ############################## reduce metrics ##############################
 
     # Sparks metrics
-    _, precs, recs, f1_scores = reduce_metrics_thresholds(metrics['sparks'])
+    if sparks_type == 'peaks':
+        _, precs, recs, f1_scores = reduce_metrics_thresholds(metrics['sparks'])
 
-    prec = precs[t_sparks]
-    rec = recs[t_sparks]
-    f1_score = f1_scores[t_sparks]
+        prec = precs[t_sparks]
+        rec = recs[t_sparks]
+        f1_score = f1_scores[t_sparks]
 
-    '''
-    # TODO: not working properly
-    # save precision recall plot (on disk and TB)
-    figure = plt.figure()
-    plt.plot(recs, precs, marker = '.')
-    plt.xlim([0,1])
-    plt.ylim([0,1])
-    plt.xlabel('recall')
-    plt.ylabel('precision')
-    plt.title("Precision-recall plot")
+        '''
+        # TODO: not working properly
+        # save precision recall plot (on disk and TB)
+        figure = plt.figure()
+        plt.plot(recs, precs, marker = '.')
+        plt.xlim([0,1])
+        plt.ylim([0,1])
+        plt.xlabel('recall')
+        plt.ylabel('precision')
+        plt.title("Precision-recall plot")
 
-    #print("RECALLS", recs)
-    #print("PRECISIONS", precs)
-    #print("ADDING FIGURE TO TENSORBOARD")
-    summary_writer.add_figure("testing/sparks/prec_rec_plot", figure)
-    figure.savefig("prec_rec_plot.png")
-    '''
+        #print("RECALLS", recs)
+        #print("PRECISIONS", precs)
+        #print("ADDING FIGURE TO TENSORBOARD")
+        summary_writer.add_figure("testing/sparks/prec_rec_plot", figure)
+        figure.savefig("prec_rec_plot.png")
+        '''
+    elif sparks_type == 'raw':
+        sparks_iou = sum(metrics['sparks'].values())/len(metrics['sparks'])
 
     # Puffs and waves metrics
     puffs_iou = sum(metrics['puffs'].values())/len(metrics['puffs'])
     waves_iou = sum(metrics['waves'].values())/len(metrics['waves'])
 
-    logger.info("\tPrecision: {:.4g}".format(prec))
-    logger.info("\tRecall: {:.4g}".format(rec))
-    logger.info("\tF1 score: {:.4g}".format(f1_score))
-    #logger.info("\tArea under the curve: {:.4g}".format(a_u_c))
+    if sparks_type == 'peaks':
+        logger.info("\tPrecision: {:.4g}".format(prec))
+        logger.info("\tRecall: {:.4g}".format(rec))
+        logger.info("\tF1 score: {:.4g}".format(f1_score))
+        #logger.info("\tArea under the curve: {:.4g}".format(a_u_c))
+    if sparks_type == 'raw':
+        logger.info("\tSparks IoU: {:.4g}".format(sparks_iou))
+
     logger.info("\tPuffs IoU: {:.4g}".format(puffs_iou))
     logger.info("\tWaves IoU: {:.4g}".format(waves_iou))
     logger.info("\tValidation loss: {:.4g}".format(loss))
 
-    results = {"sparks/precision": prec,
-               "sparks/recall": rec,
-               "sparks/f1_score": f1_score,
-               #"sparks/area_under_curve": a_u_c,
-               "puffs/iou": puffs_iou,
-               "waves/iou": waves_iou,
-               "validation_loss": loss}
+    if sparks_type == 'peaks':
+        results = {"sparks/precision": prec,
+                   "sparks/recall": rec,
+                   "sparks/f1_score": f1_score,
+                   #"sparks/area_under_curve": a_u_c,
+                   "puffs/iou": puffs_iou,
+                   "waves/iou": waves_iou,
+                   "validation_loss": loss}
+    elif sparks_type == 'raw':
+        results = {"sparks/iou": sparks_iou,
+                   "puffs/iou": puffs_iou,
+                   "waves/iou": waves_iou,
+                   "validation_loss": loss}
 
     if wandb_log:
         wandb.log(results)

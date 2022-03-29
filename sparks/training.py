@@ -77,6 +77,7 @@ if __name__ == "__main__":
     params['remove_background'] = c.get("data", "remove_background", fallback='average')
     params['only_sparks'] = c.getboolean("data", "only_sparks", fallback=False)
     params['noise_data_augmentation'] = c.getboolean("data", "noise_data_augmentation", fallback=False)
+    params['sparks_type'] = c.get("data", "sparks_type", fallback="peaks")
 
     # UNet params
     params['unet_steps'] = c.getint("network", "step")
@@ -176,7 +177,8 @@ if __name__ == "__main__":
         temporal_reduction=params['temporal_reduction'],
         num_channels=params['num_channels'],
         normalize_video=params['norm_video'],
-        only_sparks=params['only_sparks']
+        only_sparks=params['only_sparks'],
+        sparks_type=params['sparks_type']
     )
 
     # apply transforms
@@ -202,7 +204,8 @@ if __name__ == "__main__":
             temporal_reduction=params['temporal_reduction'],
             num_channels=params['num_channels'],
             normalize_video=params['norm_video'],
-            only_sparks=params['only_sparks']
+            only_sparks=params['only_sparks'],
+            sparks_type=params['sparks_type']
         ) for f in test_filenames]
 
     for i, tds in enumerate(testing_datasets):
@@ -330,7 +333,8 @@ if __name__ == "__main__":
             puffs_min_radius=params['puffs_min_radius'],
             waves_min_radius=params['waves_min_radius'],
             temporal_reduction=params['temporal_reduction'],
-            num_channels=params['num_channels']
+            num_channels=params['num_channels'],
+            sparks_type=params['sparks_type']
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),

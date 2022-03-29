@@ -45,7 +45,7 @@ class SparkDataset(Dataset):
                  resampling = False, resampling_rate = 150,
                  remove_background = 'average', temporal_reduction = False,
                  num_channels = 1, normalize_video = 'chunk',
-                 only_sparks = False):
+                 only_sparks = False, sparks_type = 'peaks'):
 
         # base_path is the folder containing the whole dataset (train and test)
         self.base_path = base_path
@@ -64,13 +64,21 @@ class SparkDataset(Dataset):
         # get videos and masks paths
         self.files = sorted(glob.glob(os.path.join(self.base_path,
                                                    "videos", "[0-9][0-9]_video.tif")))
-        self.annotations_files = sorted(glob.glob(os.path.join(self.base_path,
+        if sparks_type == 'peaks':
+            self.annotations_files = sorted(glob.glob(os.path.join(self.base_path,
                                               "videos", "[0-9][0-9]_video_mask.tif")))
+            # check that video filenames correspond to annotation filenames
+            assert ((os.path.splitext(v) + "_mask") == os.path.splitext(a)
+                    for v,a in zip(self.files,self.annotations_files)), \
+                   "Video and annotation filenames do not match"
+        elif sparks_type == 'raw':
+            self.annotations_files = sorted(glob.glob(os.path.join(self.base_path,
+                                              "videos", "[0-9][0-9]_video_mask_raw_sparks.tif")))
+            # check that video filenames correspond to annotation filenames
+            assert ((os.path.splitext(v) + "_mask_raw_sparks") == os.path.splitext(a)
+                    for v,a in zip(self.files,self.annotations_files)), \
+                   "Video and annotation filenames do not match"
 
-        # check that video filenames correspond to annotation filenames
-        assert ((os.path.splitext(v) + "_mask") == os.path.splitext(a)
-                for v,a in zip(self.files,self.annotations_files)), \
-               "Video and annotation filenames do not match"
 
         # get videos and masks data
         self.data = [np.asarray(imageio.volread(file)) for file in self.files]
@@ -238,7 +246,8 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
                  resampling = False, resampling_rate = 150,
                  remove_background = 'average', gt_available = True,
                  temporal_reduction = False, num_channels = 1,
-                 normalize_video = 'chunk', only_sparks = False):
+                 normalize_video = 'chunk', only_sparks = False,
+                 sparks_type = 'peaks'):
 
         # video_path is the complete path to the video
         # gt_available == True if ground truth annotations is available
@@ -262,7 +271,10 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
 
         # get mask path and array
         if self.gt_available:
-            mask_filename = filename[:2]+"_video_mask.tif"
+            if sparks_type == 'peaks':
+                mask_filename = filename[:2]+"_video_mask.tif"
+            elif sparks_type == 'raw':
+                mask_filename = filename[:2]+"_video_mask_raw_sparks.tif"
             mask_path = os.path.join(path, mask_filename)
             self.mask = imageio.volread(mask_path)
 
