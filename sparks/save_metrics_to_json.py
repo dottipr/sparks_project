@@ -68,13 +68,14 @@ compute_sparks_on_puffs_prec_rec = True
 
 # Select predictions to load
 training_names = [#"256_long_chunks_ubelix",
-                  "focal_loss_gamma_5_ubelix",
+                  #"focal_loss_gamma_5_ubelix",
                   #"focal_loss_new_sparks_ubelix",
                   # "no_smoothing_physio"
+                  "new_sparks_V3_physio"
                   ]
 
 # Load training or testing dataset
-use_train_data = True
+use_train_data = False
 if use_train_data:
     print("Predict outputs for training data")
 else:

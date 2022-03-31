@@ -2,3 +2,6 @@
 	path = UNet
 	url = git@github.com:aimi-lab/UNet.git
 	branch = develop
+[submodule "sparks/LovaszSoftmax"]
+	path = sparks/LovaszSoftmax
+	url = https://github.com/bermanmaxim/LovaszSoftmax.git

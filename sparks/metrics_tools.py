@@ -204,11 +204,17 @@ def get_sparks_locations_from_mask(mask, min_dist_xy, min_dist_t,
     '''
 
     sparks_mask = np.where(mask == 1, 1.0, 0.0)
-    sparks_mask = empty_marginal_frames(sparks_mask, ignore_frames)
+    #sparks_mask = empty_marginal_frames(sparks_mask, ignore_frames)
     coords = nonmaxima_suppression(img=sparks_mask,
                                    min_dist_xy=min_dist_xy,
                                    min_dist_t=min_dist_t,
                                    sigma=1)
+
+    # remove first and last frames
+    if ignore_frames > 0:
+        mask_duration = mask.shape[0]
+        ignore_frames_up = mask_duration - ignore_frames
+        coords = [loc for loc in coords if loc[0]>=ignore_frames and loc[0]<ignore_frames_up]
 
     return coords
 
@@ -250,8 +256,8 @@ def process_spark_prediction(pred,
 
 
     # remove first and last object from sparks mask
-    small_objs_removed = empty_marginal_frames(small_objs_removed,
-                                               ignore_frames)
+    #small_objs_removed = empty_marginal_frames(small_objs_removed,
+    #                                           ignore_frames)
 
     imageio.volwrite("TEST_small_objs_removed.tif", np.uint8(small_objs_removed))
     imageio.volwrite("TEST_clean_preds.tif", np.where(small_objs_removed, pred, 0))
@@ -268,6 +274,12 @@ def process_spark_prediction(pred,
                                                 return_mask=True,
                                                 threshold=0,
                                                 sigma=sigma)
+
+    # remove first and last frames
+    if ignore_frames > 0:
+        mask_duration = pred.shape[0]
+        ignore_frames_up = mask_duration - ignore_frames
+        argwhere = [loc for loc in argwhere if loc[0]>=ignore_frames and loc[0]<ignore_frames_up]
 
     if not return_mask:
         return argwhere

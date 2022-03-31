@@ -20,7 +20,7 @@ from torch.utils.data import Dataset, DataLoader
 
 #torch.__file__
 import unet
-#from focal_losses import focal_loss
+#from other_losses import focal_loss
 
 from metrics_tools import *
 

@@ -20,7 +20,7 @@ from dataset_tools import random_flip, random_flip_noise, compute_class_weights,
 from datasets import SparkDataset, SparkTestDataset
 from training_tools import training_step, test_function_fixed_t, sampler
 from metrics_tools import take_closest
-from focal_losses import FocalLoss
+from other_losses import FocalLoss
 from architecture import TempRedUNet
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))

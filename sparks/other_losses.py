@@ -1,6 +1,4 @@
-'''
-https://github.com/kornia/kornia
-'''
+
 
 from typing import Optional
 
@@ -11,6 +9,10 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 
+################################## FOCAL LOSS ##################################
+'''
+https://github.com/kornia/kornia
+'''
 # based on:
 # https://github.com/zhezh/focalloss/blob/master/focalloss.py
 
@@ -501,3 +503,9 @@ class BinaryFocalLossWithLogits(nn.Module):
     def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return binary_focal_loss_with_logits(
             input, target, self.alpha, self.gamma, self.reduction, self.eps)
+
+
+################################## DICE LOSS ###################################
+
+
+# work in progress...
