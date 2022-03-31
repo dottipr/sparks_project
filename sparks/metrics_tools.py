@@ -34,7 +34,8 @@ __all__ = ["Metrics",
            "process_puff_prediction",
            "process_wave_prediction",
            "compute_puff_wave_metrics",
-           "compute_average_puff_wave_metrics"
+           "compute_average_puff_wave_metrics",
+           "get_argmax_segmented_output"
            ]
 
 
@@ -132,6 +133,26 @@ def flood_fill_hull(image):
     return out_img, hull
 
 
+def get_argmax_segmented_output(preds, get_classes=True):
+    '''
+    preds are the (exponential) raw outputs of the unet for each class:
+    [background, sparks, waves, puffs] (4 x duration x 64 x 512)
+    '''
+    argmax_classes = np.argmax(preds, axis=0)
+
+    if not get_classes:
+        return argmax_classes
+
+    preds = {}
+    preds['sparks'] = np.where(argmax_classes==1,1,0)
+    preds['waves'] = np.where(argmax_classes==2,1,0)
+    preds['puffs'] = np.where(argmax_classes==3,1,0)
+
+    return preds, argmax_classes
+
+
+
+
 ################################ Sparks metrics ################################
 
 '''
@@ -220,7 +241,7 @@ def get_sparks_locations_from_mask(mask, min_dist_xy, min_dist_t,
 
 
 def process_spark_prediction(pred,
-                             movie,
+                             movie=None,
                              t_detection = 0.9,
                              min_dist_xy = MIN_DIST_XY,
                              min_dist_t = MIN_DIST_T,
@@ -259,12 +280,14 @@ def process_spark_prediction(pred,
     #small_objs_removed = empty_marginal_frames(small_objs_removed,
     #                                           ignore_frames)
 
-    imageio.volwrite("TEST_small_objs_removed.tif", np.uint8(small_objs_removed))
-    imageio.volwrite("TEST_clean_preds.tif", np.where(small_objs_removed, pred, 0))
+    #imageio.volwrite("TEST_small_objs_removed.tif", np.uint8(small_objs_removed))
+    #imageio.volwrite("TEST_clean_preds.tif", np.where(small_objs_removed, pred, 0))
     if return_clean_pred:
         # original movie without small objects:
         big_pred = np.where(small_objs_removed, pred, 0)
         return big_pred
+
+    assert movie is not None, "Provide original movie to detect spark peaks"
 
     # detect events (nonmaxima suppression)
     argwhere, argmaxima = nonmaxima_suppression(img=movie,
@@ -325,44 +348,56 @@ def correspondences_precision_recall(coords_real, coords_pred,
 
     # divide temporal coords by match_distance_t and spatial coords by
     # match_distance_xy
-    coords_real[:,0] /= match_distance_t
-    coords_real[:,1] /= match_distance_xy
-    coords_real[:,2] /= match_distance_xy
+    if coords_real.size > 0:
+        coords_real[:,0] /= match_distance_t
+        coords_real[:,1] /= match_distance_xy
+        coords_real[:,2] /= match_distance_xy
 
-    coords_pred[:,0] /= match_distance_t
-    coords_pred[:,1] /= match_distance_xy
-    coords_pred[:,2] /= match_distance_xy # check if integer!!!!!!!!!!!
+    if coords_pred.size > 0:
+        coords_pred[:,0] /= match_distance_t
+        coords_pred[:,1] /= match_distance_xy
+        coords_pred[:,2] /= match_distance_xy # check if integer!!!!!!!!!!!
 
-    w = spatial.distance_matrix(coords_real, coords_pred)
-    w[w > 1] = 9999999 # NEW
-    row_ind, col_ind = optimize.linear_sum_assignment(w)
+    if coords_real.size and coords_pred.size > 0:
+        w = spatial.distance_matrix(coords_real, coords_pred)
+        w[w > 1] = 9999999 # NEW
+        row_ind, col_ind = optimize.linear_sum_assignment(w)
 
     if return_pairs_coords:
-        # multiply coords by match distances
-        coords_real[:,0] *= match_distance_t
-        coords_real[:,1] *= match_distance_xy
-        coords_real[:,2] *= match_distance_xy
+        if coords_real.size > 0:
+            # multiply coords by match distances
+            coords_real[:,0] *= match_distance_t
+            coords_real[:,1] *= match_distance_xy
+            coords_real[:,2] *= match_distance_xy
 
-        coords_pred[:,0] *= match_distance_t
-        coords_pred[:,1] *= match_distance_xy
-        coords_pred[:,2] *= match_distance_xy
+        if coords_pred.size > 0:
+            coords_pred[:,0] *= match_distance_t
+            coords_pred[:,1] *= match_distance_xy
+            coords_pred[:,2] *= match_distance_xy
 
-        # true positive pairs:
-        paired_real = [coords_real[i].tolist()
-                       for i,j in zip(row_ind,col_ind) if w[i,j]<=1]
-        paired_pred = [coords_pred[j].tolist()
-                       for i,j in zip(row_ind,col_ind) if w[i,j]<=1]
+        if coords_real.size and coords_pred.size > 0:
+            # true positive pairs:
+            paired_real = [coords_real[i].tolist()
+                           for i,j in zip(row_ind,col_ind) if w[i,j]<=1]
+            paired_pred = [coords_pred[j].tolist()
+                           for i,j in zip(row_ind,col_ind) if w[i,j]<=1]
 
-        # false positive (predictions):
-        false_positives = sorted(diff(coords_pred, paired_pred))
+            # false positive (predictions):
+            false_positives = sorted(diff(coords_pred, paired_pred))
 
-        # false negative (annotations):
-        false_negatives = sorted(diff(coords_real, paired_real))
+            # false negative (annotations):
+            false_negatives = sorted(diff(coords_real, paired_real))
 
-        return paired_real, paired_pred, false_positives, false_negatives
+            return paired_real, paired_pred, false_positives, false_negatives
+        else:
+            return [], [], coords_pred, coords_real
 
     else:
-        tp = np.count_nonzero(w[row_ind, col_ind] <= 1)
+        if coords_real.size and coords_pred.size > 0:
+            tp = np.count_nonzero(w[row_ind, col_ind] <= 1)
+        else:
+            tp = 0
+
         tp_fp = len(coords_pred)
         tp_fn = len(coords_real)
 

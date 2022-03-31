@@ -46,8 +46,8 @@ def training_step(sampler, network, optimizer, device, criterion,
     network.train()
 
     x, y = sampler(dataset_loader)
-    x = x.to(device)
-    y = y.to(device)
+    x = x.to(device) # [1, 256, 64, 512]
+    y = y.to(device) # [1, 256, 64, 512]
 
     #print("X SHAPE", x.shape)
     #print("Y SHAPE", y.shape)
@@ -57,11 +57,11 @@ def training_step(sampler, network, optimizer, device, criterion,
     #    logger.info(f"Detect nan in network input: {torch.isnan(x).any()}")
     #    logger.info(f"Detect nan in network annotation: {torch.isnan(y).any()}")
 
-    y_pred = network(x[:, None])
+    y_pred = network(x[:, None]) # [1, 4, 256, 64, 512]
 
     #Compute loss
-    loss = criterion(y_pred[:,:,ignore_frames:-ignore_frames],
-                     y[:,ignore_frames:-ignore_frames].long())
+    loss = criterion(y_pred[...,ignore_frames:-ignore_frames],
+                     y[...,ignore_frames:-ignore_frames].long())
 
 
     optimizer.zero_grad()

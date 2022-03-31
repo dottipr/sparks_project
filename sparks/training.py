@@ -20,7 +20,7 @@ from dataset_tools import random_flip, random_flip_noise, compute_class_weights,
 from datasets import SparkDataset, SparkTestDataset
 from training_tools import training_step, test_function_fixed_t, sampler
 from metrics_tools import take_closest
-from other_losses import FocalLoss
+from other_losses import FocalLoss, LovaszSoftmax3d
 from architecture import TempRedUNet
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
@@ -295,6 +295,10 @@ if __name__ == "__main__":
                               ignore_index=c.getint("data", "ignore_index"),
                               alpha=class_weights,
                               gamma=params['gamma'])
+    elif params['loss_function'] == 'lovasz_softmax':
+        criterion = LovaszSoftmax3d(classes='present',
+                                    per_image=False,
+                                    ignore=c.getint("data", "ignore_index"))
 
     trainer = unet.TrainingManager(
         # training items

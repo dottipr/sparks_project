@@ -8,6 +8,8 @@ import torch.nn.functional as F
 
 import matplotlib.pyplot as plt
 
+from LovaszSoftmax.pytorch import lovasz_losses
+
 
 ################################## FOCAL LOSS ##################################
 '''
@@ -505,7 +507,57 @@ class BinaryFocalLossWithLogits(nn.Module):
             input, target, self.alpha, self.gamma, self.reduction, self.eps)
 
 
-################################## DICE LOSS ###################################
+############################# LOVASZ SOFTMAX LOSS ##############################
 
 
-# work in progress...
+def lovasz_softmax_3d(probas, labels, classes='present', per_image=False, ignore=None):
+    """
+    Multi-class Lovasz-Softmax loss
+      probas: [B, C, D, H, W] Variable, class probabilities at each prediction (between 0 and 1).
+              Interpreted as binary (sigmoid) output with outputs of size [B, D, H, W].
+      labels: [B, D, H, W] Tensor, ground truth labels (between 0 and C - 1)
+      classes: 'all' for all, 'present' for classes present in labels, or a list of classes to average.
+      per_image: compute the loss per image instead of per batch
+      ignore: void class labels
+    """
+    if per_image:
+        loss = mean(lovasz_losses.lovasz_softmax_flat(*flatten_probas_3d(prob.unsqueeze(0), lab.unsqueeze(0), ignore), classes=classes)
+                          for prob, lab in zip(probas, labels))
+    else:
+        loss = lovasz_losses.lovasz_softmax_flat(*flatten_probas_3d(probas, labels, ignore), classes=classes)
+    return loss
+
+
+def flatten_probas_3d(probas, labels, ignore=None):
+    """
+    Flattens predictions in the batch
+    """
+    if probas.dim() == 4:
+        # assumes output of a sigmoid layer
+        B, D, H, W = probas.size()
+        probas = probas.view(B, 1, D, H, W)
+    B, C, D, H, W = probas.size()
+    probas = probas.permute(0, 2, 3, 4, 1).contiguous().view(-1, C)  # B * D * H * W, C = P, C
+    labels = labels.view(-1)
+    if ignore is None:
+        return probas, labels
+    valid = (labels != ignore)
+    vprobas = probas[valid.nonzero().squeeze()]
+    vlabels = labels[valid]
+    return vprobas, vlabels
+
+
+class LovaszSoftmax3d(nn.Module):
+        """
+        Criterion that computes Lovasz-Softmax loss on 3-dimensional samples.
+        """
+
+        def __init__(self, classes: str ='present', per_image=False, ignore=None):
+            super(LovaszSoftmax3d, self).__init__()
+            self.classes = classes
+            self.per_image = per_image
+            self.ignore = ignore
+
+        def forward(self, probas: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+            return lovasz_softmax_3d(
+                probas, labels, self.classes, self.per_image, self.ignore)
