@@ -20,7 +20,7 @@ from dataset_tools import random_flip, random_flip_noise, compute_class_weights,
 from datasets import SparkDataset, SparkTestDataset
 from training_tools import training_step, test_function_fixed_t, sampler
 from metrics_tools import take_closest
-from other_losses import FocalLoss, LovaszSoftmax3d
+from other_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz
 from architecture import TempRedUNet
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
@@ -62,8 +62,10 @@ if __name__ == "__main__":
     params['training'] = c.getboolean("general", "training") # Run training procedure on data
     params['testing'] = c.getboolean("general", "testing") # Run training procedure on data
     params['loss_function'] = c.get("training", "criterion", fallback="nll_loss")
-    if params['loss_function'] == 'focal_loss':
+    if params['loss_function'] == ('focal_loss' or "sum_losses"):
         params['gamma'] = c.getint("training", "gamma", fallback=2)
+    if params['loss_function'] == 'sum_losses':
+        params['w'] = c.getint("training", "w", fallback=0.5)
 
     # data params
     params['dataset_basedir'] = c.get("data", "relative_path")
@@ -139,6 +141,12 @@ if __name__ == "__main__":
     for k, v in params.items():
         logger.info(f"{k:>18s}: {v}")
         # TODO: AGGIUNGERE TUTTI I PARAMS NECESSARI DA PRINTARE
+
+    ############################ init random seeds #############################
+
+    torch.manual_seed(0)
+    #random.seed(0)
+    np.random.seed(0)
 
     ############################ configure datasets ############################
 
@@ -252,6 +260,7 @@ if __name__ == "__main__":
         wandb.watch(network)
 
     if c.getboolean("network", "initialize_weights", fallback=False):
+        logger.info("Initializing UNet weights...")
         network.apply(weights_init)
 
     ########################### set testing function ###########################
@@ -299,6 +308,14 @@ if __name__ == "__main__":
         criterion = LovaszSoftmax3d(classes='present',
                                     per_image=False,
                                     ignore=c.getint("data", "ignore_index"))
+    elif params['loss_function'] == 'sum_losses':
+        criterion = SumFocalLovasz(classes ='present',
+                                   per_image = False,
+                                   ignore = c.getint("data", "ignore_index"),
+                                   alpha = class_weights, 
+                                   gamma = params['gamma'],
+                                   reduction = 'mean',
+                                   w = params['w'])
 
     trainer = unet.TrainingManager(
         # training items

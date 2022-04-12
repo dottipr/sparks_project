@@ -62,7 +62,11 @@ training_names = [#"temporal_reduction",
                   #"pretrained_only_sparks_ubelix",
                   #"only_sparks_ubelix",
                   #"no_smoothing_physio",
-                  "new_sparks_V3_physio"
+                  #"new_sparks_V3_physio",
+                  #"abs_max_normalization_ubelix",
+                  #"focal_loss_updated_physio",
+                  #"raw_sparks_no_bg_removal_ubelix",
+                  "peak_sparks_lovasz_physio"
                   ]
 config_files = [#"config_temporal_reduction.ini",
                 #"config_normalize_whole_video.ini",
@@ -75,8 +79,12 @@ config_files = [#"config_temporal_reduction.ini",
                 #"config_pretrained_only_sparks_ubelix.ini",
                 #"config_only_sparks_ubelix.ini",
                 #"config_no_smoothing_physio.ini",
-                "config_new_sparks_V3_physio.ini"
-                 ]
+                #"config_new_sparks_V3_physio.ini",
+                #"config_abs_max_normalization_ubelix.ini",
+                #"config_focal_loss_updated_physio.ini"
+                #"config_raw_sparks_ubelix.ini"
+                "config_peak_sparks_lovasz_physio.ini"
+                ]
 
 
 ### Select if prediction are computed for training or testing dataset
@@ -274,7 +282,8 @@ for training_name, config_name in zip(training_names, config_files):
             duration=c.getint("data", "chunks_duration"),
             remove_background=c.get("data", "remove_background"),
             temporal_reduction=temporal_reduction,
-            num_channels=num_channels
+            num_channels=num_channels,
+            sparks_type=c.get("data", "sparks_type")
         ) for f in test_filenames]
 
     for i, tds in enumerate(testing_datasets):

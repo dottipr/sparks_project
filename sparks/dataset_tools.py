@@ -36,12 +36,13 @@ __all__ = ["get_chunks",
            "load_movies",
            "load_movies_ids",
            "load_annotations",
+           "load_annotations_ids",
            "load_predictions",
            "load_predictions_all_trainings"
            ]
 
 
-### functions for unet masks creation ###
+###################### functions for unet masks creation #######################
 
 
 def final_mask(mask, radius1=2.5, radius2=3.5, ignore_ind=2): # SLOW
@@ -163,7 +164,7 @@ def get_new_mask_raw_sparks(mask,
     return new_mask
 
 
-### functions for data preproccesing ###
+####################### functions for data preproccesing #######################
 
 
 def get_chunks(video_length, step, duration):
@@ -219,7 +220,7 @@ def remove_avg_background(video):
     return np.add(video, -avg)
 
 
-### functions related to U-Net hyperparameters ###
+################## functions related to U-Net hyperparameters ##################
 
 
 def compute_class_weights(dataset, w0=1, w1=1, w2=1, w3=1):
@@ -254,7 +255,7 @@ def weights_init(m):
         m.weight.data.normal_(m.weight, std=stdv)
 
 
-### functions for video resampling ###
+######################## functions for video resampling ########################
 
 
 def get_times(video_path):
@@ -282,7 +283,7 @@ def video_spline_interpolation(video, video_path, new_fps=150):
     return f(frames_new)
 
 
-### functions for temporal reduction ###
+####################### functions for temporal reduction #######################
 
 
 def shrink_mask(mask, num_channels):
@@ -335,7 +336,7 @@ def get_new_voxel_label(voxel_seq):
 ################################ Loading utils #################################
 
 '''
-Use this functions to load predictions (ys, sparks, puffs, preds) or just
+Use these functions to load predictions (ys, sparks, puffs, preds) or just
 annotations ys
 '''
 
@@ -356,6 +357,7 @@ def load_movies(data_folder):
         xs_all_trainings[video_id] = np.asarray(imageio.volread(f))
 
     return xs_all_trainings
+
 
 def load_movies_ids(data_folder, ids):
     '''
@@ -378,12 +380,14 @@ def load_movies_ids(data_folder, ids):
 
     return xs_all_trainings
 
+
 def load_annotations(data_folder, mask_names="video_mask"):
     '''
     open and process annotations (original version, sparks not processed)
 
     data_folder: folder where annotations are saved, annotations are saved as
                  "[0-9][0-9]_video_mask.tif"
+    mask_names:  name of the type of masks that will be loaded
     '''
     ys_all_trainings = {}
 
@@ -395,6 +399,29 @@ def load_annotations(data_folder, mask_names="video_mask"):
         ys_all_trainings[video_id] = np.asarray(imageio.volread(f)).astype('int')
 
     return ys_all_trainings
+
+
+def load_annotations_ids(data_folder, ids, mask_names="video_mask"):
+    '''
+    Same as load_annotations but must provide a list of ids of movies' masks to
+    load.
+
+    data_folder: folder where annotations are saved, annotations are saved as
+                 "[0-9][0-9]_video_mask.tif"
+    ids:         list of ids of movies to be considered
+    mask_names:  name of the type of masks that will be loaded
+    '''
+    ys_all_trainings = {}
+
+    ys_filenames = [os.path.join(data_folder,idx+"_"+mask_names+".tif")
+                    for idx in ids]
+
+    for f in ys_filenames:
+        video_id = os.path.split(f)[1][:2]
+        ys_all_trainings[video_id] = np.asarray(imageio.volread(f)).astype('int')
+
+    return ys_all_trainings
+
 
 def load_predictions(training_name, epoch, metrics_folder):
     '''
@@ -479,6 +506,7 @@ def load_predictions(training_name, epoch, metrics_folder):
             training_waves[video_id] = np.asarray(imageio.volread(w))
 
     return training_ys, training_sparks, training_puffs, training_waves
+
 
 def load_predictions_all_trainings(training_names, epochs, metrics_folder):
     '''

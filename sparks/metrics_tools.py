@@ -169,6 +169,26 @@ Metrics = namedtuple('Metrics', ['precision', 'recall', 'f1_score', 'tp', 'tp_fp
 #    return np.logical_and.reduce([(coords_i >= 0) & (coords_i < shape_i)
 #                                for coords_i, shape_i in zip(points.T, shape)])
 
+def filter_nan_gaussian_david(arr, sigma):
+    """Allows intensity to leak into the nan area.
+    According to Davids answer:
+        https://stackoverflow.com/a/36307291/7128154
+    """
+    gauss = arr.copy()
+    gauss[np.isnan(gauss)] = 0
+    gauss = ndi.gaussian_filter(
+            gauss, sigma=sigma, mode='constant', cval=0)
+
+    norm = np.ones(shape=arr.shape)
+    norm[np.isnan(arr)] = 0
+    norm = ndi.gaussian_filter(
+            norm, sigma=sigma, mode='constant', cval=0)
+
+    # avoid RuntimeWarning: invalid value encountered in true_divide
+    norm = np.where(norm==0, 1, norm)
+    gauss = gauss/norm
+    gauss[np.isnan(arr)] = np.nan
+    return gauss
 
 def nonmaxima_suppression(img,maxima_mask=None,
                           min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T,
@@ -186,26 +206,82 @@ def nonmaxima_suppression(img,maxima_mask=None,
     '''
     img = img.astype(np.float)
 
+    ''' too many peaks !!!!
     if maxima_mask is not None:
-        # apply dilation to mask
-        maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=sigma)
-        # set pixels outside maxima_mask to zero
-        masked_img = np.where(maxima_mask_dilated, img, 0.)
+        # https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
+        # apply dilation to maxima mask
+        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=sigma) # "W"
+        maxima_mask_dilated = maxima_mask
+        # mask out region from img with dilated mask
+        masked_img = np.where(maxima_mask_dilated, img, np.nan) # "V"
         imageio.volwrite("TEST_masked_video.tif", masked_img)
+
+        # smooth masked input image
+        smooth_img = filter_nan_gaussian_david(masked_img, sigma)
+        smooth_img[np.isnan(smooth_img)] = 0.
+        #smooth_masked_img = ndi.gaussian_filter(masked_img, sigma=1) # "VV"
+        #smooth_mask = ndi.gaussian_filter(maxima_mask_dilated.astype(np.float), sigma=1) # "WW"
+        #imageio.volwrite("TEST_smooth_masked_video.tif", smooth_masked_img)
+        #imageio.volwrite("TEST_smooth_mask.tif", smooth_mask)
+
+        #smooth_img = smooth_masked_img/smooth_mask # "VV/WW"
+        #smooth_img[masked_img==np.nan] = 0
+        imageio.volwrite("TEST_smooth_video.tif", smooth_img)
+        print(np.unique(smooth_img))
+
+        # DEBUG
+        original_smoothed = ndi.gaussian_filter(img, sigma=sigma)
+        original_smoothed_masked = np.where(maxima_mask_dilated, original_smoothed, 0.)
+        difference = np.where(original_smoothed_masked != smooth_img, 1., 0.)
+        imageio.volwrite("TEST_DEBUG.tif", difference)
+
+
+
     else:
-        masked_img = img
+        smooth_img = ndi.gaussian_filter(img, sigma=sigma)
 
-    # smooth input image
+    # search for local maxima
+    min_dist = ellipsoid(min_dist_t/2, min_dist_xy/2, min_dist_xy/2)
+    dilated = ndi.maximum_filter(smooth_img,
+                                 footprint=min_dist)
+    imageio.volwrite("TEST_dilated.tif", dilated)
+    argmaxima = np.logical_and(smooth_img == dilated, smooth_img > threshold)
+    imageio.volwrite("TEST_maxima.tif", np.uint8(argmaxima))
+    #imageio.volwrite("TEST_all_video_maxima.tif", np.uint8(np.logical_and(smooth_img == dilated, smooth_img > threshold)))'''
 
-    smooth_img = ndi.gaussian_filter(masked_img, sigma=sigma)
+    # multiply values of video inside maxima mask
+    #img = np.where(maxima_mask, img*1.5, img)
+    imageio.volwrite("TEST_DEBUG.tif", img)
+
+    smooth_img = ndi.gaussian_filter(img, sigma=sigma)
     imageio.volwrite("TEST_smooth_video.tif", smooth_img)
 
-    min_dist = ellipsoid(min_dist_t/2, min_dist_xy/2, min_dist_xy/2)
+    if maxima_mask is not None:
+        # apply dilation to mask
+        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=sigma)
+        maxima_mask_dilated = maxima_mask
+        # set pixels outside maxima_mask to zero
+        masked_img = np.where(maxima_mask_dilated, smooth_img, 0.)
+        #masked_img = np.where(maxima_mask, smooth_img, 0.)
+        imageio.volwrite("TEST_masked_video.tif", masked_img)
+    else:
+        masked_img = smooth_img
+
+
+    # compute shape for maximum filter
+    #min_dist = ellipsoid(min_dist_t/2, min_dist_xy/2, min_dist_xy/2)
+    radius = round(min_dist_xy/2)
+    y,x = np.ogrid[-radius: radius+1, -radius: radius+1]
+    disk = x**2+y**2 <= radius**2
+    min_dist = np.stack([disk]*min_dist_t, axis=0)
+
+    # detect local maxima
     dilated = ndi.maximum_filter(smooth_img,
                                  footprint=min_dist)
     imageio.volwrite("TEST_dilated.tif", dilated)
     argmaxima = np.logical_and(smooth_img == dilated, masked_img > threshold)
     imageio.volwrite("TEST_maxima.tif", np.uint8(argmaxima))
+    #imageio.volwrite("TEST_all_video_maxima.tif", np.uint8(np.logical_and(smooth_img == dilated, smooth_img > threshold)))
 
     argwhere = np.argwhere(argmaxima)
 
@@ -229,7 +305,7 @@ def get_sparks_locations_from_mask(mask, min_dist_xy, min_dist_t,
     coords = nonmaxima_suppression(img=sparks_mask,
                                    min_dist_xy=min_dist_xy,
                                    min_dist_t=min_dist_t,
-                                   sigma=1)
+                                   threshold=0, sigma=1)
 
     # remove first and last frames
     if ignore_frames > 0:

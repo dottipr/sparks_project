@@ -70,8 +70,10 @@ compute_sparks_on_puffs_prec_rec = True
 training_names = [#"256_long_chunks_ubelix",
                   #"focal_loss_gamma_5_ubelix",
                   #"focal_loss_new_sparks_ubelix",
-                  # "no_smoothing_physio"
-                  "new_sparks_V3_physio"
+                  #"no_smoothing_physio",
+                  #"new_sparks_V3_physio",
+                  #"abs_max_normalization_ubelix",
+                  "focal_loss_updated_physio",
                   ]
 
 # Load training or testing dataset
@@ -139,10 +141,13 @@ if compute_puff_wave_ious:
     print("Computing metrics for puffs and waves")
 
     # puffs and waves params
-    t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]#np.round(np.linspace(0,1,21),2)
-    min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
+    #t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
+    t_detection = np.round(np.linspace(0,1,21),2)
+    #min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
+    min_radius = [0,1,2,3,4,5,6,7,8,9,10]
 
-    exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
+    #exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
+    exclusion_radius = [0,1,2,3,4,5,6,7,8,9,10]
 
     ious_puffs_all_models = {} # training_name x t x min_r x exclusion_r x video_id x metrics
     ious_waves_all_models = {} # training_name x t x min_r x exclusion_r x video_id x metrics
@@ -251,10 +256,13 @@ if compute_joined_puff_wave_ious:
     # Params are best for 'focal_loss_gamma_5_ubelix'
 
     # puffs and waves params
-    t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]#np.round(np.linspace(0,1,21),2)
-    min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
+    #t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
+    t_detection = np.round(np.linspace(0,1,21),2)
+    #min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
+    min_radius = [0,1,2,3,4,5,6,7,8,9,10]
 
-    exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
+    #exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
+    exclusion_radius = [0,1,2,3,4,5,6,7,8,9,10]
 
     ious_sum_all_models = {} # training_name x ...
     ious_sum_average_all_models = {} # training_name x ...
@@ -338,10 +346,13 @@ if compute_joined_spark_puff_ious:
     print("Computing metrics for joined sparks and puffs")
 
     # sparks and puffs params
-    t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]#np.round(np.linspace(0,1,21),2)
-    min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
+    #t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
+    t_detection = np.round(np.linspace(0,1,21),2)
+    #min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
+    min_radius = [0,1,2,3,4,5,6,7,8,9,10]
 
-    exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
+    #exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
+    exclusion_radius = [0,1,2,3,4,5,6,7,8,9,10]
 
     ious_sum_all_models = {} # training_name x ...
     ious_sum_average_all_models = {} # training_name x ...
@@ -425,10 +436,13 @@ if compute_joined_all_classes_ious:
     print("Computing metrics for all classes joined")
 
     # all classes params
-    t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]#np.round(np.linspace(0,1,21),2)
-    min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
+    #t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
+    t_detection = np.round(np.linspace(0,1,21),2)
+    #min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
+    min_radius = [0,1,2,3,4,5,6,7,8,9,10]
 
-    exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
+    #exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
+    exclusion_radius = [0,1,2,3,4,5,6,7,8,9,10]
 
     ious_sum_all_models = {} # training_name x ...
     ious_sum_average_all_models = {} # training_name x ...
@@ -516,8 +530,10 @@ if compute_joined_all_classes_ious:
 if compute_puff_no_holes_ious:
     print("Computing metrics for puffs without holes")
 
-    t_detection_puffs = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]#np.round(np.linspace(0,1,21),2)
-    min_radius_puffs = [5]#,1,2,3,4,5,6,7,8,9,10]
+    #t_detection_puffs = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
+    t_detection_puffs = np.round(np.linspace(0,1,21),2)
+    #min_radius_puffs = [5]#,1,2,3,4,5,6,7,8,9,10]
+    min_radius_puffs = [1,2,3,4,5,6,7,8,9,10]
 
     ious_puffs_no_holes_all_models = {}
     ious_puffs_no_holes_average_all_models = {}
@@ -595,7 +611,8 @@ MIN_DIST_T = round(20 / TIME_FRAME) # min distance in time between sparks
 
 if compute_sparks_prec_rec:
     print("Computing precision and recall for sparks")
-    t_detection_sparks = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]#np.round(np.linspace(0,1,21),2)
+    #t_detection_sparks = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
+    t_detection_sparks = np.round(np.linspace(0,1,21),2)
     min_radius_sparks = [0,1,2]
 
     # training name x min_r x video id x thresholds:
@@ -663,7 +680,8 @@ if compute_sparks_on_puffs_prec_rec:
     t_puffs_lower = 0.3
     t_puffs_upper = [0.0,0.5,0.55,0.6,0.65] # = t detection puffs (0 for standard detection) (t included)
 
-    t_detection_sparks = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]#np.round(np.linspace(0,1,21),2) # for sum of puffs and sparks (t not included)
+    #t_detection_sparks = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]#np.round(np.linspace(0,1,21),2) # for sum of puffs and sparks (t not included)
+    t_detection_sparks = np.round(np.linspace(0,1,21),2)
 
     min_radius_sparks = [0,1,2]
 

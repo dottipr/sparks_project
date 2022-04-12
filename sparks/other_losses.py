@@ -507,7 +507,7 @@ class BinaryFocalLossWithLogits(nn.Module):
             input, target, self.alpha, self.gamma, self.reduction, self.eps)
 
 
-############################# LOVASZ SOFTMAX LOSS ##############################
+############################# LOVASZ-SOFTMAX LOSS ##############################
 
 
 def lovasz_softmax_3d(probas, labels, classes='present', per_image=False, ignore=None):
@@ -561,3 +561,45 @@ class LovaszSoftmax3d(nn.Module):
         def forward(self, probas: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
             return lovasz_softmax_3d(
                 probas, labels, self.classes, self.per_image, self.ignore)
+
+
+################### FOCAL & LOVASZ-SOFTMAX LOSS COMBINATIONS ###################
+
+
+class SumFocalLovasz(nn.Module):
+    '''
+    Criterion that sums Focal and Lovasz-Softmax loss.
+    ignore:     ignore label
+    alpha:      focal loss weighting factors for each class
+    gamma:      focal loss focusing parameter
+    w:          wegthing factor between focal loss and lovasz-softmax loss
+    reduction:  focal_loss redution
+    '''
+
+    def __init__(self, classes ='present', per_image = False, ignore = None,
+                 alpha = None, gamma = 2.0, reduction = 'none',
+                 eps = 1e-8, w = 0.5):
+
+        super(SumFocalLovasz, self).__init__()
+        self.classes = classes
+        self.per_image = per_image
+        self.ignore = ignore
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.eps = eps
+        self.w = w
+
+        self.focal_loss = FocalLoss(reduction=self.reduction,
+                                    ignore_index=self.ignore,
+                                    alpha=self.alpha,
+                                    gamma=self.gamma,
+                                    eps=self.eps)
+        self.lovasz_softmax = LovaszSoftmax3d(classes=self.classes,
+                                              per_image=self.per_image,
+                                              ignore=self.ignore)
+
+    def forward(self, probas: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        loss = w * self.focal_loss(probas, labels) + (1-w) * self.lovasz_softmax(probas, labels)
+
+        return loss
