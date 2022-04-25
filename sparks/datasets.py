@@ -50,6 +50,12 @@ class SparkDataset(Dataset):
         # base_path is the folder containing the whole dataset (train and test)
         self.base_path = base_path
 
+        # physiological params (for spark peaks results)
+        self.pixel_size = 0.2 # 1 pixel = 0.2 um x 0.2 um
+        self.min_dist_xy = round(1.8 / self.pixel_size) # min distance in space between sparks
+        self.time_frame = 6.8 # 1 frame = 6.8 ms
+        self.min_dist_t = round(20 / self.time_frame) # min distance in time between sparks
+
         # dataset parameters
         self.duration = duration
         self.step = step
@@ -250,13 +256,21 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
                  sparks_type = 'peaks'):
 
         # video_path is the complete path to the video
-        # gt_available == True if ground truth annotations is available
 
+        # physiological params (for spark peaks results)
+        self.pixel_size = 0.2 # 1 pixel = 0.2 um x 0.2 um
+        self.min_dist_xy = round(1.8 / self.pixel_size) # min distance in space between sparks
+        self.time_frame = 6.8 # 1 frame = 6.8 ms
+        self.min_dist_t = round(20 / self.time_frame) # min distance in time between sparks
+
+        # gt_available == True if ground truth annotations is available
         self.gt_available = gt_available
 
         self.temporal_reduction = temporal_reduction
         if self.temporal_reduction:
             self.num_channels = num_channels
+
+        self.sparks_type = sparks_type
 
         self.normalize_video = normalize_video
         self.remove_background = remove_background
@@ -271,9 +285,9 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
 
         # get mask path and array
         if self.gt_available:
-            if sparks_type == 'peaks':
+            if self.sparks_type == 'peaks':
                 mask_filename = filename[:2]+"_video_mask.tif"
-            elif sparks_type == 'raw':
+            elif self.sparks_type == 'raw':
                 mask_filename = filename[:2]+"_video_mask_raw_sparks.tif"
             mask_path = os.path.join(path, mask_filename)
             self.mask = imageio.volread(mask_path)

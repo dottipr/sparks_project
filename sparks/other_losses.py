@@ -600,6 +600,6 @@ class SumFocalLovasz(nn.Module):
                                               ignore=self.ignore)
 
     def forward(self, probas: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        loss = w * self.focal_loss(probas, labels) + (1-w) * self.lovasz_softmax(probas, labels)
+        loss = self.w * self.focal_loss(probas, labels) + (1-self.w) * self.lovasz_softmax(probas, labels)
 
         return loss

@@ -18,7 +18,7 @@ import wandb
 import unet
 from dataset_tools import random_flip, random_flip_noise, compute_class_weights, weights_init
 from datasets import SparkDataset, SparkTestDataset
-from training_tools import training_step, test_function_fixed_t, sampler
+from training_tools import training_step, test_function, sampler
 from metrics_tools import take_closest
 from other_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz
 from architecture import TempRedUNet
@@ -62,10 +62,11 @@ if __name__ == "__main__":
     params['training'] = c.getboolean("general", "training") # Run training procedure on data
     params['testing'] = c.getboolean("general", "testing") # Run training procedure on data
     params['loss_function'] = c.get("training", "criterion", fallback="nll_loss")
-    if params['loss_function'] == ('focal_loss' or "sum_losses"):
-        params['gamma'] = c.getint("training", "gamma", fallback=2)
+    if (params['loss_function'] == 'focal_loss') or( params['loss_function'] == "sum_losses"):
+        params['gamma'] = c.getfloat("training", "gamma", fallback=2.0)
     if params['loss_function'] == 'sum_losses':
-        params['w'] = c.getint("training", "w", fallback=0.5)
+        params['w'] = c.getfloat("training", "w", fallback=0.5)
+    params['lr_start'] = c.getfloat("training", "lr_start", fallback=1e-4)
 
     # data params
     params['dataset_basedir'] = c.get("data", "relative_path")
@@ -278,7 +279,7 @@ if __name__ == "__main__":
 
     ########################### initialize training ############################
 
-    optimizer = optim.Adam(network.parameters(), lr=1e-4)
+    optimizer = optim.Adam(network.parameters(), lr=params['lr_start'])
     network.train()
 
     output_path = os.path.join(c.get("network", "output_relative_path"),
@@ -312,7 +313,7 @@ if __name__ == "__main__":
         criterion = SumFocalLovasz(classes ='present',
                                    per_image = False,
                                    ignore = c.getint("data", "ignore_index"),
-                                   alpha = class_weights, 
+                                   alpha = class_weights,
                                    gamma = params['gamma'],
                                    reduction = 'mean',
                                    w = params['w'])
@@ -337,25 +338,15 @@ if __name__ == "__main__":
             'optimizer': optimizer
         }),
         # testing items
-        test_function=lambda _: test_function_fixed_t(
+        test_function=lambda _: test_function(
             network=network,
             device=device,
             criterion=criterion,
             testing_datasets=testing_datasets,
             logger=logger,
-            summary_writer=summary_writer,
-            t_sparks=params['t_detection_sparks'],
-            t_puffs=params['t_detection_puffs'],
-            t_waves=params['t_detection_waves'],
             ignore_frames=params['ignore_frames_loss'],
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
-            training_name=c.get("general", "run_name"),
-            sparks_min_radius=params['sparks_min_radius'],
-            puffs_min_radius=params['puffs_min_radius'],
-            waves_min_radius=params['waves_min_radius'],
-            temporal_reduction=params['temporal_reduction'],
-            num_channels=params['num_channels'],
-            sparks_type=params['sparks_type']
+            training_name=c.get("general", "run_name")
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),
@@ -365,12 +356,11 @@ if __name__ == "__main__":
     ############################## start training ##############################
 
     if params['load_epoch'] != 0:
-        trainer.load(params['load_epoch'])
-
-    logger.info("Validate network before training")
-    trainer.run_validation()
+        trainer.load(params['load_epoch'])    
 
     if params['training']:
+        logger.info("Validate network before training")
+        trainer.run_validation()
         logger.info("Starting training")
         trainer.train(params['train_epochs'], print_every=100)
 

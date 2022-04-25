@@ -24,10 +24,11 @@ __all__ = ["Metrics",
            "correspondences_precision_recall",
            "reduce_metrics",
            "empty_marginal_frames",
+           "empty_marginal_frames_from_coords",
            "write_videos_on_disk",
            "compute_prec_rec",
            "reduce_metrics_thresholds",
-           "compute_f1_score",
+           "compute_f_score",
            "take_closest",
            "get_sparks_locations_from_mask",
            "process_spark_prediction",
@@ -59,7 +60,7 @@ def empty_marginal_frames(video, n_frames):
     '''
     Set first and last n_frames of a video to zero.
     '''
-    if n_frames != 0:
+    if n_frames > 0:
         new_video = video[n_frames:-n_frames]
         new_video = np.pad(new_video,((n_frames,),(0,),(0,)), mode='constant')
     else: new_video = video
@@ -67,6 +68,23 @@ def empty_marginal_frames(video, n_frames):
     assert(np.shape(video) == np.shape(new_video))
 
     return new_video
+
+def empty_marginal_frames_from_coords(coords, n_frames, duration):
+    '''
+    Remove sparks 'coords' located in first and last 'n_frames' of a video of
+    duration 'duration'.
+    '''
+    if n_frames > 0:
+        if len(coords) > 0:
+            n_frames_up = duration - n_frames
+            new_coords = [loc for loc in coords
+                          if loc[0]>=n_frames and loc[0]<n_frames_up]
+
+            return new_coords
+
+    return coords
+
+
 
 
 def write_videos_on_disk(training_name, video_name, path="predictions",
@@ -138,6 +156,7 @@ def get_argmax_segmented_output(preds, get_classes=True):
     preds are the (exponential) raw outputs of the unet for each class:
     [background, sparks, waves, puffs] (4 x duration x 64 x 512)
     '''
+
     argmax_classes = np.argmax(preds, axis=0)
 
     if not get_classes:
@@ -147,6 +166,8 @@ def get_argmax_segmented_output(preds, get_classes=True):
     preds['sparks'] = np.where(argmax_classes==1,1,0)
     preds['waves'] = np.where(argmax_classes==2,1,0)
     preds['puffs'] = np.where(argmax_classes==3,1,0)
+
+    imageio.volwrite("TEST_argmax.tif", np.uint8(argmax_classes))
 
     return preds, argmax_classes
 
@@ -162,7 +183,6 @@ Utils for computing metrics related to sparks, e.g.
 '''
 
 Metrics = namedtuple('Metrics', ['precision', 'recall', 'f1_score', 'tp', 'tp_fp', 'tp_fn'])
-
 
 #def in_bounds(points, shape):
 #
@@ -310,9 +330,9 @@ def get_sparks_locations_from_mask(mask, min_dist_xy, min_dist_t,
     # remove first and last frames
     if ignore_frames > 0:
         mask_duration = mask.shape[0]
-        ignore_frames_up = mask_duration - ignore_frames
-        coords = [loc for loc in coords if loc[0]>=ignore_frames and loc[0]<ignore_frames_up]
-
+        coords = empty_marginal_frames_from_coords(coords=coords,
+                                                   n_frames=ignore_frames,
+                                                   duration=mask_duration)
     return coords
 
 
@@ -377,8 +397,9 @@ def process_spark_prediction(pred,
     # remove first and last frames
     if ignore_frames > 0:
         mask_duration = pred.shape[0]
-        ignore_frames_up = mask_duration - ignore_frames
-        argwhere = [loc for loc in argwhere if loc[0]>=ignore_frames and loc[0]<ignore_frames_up]
+        argwhere = empty_marginal_frames_from_coords(coords=argwhere,
+                                                     n_frames=ignore_frames,
+                                                     duration=mask_duration)
 
     if not return_mask:
         return argwhere
@@ -408,7 +429,8 @@ def process_spark_prediction(pred,
 def correspondences_precision_recall(coords_real, coords_pred,
                                      match_distance_t = MIN_DIST_T,
                                      match_distance_xy = MIN_DIST_XY,
-                                     return_pairs_coords = False):
+                                     return_pairs_coords = False,
+                                     return_nb_results = False):
     """
     Compute best matches given two sets of coordinates, one from the
     ground-truth and another one from the network predictions. A match is
@@ -417,6 +439,7 @@ def correspondences_precision_recall(coords_real, coords_pred,
     and recall of the prediction.
 
     If return_pairs_coords == True, return paired sparks coordinated
+    If return_nb_results == True, return only tp, tp_fp, tp_fn as a dict
     """
     # convert coords to arrays
     coords_real = np.asarray(coords_real, dtype=float)
@@ -477,6 +500,11 @@ def correspondences_precision_recall(coords_real, coords_pred,
         tp_fp = len(coords_pred)
         tp_fn = len(coords_real)
 
+        if return_nb_results:
+            return {'tp': tp,
+                    'tp_fp': tp_fp,
+                    'tp_fn': tp_fn}
+
         if tp_fp > 0:
             precision = tp / tp_fp
         else:
@@ -487,7 +515,7 @@ def correspondences_precision_recall(coords_real, coords_pred,
         else:
             recall = 1.0
 
-        f1_score = compute_f1_score(precision,recall)
+        f1_score = compute_f_score(precision,recall)
 
         return precision, recall, f1_score, tp, tp_fp, tp_fn
 
@@ -507,7 +535,7 @@ def reduce_metrics(results):
     else:
         recall = 1.0
 
-    f1_score = compute_f1_score(precision,recall)
+    f1_score = compute_f_score(precision,recall)
 
     return Metrics(precision, recall, f1_score, tp, tp_fp, tp_fn)
 
@@ -610,9 +638,12 @@ def reduce_metrics_thresholds(results):
     return reduced_metrics, prec, rec, f1_score#, area_under_curve
 
 
-def compute_f1_score(prec,rec):
-    f1_score = 2*prec*rec/(prec+rec) if prec+rec != 0 else 0.
-    return f1_score
+def compute_f_score(prec,rec,beta=1):
+    if beta == 1:
+        f_score = 2*prec*rec/(prec+rec) if prec+rec != 0 else 0.
+    else:
+        f_score = (1+beta*beta)*(prec+rec)/(beta*beta*prec+rec) if prec+rec != 0 else 0.
+    return f_score
 
 ############################ Puffs and waves metrics ###########################
 
@@ -686,14 +717,17 @@ def process_wave_prediction(pred, t_detection = 0.5,
 
 
 def compute_puff_wave_metrics(ys, preds, exclusion_radius,
-                              ignore_mask=None, sparks=False):
+                              ignore_mask=None, sparks=False,
+                              results_only=False):
     '''
     Compute some metrics given labels and predicted segmentation.
-    ys : annotated segmentation
-    preds : predicted segmentation
-    exclusion_radius : radius around ys border which is ignored for metrics
-    ignore_mask : mask that is ignored by loss function during training
-    sparks : if true, do not compute erosion on sparks for exclusion_radius
+    ys :                annotated segmentation
+    preds :             predicted segmentation
+    exclusion_radius :  radius around ys border which is ignored for metrics
+    ignore_mask :       mask that is ignored by loss function during training
+    sparks :            if True, do not compute erosion on sparks for
+                        exclusion_radius
+    results_only:       if True, return number of tp, tn, fp, fn pixels
     '''
 
     tp = np.logical_and(ys, preds)
@@ -739,6 +773,9 @@ def compute_puff_wave_metrics(ys, preds, exclusion_radius,
     n_tn = np.count_nonzero(tn)
     n_fp = np.count_nonzero(fp)
     n_fn = np.count_nonzero(fn)
+
+    if results_only:
+        return n_tp, n_tn, n_fp, n_fn
 
     iou = n_tp/(n_tp+n_fn+n_fp) if (n_tp+n_fn+n_fp) != 0 else 1.0
     prec = n_tp/(n_tp+n_fp) if (n_tp+n_fp) != 0 else 1.0

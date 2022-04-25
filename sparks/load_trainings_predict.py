@@ -30,6 +30,7 @@ import unet
 from architecture import TempRedUNet
 from metrics_tools import write_videos_on_disk
 from datasets import SparkTestDataset
+from training_tools import get_preds
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
 
@@ -64,9 +65,11 @@ training_names = [#"temporal_reduction",
                   #"no_smoothing_physio",
                   #"new_sparks_V3_physio",
                   #"abs_max_normalization_ubelix",
-                  #"focal_loss_updated_physio",
-                  #"raw_sparks_no_bg_removal_ubelix",
-                  "peak_sparks_lovasz_physio"
+                  "focal_loss_updated_physio",
+                  "raw_sparks_no_bg_removal_ubelix",
+                  "peak_sparks_lovasz_physio",
+                  "raw_sparks_lovasz_physio",
+                  #"peak_sparks_sum_losses_physio"
                   ]
 config_files = [#"config_temporal_reduction.ini",
                 #"config_normalize_whole_video.ini",
@@ -81,9 +84,11 @@ config_files = [#"config_temporal_reduction.ini",
                 #"config_no_smoothing_physio.ini",
                 #"config_new_sparks_V3_physio.ini",
                 #"config_abs_max_normalization_ubelix.ini",
-                #"config_focal_loss_updated_physio.ini"
-                #"config_raw_sparks_ubelix.ini"
-                "config_peak_sparks_lovasz_physio.ini"
+                "config_focal_loss_updated_physio.ini",
+                "config_raw_sparks_ubelix.ini",
+                "config_peak_sparks_lovasz_physio.ini",
+                "config_raw_sparks_lovasz_physio.ini",
+                #"config_peak_sparks_sum_losses_physio.ini"
                 ]
 
 
@@ -120,23 +125,10 @@ logger.info(f"Using device <<{device}>> with {n_gpus} GPUs")
 
 ## For all selected trainings, compute UNet outputs for test dataset
 
-def get_preds(network, device, datasets, ignore_frames, temporal_reduction, num_channels):
+def run_datasets_in_unet(network, device, datasets, ignore_frames):
     '''process al movies in the UNet and get all predictions and movies as numpy arrays'''
 
     network.eval()
-
-    duration = datasets[0].duration
-    step = datasets[0].step
-    half_overlap = (duration-step)//2 # to re-build videos from chunks
-    # (duration-step) has to be even
-    assert (duration-step)%2 == 0, "(duration-step) is not even"
-
-    if temporal_reduction:
-        assert half_overlap % num_channels == 0, \
-        "with temporal reduction half_overlap must be a multiple of num_channels"
-        half_overlap_mask = half_overlap // num_channels
-    else:
-        half_overlap_mask = half_overlap
 
     if hasattr(testing_datasets[0], 'video_name'):
         xs_all_videos = {}
@@ -148,7 +140,13 @@ def get_preds(network, device, datasets, ignore_frames, temporal_reduction, num_
         preds_all_videos = []
 
     for test_dataset in testing_datasets:
-        xs = []
+
+        # run sample in UNet
+        xs, ys, preds = get_preds(network=network,
+                                  test_dataset=test_dataset,
+                                  compute_loss=False,
+                                  device=device)
+        '''xs = []
         ys = []
         preds = []
 
@@ -212,7 +210,7 @@ def get_preds(network, device, datasets, ignore_frames, temporal_reduction, num_
                 preds = preds[:,:-(test_dataset.pad // num_channels)]
             else:
                 ys = ys[:-test_dataset.pad]
-                preds = preds[:,:-test_dataset.pad]
+                preds = preds[:,:-test_dataset.pad]'''
 
         # if dataset has video_name attribute, save results as dictionaries
         if hasattr(test_dataset, 'video_name'):
@@ -277,13 +275,15 @@ for training_name, config_name in zip(training_names, config_files):
     testing_datasets = [
         SparkTestDataset(
             video_path=f,
-            smoothing='2d',
+            smoothing=c.get("data", "smoothing", fallback="2d"),
             step=c.getint("data", "step"),
             duration=c.getint("data", "chunks_duration"),
-            remove_background=c.get("data", "remove_background"),
-            temporal_reduction=temporal_reduction,
-            num_channels=num_channels,
-            sparks_type=c.get("data", "sparks_type")
+            remove_background=c.get("data", "remove_background", fallback='average'),
+            temporal_reduction=c.getboolean("network", "temporal_reduction", fallback=False),
+            num_channels=c.getint("network", "num_channels", fallback=1),
+            normalize_video=c.get("data", "norm_video", fallback="chunk"),
+            only_sparks=c.getboolean("data", "only_sparks", fallback=False),
+            sparks_type=c.get("data", "sparks_type", fallback="peaks")
         ) for f in test_filenames]
 
     for i, tds in enumerate(testing_datasets):
@@ -340,13 +340,10 @@ for training_name, config_name in zip(training_names, config_files):
     ########################### run dataset in UNet ###########################
 
     logger.info(f"\tProcessing samples in UNet...")
-    _, ys, preds = get_preds(network,
-                             device,
-                             testing_datasets,
-                             ignore_frames,
-                             temporal_reduction,
-                             num_channels
-                            )
+    _, ys, preds = run_datasets_in_unet(network,
+                                        device,
+                                        testing_datasets,
+                                        ignore_frames)
     # ys and preds are dictionaries
 
     ########################### save preds on disk ###########################

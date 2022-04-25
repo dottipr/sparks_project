@@ -1,20 +1,23 @@
 '''
-15.03.2022
+12.04.2022
 
 Use this script to load saved predictions, annotations and movies and compute
-metrics:
-- plain IoU for puffs and waves
-- IoU with exclusion radius for puffs and waves
-- IoU of puff without holes
-- plain precision and recall for sparks
-- precision and recall for sparks with different threshold on puffs
+results for given parameters (e.g. detection thresholds):
+- tp
+- tn (if available)
+- fp
+- fn
 
 Predictions and training annotations are saved in
 `.\trainings_validation\{training_name}`
 
-Movies and raw annotations are saved in `.\trainings_validation`
+Movies are saved in `..\data\raw_data_and_processing\original_movies`
+Raw annotations are saved in `..\data\raw_data_and_processing\original_masks`
 
-Metrics will be saved in `.\trainings_validation\{training_name}`
+Metrics will be saved in
+`.\trainings_validation\{training_name}\per_pixel_results`
+and
+`.\trainings_validation\{training_name}\peaks_results`
 
 Remark: does not work (yet) for models using temporal reduction!
 '''
@@ -26,8 +29,10 @@ import imageio
 from collections import defaultdict
 import pprint
 import json
+import configparser
 
 from scipy.ndimage.morphology import binary_dilation, binary_erosion
+from skimage.morphology import remove_small_objects
 from sklearn.metrics import jaccard_score, f1_score
 
 import pandas as pd
@@ -36,722 +41,583 @@ import matplotlib.pyplot as plt
 import unet
 from metrics_tools import (correspondences_precision_recall,
                            Metrics,
-                           reduce_metrics,
                            empty_marginal_frames,
-                           process_spark_prediction,
-                           process_puff_prediction,
-                           process_wave_prediction,
                            compute_puff_wave_metrics,
-                           compute_average_puff_wave_metrics,
-                           write_videos_on_disk,
                            get_sparks_locations_from_mask,
-                           compute_prec_rec,
-                           reduce_metrics_thresholds
+                           get_argmax_segmented_output,
+                           nonmaxima_suppression
                           )
-from dataset_tools import load_annotations, load_predictions, load_movies_ids
-
-
-# get current directory
-BASEDIR = os.path.abspath('')
-
-# set metrics to compute
-compute_puff_wave_ious = True
-compute_joined_puff_wave_ious = True
-compute_joined_spark_puff_ious = True
-compute_joined_all_classes_ious = True
-compute_puff_no_holes_ious = True
-compute_sparks_prec_rec = True
-compute_sparks_on_puffs_prec_rec = True
-
-
-############################### LOAD STORED DATA ###############################
-
-# Select predictions to load
-training_names = [#"256_long_chunks_ubelix",
-                  #"focal_loss_gamma_5_ubelix",
-                  #"focal_loss_new_sparks_ubelix",
-                  #"no_smoothing_physio",
-                  #"new_sparks_V3_physio",
-                  #"abs_max_normalization_ubelix",
-                  "focal_loss_updated_physio",
-                  ]
-
-# Load training or testing dataset
-use_train_data = False
-if use_train_data:
-    print("Predict outputs for training data")
-else:
-    print("Predict outputs for testing data")
-
-
-epoch = 100000
-
-# Set folder where data is loaded and saved
-if not use_train_data:
-    metrics_folder = "trainings_validation"
-else :
-    metrics_folder = os.path.join("trainings_validation", "train_samples")
-os.makedirs(metrics_folder, exist_ok=True)
-
-
-# Load raw annotations (sparks unprocessed)
-ys_all_trainings = load_annotations(metrics_folder, mask_names="mask")
-
-# Load original movies
-movie_names = ys_all_trainings.keys()
-movie_path = os.path.join("..","data","raw_data_and_processing","original_movies")
-movies = load_movies_ids(movie_path, movie_names)
-
-# General parameters
-ignore_frames = 6
-
-# Load predictions and training annotations
-# remark: does not work for models using temporal reduction !!!
-ys = {} # contains annotations for each training
-sparks = {} # contains sparks for each training
-puffs = {} # contains puffs for each training
-waves = {} # contains waves for each training
-
-for training_name in training_names:
-    print(f"Processing training name {training_name}...")
-    print()
-    # Import .tif files as numpy array
-    data_folder = os.path.join(metrics_folder, training_name)
-    t_ys, t_sparks, t_puffs, t_waves = load_predictions(training_name,
-                                                        epoch,
-                                                        data_folder)
-
-    ys[training_name] = t_ys
-    sparks[training_name] = t_sparks
-    puffs[training_name] = t_puffs
-    waves[training_name] = t_waves
+from dataset_tools import (load_annotations,
+                           load_predictions,
+                           load_movies,
+                           get_new_mask
+                          )
 
 
 ################################################################################
-########################## PUFFS AND WAVES METRICS #############################
+################################## FUNCTIONS ###################################
 ################################################################################
 
-######################### METRICS FOR PUFFS AND WAVES ##########################
 
-'''
-Metrics considered: iou index, accuracy, precision, recall.
-'''
+# compute pixel-based results, for given binary predictions
+def get_binary_preds_pixel_based_results(binary_preds, ys, ignore_mask,
+                                         min_radius, exclusion_radius,
+                                         sparks=False):
+    '''
+    For given binary preds and annotations of a class and given params,
+    compute number of tp, tn, fp and fn pixels.
 
-if compute_puff_wave_ious:
-    print("Computing metrics for puffs and waves")
+    binary_preds:       binary UNet predictions with values in {0,1}
+    ys:                 binary annotation mask with values in {0,1}
+    ignore_mask:        mask == 1 where pixels have been ignored during training
+    min_radius:         list of minimal radius of valid predicted events
+    exclusion_radius:   list of exclusion radius for metrics computation
+    sparks:             if True, do not compute erosion on annotations
 
-    # puffs and waves params
-    #t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
-    t_detection = np.round(np.linspace(0,1,21),2)
-    #min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
-    min_radius = [0,1,2,3,4,5,6,7,8,9,10]
+    returns:    dict with keys
+                min radius x exclusion radius
+    '''
 
-    #exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
-    exclusion_radius = [0,1,2,3,4,5,6,7,8,9,10]
+    results_dict = defaultdict(dict)
 
-    ious_puffs_all_models = {} # training_name x t x min_r x exclusion_r x video_id x metrics
-    ious_waves_all_models = {} # training_name x t x min_r x exclusion_r x video_id x metrics
+    for min_r in min_radius:
+        if min_r > 0:
+            # remove small predicted events
+            min_size = (2 * min_r) ** binary_preds.ndim
+            binary_preds = remove_small_objects(binary_preds, min_size=min_size)
 
-    ious_puffs_all_models_average = {} # training_name x t x min_r x exclusion_r x metrics
-    ious_waves_all_models_average = {} # training_name x t x min_r x exclusion_r x metrics
+        for exclusion_r in exclusion_radius:
+            # compute results wrt to exclusion radius
+            tp,tn,fp,fn = compute_puff_wave_metrics(ys=ys,
+                                                    preds=binary_preds,
+                                                    exclusion_radius=exclusion_r,
+                                                    ignore_mask=ignore_mask,
+                                                    sparks=sparks,
+                                                    results_only=True)
 
-    for training_name in training_names:
-        print(training_name)
-        # get predictions
-        puffs_training = puffs[training_name]
-        waves_training = waves[training_name]
+            results_dict[min_r][exclusion_r] = {'tp': tp,
+                                                'tn': tn,
+                                                'fp': fp,
+                                                'fn': fn}
 
-        # init empty dictionaires
-        ious_puffs = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
-        ious_waves = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
+    return results_dict
 
-        for video_id in ys_all_trainings.keys():
-            print("\tVideo name:", video_id)
-            ys_sample = ys_all_trainings[video_id]
-            puffs_sample = puffs_training[video_id]
-            waves_sample = waves_training[video_id]
 
-            # get ignore mask (events labelled with 4)
-            ignore_mask = empty_marginal_frames(np.where(ys_sample==4,1,0),
-                                                ignore_frames)
+# compute pixel-based results, using a detection threshold
+def get_class_pixel_based_results(raw_preds, ys, ignore_mask,
+                                  t_detection, min_radius, exclusion_radius,
+                                  sparks=False):
+    '''
+    For given preds and annotations of a class and given params, compute number
+    of tp, tn, fp and fn pixels.
 
-            # get binary ys and remove ignored frames
-            ys_puffs_sample = empty_marginal_frames(np.where(ys_sample==3,1,0),
-                                                    ignore_frames)
-            ys_waves_sample = empty_marginal_frames(np.where(ys_sample==2,1,0),
-                                                    ignore_frames)
+    raw_preds:          raw UNet predictions with values in [0,1]
+    ys:                 binary annotation mask with values in {0,1}
+    ignore_mask:        mask == 1 where pixels have been ignored during training
+    t_detection:        list of detection thresholds
+    min_radius:         list of minimal radius of valid predicted events
+    exclusion_radius:   list of exclusion radius for metrics computation
 
-            for t in t_detection:
-                #print("\t\tDetection threshold:", t)
-                for min_r in min_radius:
-                    #print("\t\t\tMinimal radius:", min_r)
-                    # get binary predictions and remove ignored frames
-                    puffs_binary = process_puff_prediction(pred=puffs_sample,
-                                                           t_detection=t,
-                                                           min_radius=min_r,
-                                                           ignore_frames=ignore_frames)
-                    waves_binary = process_wave_prediction(waves_sample,
-                                                           t_detection=t,
-                                                           min_radius=min_r,
-                                                           ignore_frames=ignore_frames)
+    returns:    dict with keys
+                t x min radius x exclusion radius
+    '''
+    results_dict = {}
 
-                    # compute IoU for list of exclusion radius values
-                    for exclusion_r in exclusion_radius:
-                        #print("\t\t\t\tExclusion radius:", exclusion_r)
-                        # puffs
-                        metrics = compute_puff_wave_metrics(ys=ys_puffs_sample,
-                                                            preds=puffs_binary,
-                                                            exclusion_radius=exclusion_r,
-                                                            ignore_mask=ignore_mask)
-                        ious_puffs[t][min_r][exclusion_r][video_id] = metrics
+    for t in t_detection:
+        # get binary preds
+        binary_preds = raw_preds > t
 
-                        # waves
-                        metrics = compute_puff_wave_metrics(ys=ys_waves_sample,
-                                                            preds=waves_binary,
-                                                            exclusion_radius=exclusion_r,
-                                                            ignore_mask=ignore_mask)
-                        ious_waves[t][min_r][exclusion_r][video_id] = metrics
+        results_dict[t] = get_binary_preds_pixel_based_results(binary_preds,
+                                                               ys, ignore_mask,
+                                                               min_radius,
+                                                               exclusion_radius,
+                                                               sparks)
 
-        ious_puffs_all_models[training_name] = ious_puffs
-        ious_waves_all_models[training_name] = ious_waves
+    return results_dict
 
-        # save ious dictionaires on disk as json
-        data_folder = os.path.join(metrics_folder, training_name, "puff_wave_metrics")
-        os.makedirs(data_folder, exist_ok=True)
 
-        with open(os.path.join(data_folder,"metrics_puffs.json"),"w") as f:
-            json.dump(ious_puffs,f)
+# compute spark peaks results, for given binary prediction
+def get_binary_preds_spark_peaks_results(binary_preds, coords_true, movie,
+                                         ignore_mask, ignore_frames,
+                                         min_radius_sparks):
+    '''
+    For given binary preds, annotated sparks locations and given params,
+    compute number of tp, tp_fp (# preds), tp_fn (# annot) events.
 
-        with open(os.path.join(data_folder,"metrics_waves.json"),"w") as f:
-            json.dump(ious_waves,f)
+    binary_preds:       raw UNet predictions with values in {0,1}
+    coords_true:        list of annotated events
+    movie:              sample movie
+    ignore_mask:        mask == 1 where pixels have been ignored during training
+    ignore_frames:      first and last frames ignored during training
+    min_radius_sparks:  list of minimal radius of valid predicted events
 
-        # compute average over movies
-        print("\tComputing average")
-        ious_puffs_average = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
-        ious_waves_average = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+    returns:    dict with keys
+                min radius
+    '''
+    results_dict = {}
+
+    for min_r in min_radius_sparks:
+        # remove small objects and get clean binary preds
+        if min_r > 0:
+            min_size = (2 * min_r) ** binary_preds.ndim
+            binary_preds = remove_small_objects(binary_preds, min_size=min_size)
+
+        # detect predicted peaks
+        coords_pred = nonmaxima_suppression(img=movie,
+                                            maxima_mask=binary_preds,
+                                            min_dist_xy=MIN_DIST_XY,
+                                            min_dist_t=MIN_DIST_T,
+                                            return_mask=False,
+                                            threshold=0,
+                                            sigma=2)
+
+        # remove events in ignored regions
+        # in ignored first and last frames...
+        if ignore_frames > 0:
+            mask_duration = binary_preds.shape[0]
+            ignore_frames_up = mask_duration - ignore_frames
+            coords_pred = [list(loc) for loc in coords_pred if loc[0]>=ignore_frames and loc[0]<ignore_frames_up]
+
+        # and in ignored mask...
+        ignored_pixel_list = np.argwhere(ignore_mask)
+        ignored_pixel_list = [list(loc) for loc in ignored_pixel_list]
+        coords_pred = [loc for loc in coords_pred if loc not in ignored_pixel_list]
+
+        # compute results (tp, tp_fp, tp_fn)
+        results_dict[min_r] = correspondences_precision_recall(coords_real=coords_true,
+                                                              coords_pred=coords_pred,
+                                                              match_distance_t = MIN_DIST_T,
+                                                              match_distance_xy = MIN_DIST_XY,
+                                                              return_nb_results = True)
+
+    return results_dict
+
+
+# compute spark peaks results, using a detection threshold
+def get_spark_peaks_results(raw_preds, coords_true, movie, ignore_mask,
+                            ignore_frames, t_detection, min_radius_sparks):
+        '''
+        For given raw preds, annotated sparks locations and given params,
+        compute number of tp, tp_fp (# preds), tp_fn (# annot) events.
+
+        raw_preds:          raw UNet predictions with values in [0,1]
+        coords_true:        list of annotated events
+        movie:              sample movie
+        ignore_mask:        mask == 1 where pixels have been ignored during training
+        ignore_frames:      first and last frames ignored during training
+        t_detection:        list of detection thresholds
+        min_radius_sparks:  list of minimal radius of valid predicted events
+
+        returns:    dict with keys
+                    t x min radius
+        '''
+        result_dict = {}
 
         for t in t_detection:
-            for min_r in min_radius:
-                for exclusion_r in exclusion_radius:
-                    ious_puffs_all_movies = ious_puffs_all_models[training_name][t][min_r][exclusion_r]
-                    ious_waves_all_movies = ious_waves_all_models[training_name][t][min_r][exclusion_r]
-                    ious_puffs_average[t][min_r][exclusion_r] = compute_average_puff_wave_metrics(ious_puffs_all_movies)
-                    ious_waves_average[t][min_r][exclusion_r] = compute_average_puff_wave_metrics(ious_waves_all_movies)
+            # get binary preds
+            binary_preds = raw_preds > t
 
-        ious_puffs_all_models_average[training_name] = ious_puffs_average
-        ious_waves_all_models_average[training_name] = ious_waves_average
+            result_dict[t] = get_binary_preds_spark_peaks_results(binary_preds,
+                                                                  coords_true,
+                                                                  movie,
+                                                                  ignore_mask,
+                                                                  ignore_frames,
+                                                                  min_radius_sparks)
 
-        # save average ious dictionaires on disk as json
-        with open(os.path.join(data_folder,"metrics_puffs_average.json"),"w") as f:
-            json.dump(ious_puffs_average,f)
-
-        with open(os.path.join(data_folder,"metrics_waves_average.json"),"w") as f:
-            json.dump(ious_waves_average,f)
+        return result_dict
 
 
-##################### METRICS FOR JOINED PUFFS AND WAVES #######################
+# compute average over movies of pixel-based results
+def get_average_results(per_movie_results, pixel_based=True):
+    '''
+    Given a dict containing the results for all video wrt to all parameters
+    (detection threshold/argmax; min radius; (exclusion radius)) return a dict
+    containing the average over all movies.
 
-if compute_joined_puff_wave_ious:
-    print("Computing metrics for joined puffs and waves")
-    # Params are best for 'focal_loss_gamma_5_ubelix'
+    per_movie_results:  dict with keys
+                        movie_name x t/argmax x min radius (x exclusion radius)
+    pixel_based:        if True consider exclusion radius as well
 
-    # puffs and waves params
-    #t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
-    t_detection = np.round(np.linspace(0,1,21),2)
-    #min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
-    min_radius = [0,1,2,3,4,5,6,7,8,9,10]
+    return:             dict with keys
+                        t/argmax x min radius (x exclusion radius)
+    '''
 
-    #exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
-    exclusion_radius = [0,1,2,3,4,5,6,7,8,9,10]
+    average_results = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+    movie_number = len(per_movie_results)
 
-    ious_sum_all_models = {} # training_name x ...
-    ious_sum_average_all_models = {} # training_name x ...
+    # sum values of each movie for every paramenter
+    for movie_name, movie_results in per_movie_results.items():
+        for t, t_res in movie_results.items():
+            for min_r, min_r_res in t_res.items():
+                if pixel_based:
+                    for excl_r, excl_r_res in min_r_res.items():
+                        for res, val in excl_r_res.items():
+                            if res in average_results[t][min_r][excl_r]:
+                                average_results[t][min_r][excl_r][res] += val/movie_number
+                            else:
+                                average_results[t][min_r][excl_r][res] = val/movie_number
+                else:
+                    for res, val in min_r_res.items():
+                        if res in average_results[t][min_r]:
+                            average_results[t][min_r][res] += val/movie_number
+                        else:
+                            average_results[t][min_r][res] = val/movie_number
 
-    for training_name in training_names:
-        print(training_name)
-        # get predictions
-        puffs_training = puffs[training_name]
-        waves_training = waves[training_name]
-
-        # init empty dictionaires
-        ious_sum = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
-
-        for video_id in ys_all_trainings.keys():
-            print("\tVideo name:", video_id)
-            ys_sample = ys_all_trainings[video_id]
-            puffs_sample = puffs_training[video_id]
-            waves_sample = waves_training[video_id]
-
-            # sum puff and wave preds
-            preds_sum_sample = puffs_sample + waves_sample
-
-            # get binary ys and remove ignored frames
-            ys_puffs_sample = empty_marginal_frames(np.where(ys_sample==3,1,0),
-                                                    ignore_frames)
-            ys_waves_sample = empty_marginal_frames(np.where(ys_sample==2,1,0),
-                                                    ignore_frames)
-            ys_sum_sample = np.logical_or(ys_puffs_sample, ys_waves_sample)
-
-            # get ignore mask (events labelled with 4)
-            ignore_mask = empty_marginal_frames(np.where(ys_sample==4,1,0),
-                                                ignore_frames)
-
-            for t in t_detection:
-                #print("t_detection:",t)
-                for min_r in min_radius:
-                    #print("min_radius:",min_r)
-                    # get binary mask
-                    preds_sum_binary = process_puff_prediction(preds_sum_sample,
-                                                               t,
-                                                               min_r,
-                                                               ignore_frames)
-
-                    # compute IoU for some exclusion radius values
-                    for exclusion_r in exclusion_radius:
-                        #print("exclusion_radius:",exclusion_r)
-                        #print("exclusion radius:", radius)
-                        ious_sum[t][min_r][exclusion_r][video_id] = compute_puff_wave_metrics(ys_sum_sample,
-                                                                                              preds_sum_binary,
-                                                                                              exclusion_r,
-                                                                                              ignore_mask)
-
-        ious_sum_all_models[training_name] = ious_sum
-
-        # compute average over movies
-        print("\tComputing average")
-        ious_sum_average = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
-        for t in t_detection:
-                for min_r in min_radius:
-                    for exclusion_r in exclusion_radius:
-                        ious_sum_all_movies = ious_sum_all_models[training_name][t][min_r][exclusion_r]
-                        ious_sum_average[t][min_r][exclusion_r] = compute_average_puff_wave_metrics(ious_sum_all_movies)
-
-        ious_sum_average_all_models[training_name] = ious_sum_average
-
-        # save ious dictionaires on disk as json
-        data_folder = os.path.join(metrics_folder, training_name, "puff_wave_metrics")
-        os.makedirs(data_folder, exist_ok=True)
-
-        with open(os.path.join(data_folder,"metrics_joined_puffs_waves.json"),"w") as f:
-            json.dump(ious_sum_all_models[training_name],f)
-
-        # save average ious dictionaires on disk as json
-        with open(os.path.join(data_folder,"metrics_joined_puffs_waves_average.json"),"w") as f:
-            json.dump(ious_sum_average_all_models[training_name],f)
+    return average_results
 
 
-##################### METRICS FOR JOINED SPARKS AND PUFFS ######################
 
-if compute_joined_spark_puff_ious:
-    print("Computing metrics for joined sparks and puffs")
+if __name__ == "__main__":
+    ############################################################################
+    ############################# GENERAL SETTINGS #############################
+    ############################################################################
 
-    # sparks and puffs params
-    #t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
-    t_detection = np.round(np.linspace(0,1,21),2)
-    #min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
-    min_radius = [0,1,2,3,4,5,6,7,8,9,10]
+    # Select predictions to load
+    training_names = ['raw_sparks_lovasz_physio'
+                      #"peak_sparks_lovasz_physio",
+                     ]
 
-    #exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
-    exclusion_radius = [0,1,2,3,4,5,6,7,8,9,10]
+    # Select corresponding config file
+    config_files = ['config_raw_sparks_lovasz_physio.ini'
+                    #"config_peak_sparks_lovasz_physio.ini",
+                   ]
 
-    ious_sum_all_models = {} # training_name x ...
-    ious_sum_average_all_models = {} # training_name x ...
+    # set simple_mode to True to compute metrics for fewer parameters & thresholds
+    simple_mode = True
 
-    for training_name in training_names:
-        print(training_name)
-        # get predictions
-        puffs_training = puffs[training_name]
-        sparks_training = sparks[training_name]
+    # Load training or testing dataset
+    use_train_data = False
+    if use_train_data:
+        print("Get results for training data")
+    else:
+        print("Get results for testing data")
 
-        # init empty dictionaires
-        ious_sum = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
+    # Set folder where data is loaded and saved
+    if not use_train_data:
+        metrics_folder = "trainings_validation"
+    else :
+        metrics_folder = os.path.join("trainings_validation", "train_samples")
+    os.makedirs(metrics_folder, exist_ok=True)
 
-        for video_id in ys_all_trainings.keys():
-            print("\tVideo name:", video_id)
-            ys_sample = ys_all_trainings[video_id]
-            puffs_sample = puffs_training[video_id]
-            sparks_sample = sparks_training[video_id]
-
-            # sum puff and spark preds
-            preds_sum_sample = puffs_sample + sparks_sample
-
-            # get binary ys and remove ignored frames
-            ys_puffs_sample = empty_marginal_frames(np.where(ys_sample==3,1,0),
-                                                    ignore_frames)
-            ys_sparks_sample = empty_marginal_frames(np.where(ys_sample==1,1,0),
-                                                    ignore_frames)
-            ys_sum_sample = np.logical_or(ys_puffs_sample, ys_sparks_sample)
-
-            # get ignore mask (events labelled with 4)
-            ignore_mask = empty_marginal_frames(np.where(ys_sample==4,1,0),
-                                                ignore_frames)
-
-            for t in t_detection:
-                #print("t_detection:",t)
-                for min_r in min_radius:
-                    #print("min_radius:",min_r)
-                    # get binary mask
-                    preds_sum_binary = process_puff_prediction(preds_sum_sample,
-                                                               t,
-                                                               min_r,
-                                                               ignore_frames)
-
-                    # compute IoU for some exclusion radius values
-                    for exclusion_r in exclusion_radius:
-                        #print("exclusion_radius:",exclusion_r)
-                        #print("exclusion radius:", radius)
-                        ious_sum[t][min_r][exclusion_r][video_id] = compute_puff_wave_metrics(ys_sum_sample,
-                                                                                              preds_sum_binary,
-                                                                                              exclusion_r,
-                                                                                              ignore_mask)
-
-        ious_sum_all_models[training_name] = ious_sum
-
-        # compute average over movies
-        print("\tComputing average")
-        ious_sum_average = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
-        for t in t_detection:
-                for min_r in min_radius:
-                    for exclusion_r in exclusion_radius:
-                        ious_sum_all_movies = ious_sum_all_models[training_name][t][min_r][exclusion_r]
-                        ious_sum_average[t][min_r][exclusion_r] = compute_average_puff_wave_metrics(ious_sum_all_movies)
-
-        ious_sum_average_all_models[training_name] = ious_sum_average
-
-        # save ious dictionaires on disk as json
-        data_folder = os.path.join(metrics_folder, training_name, "puff_wave_metrics")
-        os.makedirs(data_folder, exist_ok=True)
-
-        with open(os.path.join(data_folder,"metrics_joined_puffs_sparks.json"),"w") as f:
-            json.dump(ious_sum_all_models[training_name],f)
-
-        # save average ious dictionaires on disk as json
-        with open(os.path.join(data_folder,"metrics_joined_puffs_sparks_average.json"),"w") as f:
-            json.dump(ious_sum_average_all_models[training_name],f)
+    # Set config files folder
+    config_folder = "config_files"
 
 
-######################## METRICS FOR ALL CLASSES JOINED ########################
+    ############################################################################
+    ################## LOAD DATA SHARED FOR ALL TRAININGS ######################
+    ############################################################################
 
-if compute_joined_all_classes_ious:
-    print("Computing metrics for all classes joined")
 
-    # all classes params
-    #t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
-    t_detection = np.round(np.linspace(0,1,21),2)
-    #min_radius = [0,5]#,1,2,3,4,5,6,7,8,9,10]
-    min_radius = [0,1,2,3,4,5,6,7,8,9,10]
+    # Load raw annotations (sparks unprocessed, most recent version, train and test samples)
+    raw_ys_path = os.path.join("..","data","raw_data_and_processing","original_masks")
+    raw_ys = load_annotations(raw_ys_path, mask_names="mask")
 
-    #exclusion_radius = [0]#,1,2,3,4,5,6,7,8,9,10]
-    exclusion_radius = [0,1,2,3,4,5,6,7,8,9,10]
+    # Load original movies (train and test samples)
+    movies_path = os.path.join("..","data","raw_data_and_processing","original_movies")
+    movies = load_movies(movies_path)
 
-    ious_sum_all_models = {} # training_name x ...
-    ious_sum_average_all_models = {} # training_name x ...
 
-    for training_name in training_names:
-        print(training_name)
-        # get predictions
-        puffs_training = puffs[training_name]
-        waves_training = waves[training_name]
-        sparks_training = sparks[training_name]
+    ############################################################################
+    ####################### SET PARAMETERS & THRESHOLDS ########################
+    ############################################################################
 
-        # init empty dictionaires
-        ious_sum = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
+    # classes for which results will be computed
+    classes_list = ['sparks', 'puffs', 'waves', 'sparks_puffs', 'puffs_waves', 'all']
 
-        for video_id in ys_all_trainings.keys():
-            print("\tVideo name:", video_id)
-            ys_sample = ys_all_trainings[video_id]
-            puffs_sample = puffs_training[video_id]
-            waves_sample = waves_training[video_id]
-            sparks_sample = sparks_training[video_id]
+    if simple_mode:
+        t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
+        min_radius = [0,5]
+        min_radius_sparks = [0,1]
+        exclusion_radius = [0,2]
+    else:
+        t_detection = np.round(np.linspace(0,1,21),2)
+        min_radius = [0,1,2,3,4,5,6,7,8,9,10]
+        min_radius_sparks = [0,1,2]
+        exclusion_radius = [0,1,2,3,4,5,6,7,8,9,10]
 
-            # sum all classes preds
-            preds_sum_sample = puffs_sample + sparks_sample + waves_sample
+    # physiological params (for spark peaks results)
+    PIXEL_SIZE = 0.2 # 1 pixel = 0.2 um x 0.2 um
+    MIN_DIST_XY = round(1.8 / PIXEL_SIZE) # min distance in space between sparks
+    TIME_FRAME = 6.8 # 1 frame = 6.8 ms
+    MIN_DIST_T = round(20 / TIME_FRAME) # min distance in time between sparks
 
-            # get binary ys and remove ignored frames
-            ys_puffs_sample = empty_marginal_frames(np.where(ys_sample==3,1,0),
-                                                    ignore_frames)
-            ys_sparks_sample = empty_marginal_frames(np.where(ys_sample==1,1,0),
-                                                    ignore_frames)
-            ys_waves_sample = empty_marginal_frames(np.where(ys_sample==2,1,0),
-                                                    ignore_frames)
-            ys_sum_sample = np.logical_or(ys_puffs_sample, ys_sparks_sample)
-            ys_sum_sample = np.logical_or(ys_sum_sample, ys_waves_sample)
+
+    ############################################################################
+    ####################### PROCESS EACH TRAINING MODEL ########################
+    ############################################################################
+
+
+
+
+
+    for training_name, config_name in zip(training_names, config_files):
+        print(f"Loading {training_name} UNet predictions...")
+
+        ########################### open config file ###########################
+
+        config_file = os.path.join(config_folder, config_name)
+        c = configparser.ConfigParser()
+        if os.path.isfile(config_file):
+            print(f"Loading {config_file}")
+            c.read(config_file)
+        else:
+            print(f"No config file found at {config_file}.")
+            exit()
+
+        epoch = c.getint("testing", "load_epoch")
+
+        ########################## general parameters ##########################
+
+        ignore_frames = c.getint("data", "ignore_frames_loss")
+
+        ################### import .tif files as numpy array ###################
+
+        data_folder = os.path.join(metrics_folder, training_name)
+        ys, sparks, puffs, waves = load_predictions(training_name,
+                                                    epoch,
+                                                    data_folder)
+
+        movie_names = ys.keys()
+        # compute results for each sample movie
+
+        pixel_based_results = defaultdict(dict)
+        spark_peaks_results = defaultdict(dict)
+
+        for movie_name in movie_names:
+            print(f"\tProcessing movie {movie_name}...")
+
+            # get raw predictions for all classes
+            # remark:   first and last ignored frames are removed only for
+            #           pixel-based results, for spark peaks the events in the
+            #           ignored frames are removed after peaks detection
+            preds_sample = {'sparks': sparks[movie_name],
+                            'puffs': puffs[movie_name],
+                            'waves':waves[movie_name]}
+
+            # get raw annotations
+            raw_ys_sample = raw_ys[movie_name]
+            ys_sample = {'sparks': np.where(raw_ys_sample==1,1,0),
+                         'puffs': np.where(raw_ys_sample==3,1,0),
+                         'waves': np.where(raw_ys_sample==2,1,0)}
 
             # get ignore mask (events labelled with 4)
-            ignore_mask = empty_marginal_frames(np.where(ys_sample==4,1,0),
+            # remark:   ignore frames can be already removed
+            ignore_mask = empty_marginal_frames(np.where(raw_ys_sample==4,1,0),
                                                 ignore_frames)
 
-            for t in t_detection:
-                #print("t_detection:",t)
-                for min_r in min_radius:
-                    #print("min_radius:",min_r)
-                    # get binary mask
-                    preds_sum_binary = process_puff_prediction(preds_sum_sample,
-                                                               t,
-                                                               min_r,
-                                                               ignore_frames)
+            # get background prediction
+            preds_sample['background'] = 1 - preds_sample['sparks'] - preds_sample['puffs'] - preds_sample['waves']
+            # get preds as list [background, sparks, waves, puffs]
+            preds_sample_list = [preds_sample['background'],
+                                 preds_sample['sparks'],
+                                 preds_sample['waves'],
+                                 preds_sample['puffs']]
 
-                    # compute IoU for some exclusion radius values
-                    for exclusion_r in exclusion_radius:
-                        #print("exclusion_radius:",exclusion_r)
-                        #print("exclusion radius:", radius)
-                        ious_sum[t][min_r][exclusion_r][video_id] = compute_puff_wave_metrics(ys_sum_sample,
-                                                                                              preds_sum_binary,
-                                                                                              exclusion_r,
-                                                                                              ignore_mask)
+            # get argmax binary preds
+            argmax_preds_sample, _ = get_argmax_segmented_output(preds=preds_sample_list,
+                                                                 get_classes=True)
 
-        ious_sum_all_models[training_name] = ious_sum
+            for event_class in classes_list:
 
-        # compute average over movies
-        print("\tComputing average")
-        ious_sum_average = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
-        for t in t_detection:
-                for min_r in min_radius:
-                    for exclusion_r in exclusion_radius:
-                        ious_sum_all_movies = ious_sum_all_models[training_name][t][min_r][exclusion_r]
-                        ious_sum_average[t][min_r][exclusion_r] = compute_average_puff_wave_metrics(ious_sum_all_movies)
+                ################################################################
+                ########## COMPUTE PIXEL-BASED RESULTS (per movie) #############
+                ################################################################
 
-        ious_sum_average_all_models[training_name] = ious_sum_average
+                print(f"\tComputing pixel-based results for movie {movie_name} and {event_class} class...")
 
-        # save ious dictionaires on disk as json
-        data_folder = os.path.join(metrics_folder, training_name, "puff_wave_metrics")
-        os.makedirs(data_folder, exist_ok=True)
+                '''
+                Metrics that can be computed using tp, tf, fp, fn:
+                - Jaccard index (IoU)
+                - Dice score
+                - Precision & recall
+                - F-score (e.g. beta = 0.5,1,2)
+                - Accuracy (biased since background is predominant)
+                - Matthews correlation coefficient (MCC)
+                '''
 
-        with open(os.path.join(data_folder,"metrics_joined_all_classes.json"),"w") as f:
-            json.dump(ious_sum_all_models[training_name],f)
+                '''
+                Class of events that are considered:
+                - sparks
+                - puffs
+                - waves
+                - sparks + puffs
+                - puffs + waves
+                - sparks + puffs + waves (all)
+                '''
 
-        # save average ious dictionaires on disk as json
-        with open(os.path.join(data_folder,"metrics_joined_all_classes_average.json"),"w") as f:
-            json.dump(ious_sum_average_all_models[training_name],f)
+                class_results = {}
 
+                ######### compute results using a detection threshold ##########
 
-####################### METRICS FOR PUFFS WITHOUT HOLES ########################
+                if (event_class == 'sparks') and (c.get("data","sparks_type") == 'peaks'):
+                    print("WARNING: pixel-based results for sparks when training using peaks are not really meaningful...")
 
-if compute_puff_no_holes_ious:
-    print("Computing metrics for puffs without holes")
+                # get raw preds and ys
+                if (event_class == 'sparks') or (event_class == 'puffs') or (event_class == 'waves'):
+                    class_sample = preds_sample[event_class]
+                    ys_class_sample = ys_sample[event_class]
+                elif event_class == 'sparks_puffs':
+                    class_sample = preds_sample['sparks']+preds_sample['puffs']
+                    ys_class_sample = ys_sample['sparks']+ys_sample['puffs']
+                elif event_class == 'puffs_waves':
+                    class_sample = preds_sample['waves']+preds_sample['puffs']
+                    ys_class_sample = ys_sample['waves']+ys_sample['puffs']
+                elif event_class == 'all':
+                    class_sample = preds_sample['sparks']+preds_sample['puffs']+preds_sample['waves']
+                    ys_class_sample = ys_sample['sparks']+ys_sample['puffs']+ys_sample['waves']
+                else:
+                    print("WARNING: something is wrong...")
 
-    #t_detection_puffs = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
-    t_detection_puffs = np.round(np.linspace(0,1,21),2)
-    #min_radius_puffs = [5]#,1,2,3,4,5,6,7,8,9,10]
-    min_radius_puffs = [1,2,3,4,5,6,7,8,9,10]
+                # Remarks:  can remove ignored frames, since computing results for
+                #           pixel-based metrics
+                class_sample = empty_marginal_frames(class_sample, ignore_frames)
+                ys_class_sample = empty_marginal_frames(ys_class_sample, ignore_frames)
 
-    ious_puffs_no_holes_all_models = {}
-    ious_puffs_no_holes_average_all_models = {}
+                class_results = get_class_pixel_based_results(raw_preds=class_sample,
+                                                              ys=ys_class_sample,
+                                                              ignore_mask=ignore_mask,
+                                                              t_detection=t_detection,
+                                                              min_radius=min_radius_sparks if event_class=='sparks' else min_radius,
+                                                              exclusion_radius=exclusion_radius,
+                                                              sparks=(event_class=='sparks'))
 
-    for training_name in training_names:
-        print(training_name)
-        puffs_ious = defaultdict(lambda: defaultdict(dict))
-        puffs_ious_all_movies = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+                ###### compute metrics using argmax values on predictions ######
 
-        for movie_name in ys_all_trainings.keys():
-            print("\tVideo name:", movie_name)
-            # get puff binary annotations
-            puffs_ys = ys[training_name][movie_name]
-            puffs_ys = np.where(puffs_ys == 3, 1, 0)
-            puffs_ys = empty_marginal_frames(puffs_ys, ignore_frames)
+                if (event_class == 'sparks') or (event_class == 'puffs') or (event_class == 'waves'):
+                    binary_preds_sample = argmax_preds_sample[event_class]
+                    ys_class_sample = ys_sample[event_class]
+                elif event_class == 'sparks_puffs':
+                    binary_preds_sample = argmax_preds_sample['sparks']+argmax_preds_sample['puffs']
+                    ys_class_sample = ys_sample['sparks']+ys_sample['puffs']
+                elif event_class == 'puffs_waves':
+                    binary_preds_sample = argmax_preds_sample['waves']+argmax_preds_sample['puffs']
+                    ys_class_sample = ys_sample['waves']+ys_sample['puffs']
+                elif event_class == 'all':
+                    binary_preds_sample = argmax_preds_sample['sparks']+argmax_preds_sample['puffs']+argmax_preds_sample['waves']
+                    ys_class_sample = ys_sample['sparks']+ys_sample['puffs']+ys_sample['waves']
+                else:
+                    print("WARNING: something is wrong...")
 
-            # get ignore mask
-            raw_ys = ys_all_trainings[movie_name]
-            ignore_mask =  np.where(raw_ys==4,1,0)
+                # Get binary preds as boolean array
+                binary_preds_sample = np.array(binary_preds_sample, dtype=bool)
 
-            # get binary puff prediction
-            puffs_pred = puffs[training_name][movie_name]
+                # Remarks:  can remove ignored frames, since computing results for
+                #           pixel-based metrics
+                binary_preds_sample = empty_marginal_frames(binary_preds_sample, ignore_frames)
+                ys_class_sample = empty_marginal_frames(ys_class_sample, ignore_frames)
 
-            for t in t_detection_puffs:
-                for r in min_radius_puffs:
-                    # remove holes (convex hull) & small events from puffs
-                    puffs_pred_processed = process_puff_prediction(pred=puffs_pred,
-                                                         t_detection=t,
-                                                         min_radius=r,
-                                                         ignore_frames=ignore_frames,
-                                                         convex_hull=True
-                                                        )
+                class_results['argmax'] = get_binary_preds_pixel_based_results(binary_preds=binary_preds_sample,
+                                                                               ys=ys_class_sample,
+                                                                               ignore_mask=ignore_mask,
+                                                                               min_radius=min_radius_sparks if event_class=='sparks' else min_radius,
+                                                                               exclusion_radius=exclusion_radius,
+                                                                               sparks=(event_class=='sparks'))
 
-                    # compute IoU
-                    puffs_ious_all_movies[t][r][movie_name] = compute_puff_wave_metrics(ys=puffs_ys,
-                                                                                        preds=puffs_pred_processed,
-                                                                                        exclusion_radius=0,
-                                                                                        ignore_mask=ignore_mask)
+                # store class results in dict
+                pixel_based_results[event_class][movie_name] = class_results
 
-        ious_puffs_no_holes_all_models[training_name] = puffs_ious_all_movies
+                ################################################################
+                ################# COMPUTE SPARK PEAKS RESULTS ##################
+                ################################################################
 
-        # save ious dictionaires on disk as json
-        data_folder = os.path.join(metrics_folder, training_name, "puff_wave_metrics")
-        os.makedirs(data_folder, exist_ok=True)
+                if event_class == 'sparks':
 
-        with open(os.path.join(data_folder,"metrics_puffs_no_holes.json"),"w") as f:
-            json.dump(puffs_ious_all_movies,f)
+                    print(f"\tComputing spark peaks results for movie {movie_name}...")
 
-        # compute average over movies
-        print("\tComputing average")
-        for t in t_detection_puffs:
-            for r in min_radius_puffs:
-                ious = puffs_ious_all_movies[t][r]
-                puffs_ious[t][r] = compute_average_puff_wave_metrics(ious)
+                    '''
+                    Metrics that can be computed using tp, tp_fp, tp_fn:
+                    - Precision & recall
+                    - F-score (e.g. beta = 0.5,1,2)
+                    (- Matthews correlation coefficient (MCC))???
+                    '''
 
-        ious_puffs_no_holes_average_all_models[training_name] = puffs_ious
+                    '''
+                    Class of events that are considered:
+                    - sparks
+                    '''
 
-        # save average ious dictionaires on disk as json
-        with open(os.path.join(data_folder,"metrics_puffs_no_holes_average.json"),"w") as f:
-            json.dump(puffs_ious,f)
+                    sparks_results = {}
 
+                    # get sample movie
+                    movie_sample = movies[movie_name]
 
-################################################################################
-################################ SPARKS METRICS ################################
-################################################################################
+                    # get ys used during training
+                    ys_sample_training = ys[movie_name]
 
-# physiological params
-PIXEL_SIZE = 0.2 # 1 pixel = 0.2 um x 0.2 um
-MIN_DIST_XY = round(1.8 / PIXEL_SIZE) # min distance in space between sparks
-TIME_FRAME = 6.8 # 1 frame = 6.8 ms
-MIN_DIST_T = round(20 / TIME_FRAME) # min distance in time between sparks
+                    # extract peak locations from annotations used during training
+                    if c.get("data","sparks_type") == 'peaks':
+                        coords_true = get_sparks_locations_from_mask(mask=ys_sample_training,
+                                                                     min_dist_xy=MIN_DIST_XY,
+                                                                     min_dist_t=MIN_DIST_T,
+                                                                     ignore_frames=ignore_frames)
+                    elif c.get("data","sparks_type") == 'raw':
+                        print("\t\tModel trained using raw sparks, extracting locations from annotations...")
+                        coords_true = get_new_mask(video=movie_sample,
+                                                   mask=ys_sample_training,
+                                                   min_dist_xy=MIN_DIST_XY,
+                                                   min_dist_t=MIN_DIST_T,
+                                                   return_loc=True)
+                    else:
+                        print("WARNING: something is wrong...")
 
+                    # remove events ignored by loss function
+                    if ignore_frames > 0:
+                        if len(coords_true) > 0:
+                            mask_duration = ys_sample_training.shape[0]
+                            ignore_frames_up = mask_duration - ignore_frames
+                            coords_true = [loc for loc in coords_true
+                                           if loc[0]>=ignore_frames and loc[0]<ignore_frames_up]
 
-###################### PLAIN SPARKS PRECISION AND RECALL #######################
+                    ####### compute results using a detection threshold ########
 
-if compute_sparks_prec_rec:
-    print("Computing precision and recall for sparks")
-    #t_detection_sparks = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
-    t_detection_sparks = np.round(np.linspace(0,1,21),2)
-    min_radius_sparks = [0,1,2]
+                    sparks_results = get_spark_peaks_results(raw_preds=preds_sample[event_class],
+                                                             coords_true=coords_true,
+                                                             movie=movie_sample,
+                                                             ignore_mask=ignore_mask,
+                                                             ignore_frames=ignore_frames,
+                                                             t_detection=t_detection,
+                                                             min_radius_sparks=min_radius_sparks)
 
-    # training name x min_r x video id x thresholds:
-    prec_rec_sparks_all_trainings = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
-    # training name x min_r x thresholds:
-    prec_rec_sparks_avg = defaultdict(lambda: defaultdict(dict))
-    #prec_avg = defaultdict(lambda: defaultdict(dict))
-    #rec_avg = defaultdict(lambda: defaultdict(dict))
+                    #### compute metrics using argmax values on predictions ####
 
-    for training_name in training_names:
-        for movie_name in ys_all_trainings.keys():
-            print("\tVideo name:", movie_name)
-            # get preds
-            sparks_sample = sparks[training_name][movie_name]
-            # get annotations
-            ys_sample = ys[training_name][movie_name]
-            ys_raw = ys_all_trainings[movie_name]
-            # get movie
-            movie = movies[movie_name]
+                    binary_preds_sample = argmax_preds_sample[event_class]
+                    binary_preds_sample = np.array(binary_preds_sample, dtype=bool)
 
-            # get binary ys
-            ys_sparks_sample = np.where(ys_sample==1,1.0,0.0)
+                    sparks_results['argmax'] = get_binary_preds_spark_peaks_results(binary_preds=binary_preds_sample,
+                                                                                    coords_true=coords_true,
+                                                                                    movie=movie_sample,
+                                                                                    ignore_mask=ignore_mask,
+                                                                                    ignore_frames=ignore_frames,
+                                                                                    min_radius_sparks=min_radius_sparks)
 
-            # get ignore mask
-            ignore_mask =  np.where(ys_raw==4,1,0)
+                    # store class results in dict
+                    spark_peaks_results[event_class][movie_name] = sparks_results
 
-            for min_r in min_radius_sparks:
-                # compute precision and recall for some thresholds and remove ignored frames
-                prec_rec_all_t = compute_prec_rec(annotations=ys_sparks_sample,
-                                                  preds=sparks_sample,
-                                                  movie=movie,
-                                                  thresholds=t_detection_sparks,
-                                                  ignore_frames=ignore_frames,
-                                                  min_radius=min_r,
-                                                  min_dist_xy=MIN_DIST_XY,
-                                                  min_dist_t=MIN_DIST_T,
-                                                  ignore_mask=ignore_mask
-                                                 ) # dict indexed by threshold value
-                prec_rec_sparks_all_trainings[training_name][min_r][movie_name] = prec_rec_all_t
+        ########################################################################
+        ####### COMPUTE RESULTS AVERAGED ON ALL MOVIES AND SAVE TO DISK ########
+        ########################################################################
 
-        # compute average over all videos
-        print("\tComputing average")
-        for min_r in min_radius_sparks:
-            prec_rec_all_videos = prec_rec_sparks_all_trainings[training_name][min_r]
-            prec_rec_sparks_avg[training_name][min_r] = reduce_metrics_thresholds(prec_rec_all_videos)
-            #prec_avg[training_name][min_r] = prec_rec_sparks_avg[training_name][min_r][1]
-            #rec_avg[training_name][min_r] = prec_rec_sparks_avg[training_name][min_r][2]
+        for event_class in classes_list:
+            ####################### pixel-based metrics ########################
+            pixel_based_results[event_class]['average'] = get_average_results(pixel_based_results[event_class])
 
-        # save prec and rec dictionaires on disk as json
-        data_folder = os.path.join(metrics_folder, training_name, "spark_prec_rec")
-        os.makedirs(data_folder, exist_ok=True)
+            # save results dict on disk as json
+            data_folder = os.path.join(metrics_folder, training_name,
+                                       "per_pixel_results")
+            os.makedirs(data_folder, exist_ok=True)
 
-        with open(os.path.join(data_folder,"prec_rec_sparks.json"),"w") as f:
-            json.dump(prec_rec_sparks_all_trainings[training_name],f)
+            with open(os.path.join(data_folder, event_class+"_results.json"),"w") as f:
+                json.dump(pixel_based_results[event_class],f)
 
-        with open(os.path.join(data_folder,"prec_rec_sparks_average.json"),"w") as f:
-            json.dump(prec_rec_sparks_avg[training_name],f)
+            ####################### event-based metrics ########################
+            if event_class == 'sparks':
+                spark_peaks_results[event_class]['average'] =  get_average_results(spark_peaks_results[event_class],
+                                                                             pixel_based=False)
 
+                # save results dict on disk as json
+                data_folder = os.path.join(metrics_folder, training_name,
+                                           "spark_peaks_results")
+                os.makedirs(data_folder, exist_ok=True)
 
-##################### SPARKS ON PUFFS PRECISION AND RECALL #####################
-
-if compute_sparks_on_puffs_prec_rec:
-    print("Computing precision and recall for sparks with adjusted threshold on puffs")
-
-    t_puffs_lower = 0.3
-    t_puffs_upper = [0.0,0.5,0.55,0.6,0.65] # = t detection puffs (0 for standard detection) (t included)
-
-    #t_detection_sparks = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]#np.round(np.linspace(0,1,21),2) # for sum of puffs and sparks (t not included)
-    t_detection_sparks = np.round(np.linspace(0,1,21),2)
-
-    min_radius_sparks = [0,1,2]
-
-    prec_rec_on_puffs_all_trainings = {}
-    prec_rec_on_puffs_all_movies_all_trainings = {}
-
-    for training_name in training_names:
-        print(training_name)
-        prec_rec_on_puffs = defaultdict(lambda: defaultdict(dict))
-        prec_rec_on_puffs_all_movies = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
-
-        for movie_name in ys_all_trainings.keys():
-            print("\tVideo name:", movie_name)
-            # open spark preds
-            sparks_pred = sparks[training_name][movie_name]
-            # open puff preds
-            puffs_pred = puffs[training_name][movie_name]
-
-            # get movie
-            movie = movies[movie_name]
-
-            # get binary annotation mask
-            ys_sparks = ys[training_name][movie_name]
-            binary_ys_sparks = np.where(ys_sparks==1,1.0,0.0)
-
-            # get ignore mask
-            ys_raw = ys_all_trainings[movie_name]
-            ignore_mask =  np.where(ys_raw==4,1,0)
-
-            for min_r in min_radius_sparks:
-                for t_p in t_puffs_upper:
-                    # process spark & puff preds together :
-                    # compute region where 0.3 <= puffs <= 0.65
-                    binary_puffs_sparks = np.logical_and(puffs_pred <= t_p,
-                                                         puffs_pred >= t_puffs_lower)
-                    # sum value of sparks and puffs in this region
-                    sparks_pred_total = sparks_pred + binary_puffs_sparks * puffs_pred
-
-                    # compute prec & rec for all t_detection_sparks
-                    prec_rec_all_t = compute_prec_rec(annotations=binary_ys_sparks,
-                                                      preds=sparks_pred_total,
-                                                      movie=movie,
-                                                      thresholds=t_detection_sparks,
-                                                      ignore_frames=ignore_frames,
-                                                      min_radius=min_r,
-                                                      min_dist_xy=MIN_DIST_XY,
-                                                      min_dist_t=MIN_DIST_T,
-                                                      ignore_mask=ignore_mask
-                                                      ) # dict of Metrics indexed by threshold value
-                    #print(f"precision and recall for all t_detection_sparks: {prec_rec_all_t}")
-                    prec_rec_on_puffs_all_movies[min_r][t_p][movie_name] = prec_rec_all_t
-
-        prec_rec_on_puffs_all_movies_all_trainings[training_name] = prec_rec_on_puffs_all_movies
-
-        # compute average over all videos
-        print("\tComputing average")
-        for min_r in min_radius_sparks:
-            for t_p in t_puffs_upper:
-                prec_rec_all_videos = prec_rec_on_puffs_all_movies[min_r][t_p]
-                prec_rec_on_puffs[min_r][t_p] = reduce_metrics_thresholds(prec_rec_all_videos)
-
-
-        prec_rec_on_puffs_all_trainings[training_name] = prec_rec_on_puffs
-
-        # save prec and rec dictionaires on disk as json
-        data_folder = os.path.join(metrics_folder, training_name, "spark_prec_rec")
-        os.makedirs(data_folder, exist_ok=True)
-
-        with open(os.path.join(data_folder,"prec_rec_sparks_on_puffs.json"),"w") as f:
-            json.dump(prec_rec_on_puffs_all_movies,f)
-
-        with open(os.path.join(data_folder,"prec_rec_sparks_on_puffs_average.json"),"w") as f:
-            json.dump(prec_rec_on_puffs,f)
+                with open(os.path.join(data_folder, event_class+"_results.json"),"w") as f:
+                    json.dump(spark_peaks_results[event_class],f)

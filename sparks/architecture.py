@@ -15,7 +15,7 @@ import wandb
 
 import unet
 from datasets import SparkDataset, SparkTestDataset
-from training_tools import training_step, test_function_fixed_t, sampler
+from training_tools import training_step, test_function, sampler
 from metrics_tools import take_closest
 from other_losses import FocalLoss
 

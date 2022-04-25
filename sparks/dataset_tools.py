@@ -16,7 +16,9 @@ from PIL import Image
 
 import torch
 
-from metrics_tools import nonmaxima_suppression, get_sparks_locations_from_mask
+from metrics_tools import (nonmaxima_suppression,
+                           get_sparks_locations_from_mask,
+                           empty_marginal_frames)
 
 
 __all__ = ["get_chunks",
@@ -59,7 +61,8 @@ def final_mask(mask, radius1=2.5, radius2=3.5, ignore_ind=2): # SLOW
 
 def get_new_mask(video, mask, min_dist_xy, min_dist_t,
                  radius_event=3, radius_ignore=2, ignore_index=4,
-                 sigma=2, return_loc=False, return_loc_mask=False):
+                 sigma=2, return_loc=False, return_loc_and_mask=False,
+                 ignore_frames=0):
     '''
     from raw segmentation masks get masks where sparks are annotated by peaks
     '''
@@ -75,30 +78,54 @@ def get_new_mask(video, mask, min_dist_xy, min_dist_t,
                                                         threshold=0,
                                                         sigma=sigma)
 
+        print("\t\tNum of sparks:", len(sparks_loc))
+        #print(sparks_loc)
+
+        if return_loc:
+            if ignore_frames > 0:
+                # remove sparks from locations list
+                mask_duration = mask.shape[0]
+                sparks_loc = empty_marginal_frames_from_coords(coords=sparks_loc,
+                                                               n_frames=ignore_frames,
+                                                               duration=mask_duration)
+            return sparks_loc
+
+        if ignore_frames > 0:
+            # remove sparks from maxima mask
+            sparks_mask = empty_marginal_frames(sparks_mask, ignore_frames)
+
+
         sparks_mask = final_mask(sparks_mask, radius1=radius_event,
                              radius2=radius_event+radius_ignore,
                              ignore_ind=ignore_index)
 
-        print("\t\tNum of sparks:", len(sparks_loc))
-        #print(sparks_loc)
-        if return_loc:
-            return sparks_loc
+        # remove sparks from old mask
+        no_sparks_mask = np.where(mask == 1, 0, mask)
+
+        # create new mask
+        new_mask = np.where(sparks_mask != 0, sparks_mask, no_sparks_mask)
+
+        if return_loc_and_mask:
+         if ignore_frames > 0:
+             # remove sparks from locations list
+             mask_duration = mask.shape[0]
+             sparks_loc = empty_marginal_frames_from_coords(coords=sparks_loc,
+                                                            n_frames=ignore_frames,
+                                                            duration=mask_duration)
+         return sparks_loc, new_mask
+
+        else:
+         return new_mask
+
     else:
         if return_loc:
-            return 0
+            return []
+        elif return_loc_and_mask:
+            return [], mask
+        else:
+            return mask
 
-        return mask
 
-    # remove sparks from old mask
-    no_sparks_mask = np.where(mask == 1, 0, mask)
-
-    # create new mask
-    new_mask = np.where(sparks_mask != 0, sparks_mask, no_sparks_mask)
-
-    if return_loc_mask:
-        return sparks_loc, new_mask
-
-    return new_mask
 
 
 def get_new_mask_raw_sparks(mask,
@@ -157,9 +184,6 @@ def get_new_mask_raw_sparks(mask,
 
     # create new mask
     new_mask = np.where(sparks_mask != 0, sparks_mask, no_sparks_mask)
-
-    if return_loc_mask:
-        return sparks_loc, new_mask
 
     return new_mask
 
