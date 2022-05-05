@@ -492,7 +492,7 @@ def correspondences_precision_recall(coords_real, coords_pred,
             return [], [], coords_pred, coords_real
 
     else:
-        if coords_real.size and coords_pred.size > 0:
+        if (coords_real.size > 0) and (coords_pred.size > 0):
             tp = np.count_nonzero(w[row_ind, col_ind] <= 1)
         else:
             tp = 0

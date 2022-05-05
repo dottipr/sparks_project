@@ -228,11 +228,11 @@ def get_spark_peaks_results(raw_preds, coords_true, movie, ignore_mask,
 
 
 # compute average over movies of pixel-based results
-def get_average_results(per_movie_results, pixel_based=True):
+def get_sum_results(per_movie_results, pixel_based=True):
     '''
     Given a dict containing the results for all video wrt to all parameters
     (detection threshold/argmax; min radius; (exclusion radius)) return a dict
-    containing the average over all movies.
+    containing the sum over all movies, necessary for reducing the metrics.
 
     per_movie_results:  dict with keys
                         movie_name x t/argmax x min radius (x exclusion radius)
@@ -242,8 +242,7 @@ def get_average_results(per_movie_results, pixel_based=True):
                         t/argmax x min radius (x exclusion radius)
     '''
 
-    average_results = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
-    movie_number = len(per_movie_results)
+    sum_res = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
 
     # sum values of each movie for every paramenter
     for movie_name, movie_results in per_movie_results.items():
@@ -252,18 +251,18 @@ def get_average_results(per_movie_results, pixel_based=True):
                 if pixel_based:
                     for excl_r, excl_r_res in min_r_res.items():
                         for res, val in excl_r_res.items():
-                            if res in average_results[t][min_r][excl_r]:
-                                average_results[t][min_r][excl_r][res] += val/movie_number
+                            if res in sum_res[t][min_r][excl_r]:
+                                sum_res[t][min_r][excl_r][res] += val
                             else:
-                                average_results[t][min_r][excl_r][res] = val/movie_number
+                                sum_res[t][min_r][excl_r][res] = val
                 else:
                     for res, val in min_r_res.items():
-                        if res in average_results[t][min_r]:
-                            average_results[t][min_r][res] += val/movie_number
+                        if res in sum_res[t][min_r]:
+                            sum_res[t][min_r][res] += val
                         else:
-                            average_results[t][min_r][res] = val/movie_number
+                            sum_res[t][min_r][res] = val
 
-    return average_results
+    return sum_res
 
 
 
@@ -273,17 +272,24 @@ if __name__ == "__main__":
     ############################################################################
 
     # Select predictions to load
-    training_names = ['raw_sparks_lovasz_physio'
+    training_names = ['raw_sparks_lovasz_physio',
                       #"peak_sparks_lovasz_physio",
+                      #"peak_sparks_sum_losses_physio"
                      ]
 
     # Select corresponding config file
-    config_files = ['config_raw_sparks_lovasz_physio.ini'
+    config_files = ['config_raw_sparks_lovasz_physio.ini',
                     #"config_peak_sparks_lovasz_physio.ini",
+                    #"config_peak_sparks_sum_losses_physio.ini"
                    ]
 
     # set simple_mode to True to compute metrics for fewer parameters & thresholds
     simple_mode = True
+
+    # set poster to True if computing the results just for using them in the
+    # BDSD22 poster (few params, only sparks/puffs/waves classes, no pixel based
+    # metrics for sparks)
+    poster = True
 
     # Load training or testing dataset
     use_train_data = False
@@ -323,17 +329,31 @@ if __name__ == "__main__":
 
     # classes for which results will be computed
     classes_list = ['sparks', 'puffs', 'waves', 'sparks_puffs', 'puffs_waves', 'all']
+    if poster:
+        classes_list = ['sparks', 'puffs', 'waves']
 
     if simple_mode:
         t_detection = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95]
-        min_radius = [0,5]
+        min_radius = [0,1,2,3,4,5]
         min_radius_sparks = [0,1]
-        exclusion_radius = [0,2]
+        exclusion_radius = [0,1,2,3,4,5]
     else:
         t_detection = np.round(np.linspace(0,1,21),2)
         min_radius = [0,1,2,3,4,5,6,7,8,9,10]
         min_radius_sparks = [0,1,2]
         exclusion_radius = [0,1,2,3,4,5,6,7,8,9,10]
+
+    if poster:
+        t_detection = np.round(np.linspace(0,1,21),2)
+        min_radius = [0,2,4,6]
+        min_radius_sparks = [0,1]
+        exclusion_radius = [0]
+
+    print("Using parameters:")
+    print(f"Detection thresholds: {t_detection}")
+    print(f"Puffs and waves' minimal radius: {min_radius}")
+    print(f"Sparks' minimal radius: {min_radius_sparks}")
+    print(f"Exclusion radius: {exclusion_radius}")
 
     # physiological params (for spark peaks results)
     PIXEL_SIZE = 0.2 # 1 pixel = 0.2 um x 0.2 um
@@ -419,102 +439,103 @@ if __name__ == "__main__":
 
             for event_class in classes_list:
 
-                ################################################################
-                ########## COMPUTE PIXEL-BASED RESULTS (per movie) #############
-                ################################################################
+                if not ((event_class == 'sparks') and poster):
+                    ################################################################
+                    ########## COMPUTE PIXEL-BASED RESULTS (per movie) #############
+                    ################################################################
 
-                print(f"\tComputing pixel-based results for movie {movie_name} and {event_class} class...")
+                    print(f"\tComputing pixel-based results for movie {movie_name} and {event_class} class...")
 
-                '''
-                Metrics that can be computed using tp, tf, fp, fn:
-                - Jaccard index (IoU)
-                - Dice score
-                - Precision & recall
-                - F-score (e.g. beta = 0.5,1,2)
-                - Accuracy (biased since background is predominant)
-                - Matthews correlation coefficient (MCC)
-                '''
+                    '''
+                    Metrics that can be computed using tp, tf, fp, fn:
+                    - Jaccard index (IoU)
+                    - Dice score
+                    - Precision & recall
+                    - F-score (e.g. beta = 0.5,1,2)
+                    - Accuracy (biased since background is predominant)
+                    - Matthews correlation coefficient (MCC)
+                    '''
 
-                '''
-                Class of events that are considered:
-                - sparks
-                - puffs
-                - waves
-                - sparks + puffs
-                - puffs + waves
-                - sparks + puffs + waves (all)
-                '''
+                    '''
+                    Class of events that are considered:
+                    - sparks
+                    - puffs
+                    - waves
+                    - sparks + puffs
+                    - puffs + waves
+                    - sparks + puffs + waves (all)
+                    '''
 
-                class_results = {}
+                    class_results = {}
 
-                ######### compute results using a detection threshold ##########
+                    ######### compute results using a detection threshold ##########
 
-                if (event_class == 'sparks') and (c.get("data","sparks_type") == 'peaks'):
-                    print("WARNING: pixel-based results for sparks when training using peaks are not really meaningful...")
+                    if (event_class == 'sparks') and (c.get("data","sparks_type") == 'peaks'):
+                        print("WARNING: pixel-based results for sparks when training using peaks are not really meaningful...")
 
-                # get raw preds and ys
-                if (event_class == 'sparks') or (event_class == 'puffs') or (event_class == 'waves'):
-                    class_sample = preds_sample[event_class]
-                    ys_class_sample = ys_sample[event_class]
-                elif event_class == 'sparks_puffs':
-                    class_sample = preds_sample['sparks']+preds_sample['puffs']
-                    ys_class_sample = ys_sample['sparks']+ys_sample['puffs']
-                elif event_class == 'puffs_waves':
-                    class_sample = preds_sample['waves']+preds_sample['puffs']
-                    ys_class_sample = ys_sample['waves']+ys_sample['puffs']
-                elif event_class == 'all':
-                    class_sample = preds_sample['sparks']+preds_sample['puffs']+preds_sample['waves']
-                    ys_class_sample = ys_sample['sparks']+ys_sample['puffs']+ys_sample['waves']
-                else:
-                    print("WARNING: something is wrong...")
+                    # get raw preds and ys
+                    if (event_class == 'sparks') or (event_class == 'puffs') or (event_class == 'waves'):
+                        class_sample = preds_sample[event_class]
+                        ys_class_sample = ys_sample[event_class]
+                    elif event_class == 'sparks_puffs':
+                        class_sample = preds_sample['sparks']+preds_sample['puffs']
+                        ys_class_sample = ys_sample['sparks']+ys_sample['puffs']
+                    elif event_class == 'puffs_waves':
+                        class_sample = preds_sample['waves']+preds_sample['puffs']
+                        ys_class_sample = ys_sample['waves']+ys_sample['puffs']
+                    elif event_class == 'all':
+                        class_sample = preds_sample['sparks']+preds_sample['puffs']+preds_sample['waves']
+                        ys_class_sample = ys_sample['sparks']+ys_sample['puffs']+ys_sample['waves']
+                    else:
+                        print("WARNING: something is wrong...")
 
-                # Remarks:  can remove ignored frames, since computing results for
-                #           pixel-based metrics
-                class_sample = empty_marginal_frames(class_sample, ignore_frames)
-                ys_class_sample = empty_marginal_frames(ys_class_sample, ignore_frames)
+                    # Remarks:  can remove ignored frames, since computing results for
+                    #           pixel-based metrics
+                    class_sample = empty_marginal_frames(class_sample, ignore_frames)
+                    ys_class_sample = empty_marginal_frames(ys_class_sample, ignore_frames)
 
-                class_results = get_class_pixel_based_results(raw_preds=class_sample,
-                                                              ys=ys_class_sample,
-                                                              ignore_mask=ignore_mask,
-                                                              t_detection=t_detection,
-                                                              min_radius=min_radius_sparks if event_class=='sparks' else min_radius,
-                                                              exclusion_radius=exclusion_radius,
-                                                              sparks=(event_class=='sparks'))
+                    class_results = get_class_pixel_based_results(raw_preds=class_sample,
+                                                                  ys=ys_class_sample,
+                                                                  ignore_mask=ignore_mask,
+                                                                  t_detection=t_detection,
+                                                                  min_radius=min_radius_sparks if event_class=='sparks' else min_radius,
+                                                                  exclusion_radius=exclusion_radius,
+                                                                  sparks=(event_class=='sparks'))
 
-                ###### compute metrics using argmax values on predictions ######
+                    ###### compute metrics using argmax values on predictions ######
 
-                if (event_class == 'sparks') or (event_class == 'puffs') or (event_class == 'waves'):
-                    binary_preds_sample = argmax_preds_sample[event_class]
-                    ys_class_sample = ys_sample[event_class]
-                elif event_class == 'sparks_puffs':
-                    binary_preds_sample = argmax_preds_sample['sparks']+argmax_preds_sample['puffs']
-                    ys_class_sample = ys_sample['sparks']+ys_sample['puffs']
-                elif event_class == 'puffs_waves':
-                    binary_preds_sample = argmax_preds_sample['waves']+argmax_preds_sample['puffs']
-                    ys_class_sample = ys_sample['waves']+ys_sample['puffs']
-                elif event_class == 'all':
-                    binary_preds_sample = argmax_preds_sample['sparks']+argmax_preds_sample['puffs']+argmax_preds_sample['waves']
-                    ys_class_sample = ys_sample['sparks']+ys_sample['puffs']+ys_sample['waves']
-                else:
-                    print("WARNING: something is wrong...")
+                    if (event_class == 'sparks') or (event_class == 'puffs') or (event_class == 'waves'):
+                        binary_preds_sample = argmax_preds_sample[event_class]
+                        ys_class_sample = ys_sample[event_class]
+                    elif event_class == 'sparks_puffs':
+                        binary_preds_sample = argmax_preds_sample['sparks']+argmax_preds_sample['puffs']
+                        ys_class_sample = ys_sample['sparks']+ys_sample['puffs']
+                    elif event_class == 'puffs_waves':
+                        binary_preds_sample = argmax_preds_sample['waves']+argmax_preds_sample['puffs']
+                        ys_class_sample = ys_sample['waves']+ys_sample['puffs']
+                    elif event_class == 'all':
+                        binary_preds_sample = argmax_preds_sample['sparks']+argmax_preds_sample['puffs']+argmax_preds_sample['waves']
+                        ys_class_sample = ys_sample['sparks']+ys_sample['puffs']+ys_sample['waves']
+                    else:
+                        print("WARNING: something is wrong...")
 
-                # Get binary preds as boolean array
-                binary_preds_sample = np.array(binary_preds_sample, dtype=bool)
+                    # Get binary preds as boolean array
+                    binary_preds_sample = np.array(binary_preds_sample, dtype=bool)
 
-                # Remarks:  can remove ignored frames, since computing results for
-                #           pixel-based metrics
-                binary_preds_sample = empty_marginal_frames(binary_preds_sample, ignore_frames)
-                ys_class_sample = empty_marginal_frames(ys_class_sample, ignore_frames)
+                    # Remarks:  can remove ignored frames, since computing results for
+                    #           pixel-based metrics
+                    binary_preds_sample = empty_marginal_frames(binary_preds_sample, ignore_frames)
+                    ys_class_sample = empty_marginal_frames(ys_class_sample, ignore_frames)
 
-                class_results['argmax'] = get_binary_preds_pixel_based_results(binary_preds=binary_preds_sample,
-                                                                               ys=ys_class_sample,
-                                                                               ignore_mask=ignore_mask,
-                                                                               min_radius=min_radius_sparks if event_class=='sparks' else min_radius,
-                                                                               exclusion_radius=exclusion_radius,
-                                                                               sparks=(event_class=='sparks'))
+                    class_results['argmax'] = get_binary_preds_pixel_based_results(binary_preds=binary_preds_sample,
+                                                                                   ys=ys_class_sample,
+                                                                                   ignore_mask=ignore_mask,
+                                                                                   min_radius=min_radius_sparks if event_class=='sparks' else min_radius,
+                                                                                   exclusion_radius=exclusion_radius,
+                                                                                   sparks=(event_class=='sparks'))
 
-                # store class results in dict
-                pixel_based_results[event_class][movie_name] = class_results
+                    # store class results in dict
+                    pixel_based_results[event_class][movie_name] = class_results
 
                 ################################################################
                 ################# COMPUTE SPARK PEAKS RESULTS ##################
@@ -599,7 +620,7 @@ if __name__ == "__main__":
 
         for event_class in classes_list:
             ####################### pixel-based metrics ########################
-            pixel_based_results[event_class]['average'] = get_average_results(pixel_based_results[event_class])
+            pixel_based_results[event_class]['average'] = get_sum_results(pixel_based_results[event_class])
 
             # save results dict on disk as json
             data_folder = os.path.join(metrics_folder, training_name,
@@ -611,8 +632,8 @@ if __name__ == "__main__":
 
             ####################### event-based metrics ########################
             if event_class == 'sparks':
-                spark_peaks_results[event_class]['average'] =  get_average_results(spark_peaks_results[event_class],
-                                                                             pixel_based=False)
+                spark_peaks_results[event_class]['average'] =  get_sum_results(spark_peaks_results[event_class],
+                                                                               pixel_based=False)
 
                 # save results dict on disk as json
                 data_folder = os.path.join(metrics_folder, training_name,
