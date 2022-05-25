@@ -5,6 +5,8 @@ import glob
 import imageio
 import os
 import matplotlib.pyplot as plt
+import time
+import math
 
 from collections import namedtuple, defaultdict
 
@@ -12,9 +14,10 @@ import numpy as np
 import cc3d
 from scipy import ndimage as ndi
 from scipy.ndimage.morphology import binary_dilation, binary_erosion
-from scipy import optimize, spatial
+from scipy import optimize, spatial, signal, fftpack
 from skimage import morphology
 from skimage.draw import ellipsoid
+from skimage.restoration import (denoise_wavelet, estimate_sigma)
 from sklearn.metrics import auc
 from bisect import bisect_left
 
@@ -36,7 +39,8 @@ __all__ = ["Metrics",
            "process_wave_prediction",
            "compute_puff_wave_metrics",
            "compute_average_puff_wave_metrics",
-           "get_argmax_segmented_output"
+           "get_argmax_segmented_output",
+           "compute_filtered_butter"
            ]
 
 
@@ -77,9 +81,8 @@ def empty_marginal_frames_from_coords(coords, n_frames, duration):
     if n_frames > 0:
         if len(coords) > 0:
             n_frames_up = duration - n_frames
-            new_coords = [loc for loc in coords
+            new_coords = [loc.tolist() for loc in coords
                           if loc[0]>=n_frames and loc[0]<n_frames_up]
-
             return new_coords
 
     return coords
@@ -190,6 +193,7 @@ Metrics = namedtuple('Metrics', ['precision', 'recall', 'f1_score', 'tp', 'tp_fp
 #                                for coords_i, shape_i in zip(points.T, shape)])
 
 def filter_nan_gaussian_david(arr, sigma):
+    # https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
     """Allows intensity to leak into the nan area.
     According to Davids answer:
         https://stackoverflow.com/a/36307291/7128154
@@ -210,9 +214,122 @@ def filter_nan_gaussian_david(arr, sigma):
     gauss[np.isnan(arr)] = np.nan
     return gauss
 
+
+def compute_filtered_butter(movie_array,
+                            min_prominence=2,
+                            band_stop_width=2,
+                            min_freq=7,
+                            filter_order=4,
+                            Fs=150,
+                            debug=False):
+    '''
+    Apply Butterworth filter to input movie.
+
+    movie_array: input movie to be filtered
+    min_prominence: minimal prominence of filtered peaks in frequency domain
+    band_stop_width: width of the filtered band for each peak
+    min_freq: minimal frequence that can be filtered (???)
+    filter_order: order of Butterworth filter
+    Fs: sampling frequency [Hz]
+
+    output: filtered version of input movie
+    '''
+
+    # sampling period [s]
+    T = 1/Fs
+    # signal's length [s]
+    L = movie_array.shape[0]
+    # time vector
+    t = np.arange(L)/ Fs
+
+    # movie's signal average along time (time profile of image series)
+    movie_average = np.mean(movie_array, axis=(1,2))
+
+    # get noise frequencies
+    # compute Fourier transform
+    fft = fftpack.fft(movie_average)
+    # compute two-sided spectrum
+    P2 = np.abs(fft/L)
+    # compute single-sided spectrum
+    P1 = P2[:(L//2)]
+    P1[1:-1] = 2*P1[1:-1]
+
+    freqs = fftpack.fftfreq(L) * Fs
+    f = freqs[:L//2]
+
+    # detrend single-sided spectrum
+    #P1_decomposed = seasonal_decompose(P1, model='additive', period=1) # don't know period
+    #P1_detrend = signal.detrend(P1) # WRONG??
+
+    # set spectrum corresponding to frequencies lower than min freq to zero
+    P1_cut = np.copy(P1)
+    P1_cut[:min_freq] = 0
+
+    # find peaks in spectrum
+    peaks = signal.find_peaks(P1)[0] # coords in P1 of peaks
+    #peaks = signal.find_peaks(P1_detrend)[0] # need first to detrend data properly
+    peaks_cut = peaks[peaks >= min_freq] # coords in P1_cut of peaks
+
+    # compute peaks prominence
+    prominences = signal.peak_prominences(P1_cut, peaks_cut)[0]
+
+    # keep only peaks with prominence large enough
+    prominent_peaks = peaks_cut[prominences > min_prominence]
+
+    # regions to filter
+    bands_low = prominent_peaks-band_stop_width
+    bands_high = prominent_peaks+band_stop_width
+    bands_indices = np.transpose([bands_low,bands_high])
+
+    bands_freq = f[bands_indices]
+
+    # make sure that nothing is outside interval (0,max(f))
+    if bands_freq.size > 0:
+        bands_freq[:,0][bands_freq[:,0] < 0] = 0
+        bands_freq[:,1][bands_freq[:,1] > max(f)] = max(f) - np.mean(np.diff(f))/1000
+
+    # create butterworth filter
+    filter_type = 'bandstop'
+    filtered = np.copy(movie_array)
+
+    for i, band in enumerate(bands_freq):
+        Wn = band / max(f)
+
+        sos = signal.butter(N=filter_order,
+                            Wn=Wn,
+                            btype=filter_type,
+                            output='sos')
+
+        filtered = signal.sosfiltfilt(sos, filtered, axis=0)
+
+    if debug:
+        # filtered movie's signal average along time (time profile of image series)
+        filtered_movie_average = np.mean(filtered, axis=(1,2))
+
+        # get frequencies of filtered movie
+        # compute Fourier transform
+        filtered_fft = fftpack.fft(filtered_movie_average)
+        # compute two-sided spectrum
+        filtered_P2 = np.abs(filtered_fft/L)
+        # compute single-sided spectrum
+        filtered_P1 = filtered_P2[:(L//2)]
+        filtered_P1[1:-1] = 2*filtered_P1[1:-1]
+
+        # detrend single-sided spectrum
+        #filtered_P1_detrend = signal.detrend(filtered_P1) # WRONG??
+
+        return filtered, movie_average, filtered_movie_average, Fs, f, P1, filtered_P1
+
+    return filtered
+
+
+
+
+
 def nonmaxima_suppression(img,maxima_mask=None,
                           min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T,
-                          return_mask=False, threshold=0.5, sigma=2):
+                          return_mask=False, threshold=0.5, sigma=2,
+                          annotations=False):
     '''
     Extract local maxima from input array (t,x,y).
     img :           input array
@@ -223,53 +340,62 @@ def nonmaxima_suppression(img,maxima_mask=None,
                     False only returns locations
     threshold :     minimal value of maximum points
     sigma :         sigma parameter of gaussian filter
+    annotations:    if true, apply specific processing for raw annotation masks
     '''
-    img = img.astype(np.float)
+    img = img.astype(np.float64)
 
-    ''' too many peaks !!!!
+    # compute shape for maximum filter -> min distance between peaks
+    #min_dist = ellipsoid(min_dist_t/2, min_dist_xy/2, min_dist_xy/2)
+    radius = math.ceil(min_dist_xy/2)
+    y,x = np.ogrid[-radius: radius+1, -radius: radius+1]
+    disk = x**2+y**2 <= radius**2
+    min_dist = np.stack([disk]*(min_dist_t+1), axis=0)
+
+
+
     if maxima_mask is not None:
-        # https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
+        # apply butterworth filter along t-axis
+        filtered_img = compute_filtered_butter(img) # apply butterworth filter
+
         # apply dilation to maxima mask
-        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=sigma) # "W"
+        #min_dist_eroded = ndi.binary_erosion(min_dist)
+        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, structure=min_dist_eroded)
+        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=round(sigma))
         maxima_mask_dilated = maxima_mask
+
         # mask out region from img with dilated mask
-        masked_img = np.where(maxima_mask_dilated, img, np.nan) # "V"
+        masked_img = np.where(maxima_mask_dilated, filtered_img, 0.)
         imageio.volwrite("TEST_masked_video.tif", masked_img)
 
         # smooth masked input image
-        smooth_img = filter_nan_gaussian_david(masked_img, sigma)
-        smooth_img[np.isnan(smooth_img)] = 0.
-        #smooth_masked_img = ndi.gaussian_filter(masked_img, sigma=1) # "VV"
-        #smooth_mask = ndi.gaussian_filter(maxima_mask_dilated.astype(np.float), sigma=1) # "WW"
-        #imageio.volwrite("TEST_smooth_masked_video.tif", smooth_masked_img)
-        #imageio.volwrite("TEST_smooth_mask.tif", smooth_mask)
-
-        #smooth_img = smooth_masked_img/smooth_mask # "VV/WW"
-        #smooth_img[masked_img==np.nan] = 0
+        smooth_img = ndi.gaussian_filter(masked_img, sigma=sigma)
         imageio.volwrite("TEST_smooth_video.tif", smooth_img)
-        print(np.unique(smooth_img))
-
-        # DEBUG
-        original_smoothed = ndi.gaussian_filter(img, sigma=sigma)
-        original_smoothed_masked = np.where(maxima_mask_dilated, original_smoothed, 0.)
-        difference = np.where(original_smoothed_masked != smooth_img, 1., 0.)
-        imageio.volwrite("TEST_DEBUG.tif", difference)
-
-
 
     else:
         smooth_img = ndi.gaussian_filter(img, sigma=sigma)
 
     # search for local maxima
-    min_dist = ellipsoid(min_dist_t/2, min_dist_xy/2, min_dist_xy/2)
+
     dilated = ndi.maximum_filter(smooth_img,
                                  footprint=min_dist)
     imageio.volwrite("TEST_dilated.tif", dilated)
-    argmaxima = np.logical_and(smooth_img == dilated, smooth_img > threshold)
-    imageio.volwrite("TEST_maxima.tif", np.uint8(argmaxima))
-    #imageio.volwrite("TEST_all_video_maxima.tif", np.uint8(np.logical_and(smooth_img == dilated, smooth_img > threshold)))'''
 
-    # multiply values of video inside maxima mask
+    if maxima_mask is not None:
+        # hyp: maxima belong to maxima mask
+        masked_smooth_img = np.where(maxima_mask, smooth_img, 0.)
+        argmaxima = np.logical_and(smooth_img == dilated, masked_smooth_img > threshold)
+    else:
+        argmaxima = np.logical_and(smooth_img == dilated, smooth_img > threshold)
+
+
+    imageio.volwrite("TEST_maxima.tif", np.uint8(argmaxima))
+
+    # save movie containing ALL local maxima
+    #dilated_all = ndi.maximum_filter(original_smoothed, footprint=min_dist)
+    #imageio.volwrite("TEST_all_maxima.tif", np.uint8(original_smoothed == dilated_all))
+    #imageio.volwrite("TEST_all_video_maxima.tif", np.uint8(np.logical_and(smooth_img == dilated, smooth_img > threshold)))
+
+    '''# multiply values of video inside maxima mask
     #img = np.where(maxima_mask, img*1.5, img)
     imageio.volwrite("TEST_DEBUG.tif", img)
 
@@ -278,7 +404,7 @@ def nonmaxima_suppression(img,maxima_mask=None,
 
     if maxima_mask is not None:
         # apply dilation to mask
-        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=sigma)
+        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=round(sigma))
         maxima_mask_dilated = maxima_mask
         # set pixels outside maxima_mask to zero
         masked_img = np.where(maxima_mask_dilated, smooth_img, 0.)
@@ -301,9 +427,30 @@ def nonmaxima_suppression(img,maxima_mask=None,
     imageio.volwrite("TEST_dilated.tif", dilated)
     argmaxima = np.logical_and(smooth_img == dilated, masked_img > threshold)
     imageio.volwrite("TEST_maxima.tif", np.uint8(argmaxima))
-    #imageio.volwrite("TEST_all_video_maxima.tif", np.uint8(np.logical_and(smooth_img == dilated, smooth_img > threshold)))
+    #imageio.volwrite("TEST_all_video_maxima.tif", np.uint8(np.logical_and(smooth_img == dilated, smooth_img > threshold)))'''
 
     argwhere = np.argwhere(argmaxima)
+
+    # DEBUG: compute minimal distance between pair of sparks
+
+    argwhere = np.array(argwhere, dtype=np.float)
+    if argwhere.size > 0:
+        argwhere[:,0] /= min_dist_t
+        argwhere[:,1] /= min_dist_xy
+        argwhere[:,2] /= min_dist_xy
+
+        w = spatial.distance_matrix(argwhere, argwhere)
+        w = np.tril(w)
+        w[w==0.0] = 9999999
+        min_w = np.min(w)
+        min_coords = np.argwhere(w==min_w)
+
+        argwhere[:,0] *= min_dist_t
+        argwhere[:,1] *= min_dist_xy
+        argwhere[:,2] *= min_dist_xy
+
+        close_coords = argwhere[min_coords][0]
+        print(f"Closest coordinates: \n{close_coords}")
 
     if not return_mask:
         return argwhere
@@ -325,7 +472,7 @@ def get_sparks_locations_from_mask(mask, min_dist_xy, min_dist_t,
     coords = nonmaxima_suppression(img=sparks_mask,
                                    min_dist_xy=min_dist_xy,
                                    min_dist_t=min_dist_t,
-                                   threshold=0, sigma=1)
+                                   threshold=0, sigma=0.5)
 
     # remove first and last frames
     if ignore_frames > 0:

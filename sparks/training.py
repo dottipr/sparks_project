@@ -154,8 +154,10 @@ if __name__ == "__main__":
     # detect CUDA devices
     if c.getboolean("general", "cuda", fallback=True):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        pin_memory = True
     else:
         device = 'cpu'
+        pin_memory = False
     n_gpus = torch.cuda.device_count()
     logger.info(f"Using torch device {device}, with {n_gpus} GPUs")
 
@@ -214,23 +216,28 @@ if __name__ == "__main__":
             num_channels=params['num_channels'],
             normalize_video=params['norm_video'],
             only_sparks=params['only_sparks'],
-            sparks_type=params['sparks_type']
+            sparks_type=params['sparks_type'],
+            ignore_frames=params['ignore_frames_loss']
         ) for f in test_filenames]
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
 
     # class weights
-    else:
-        class_weights = compute_class_weights(dataset)
-    class_weights = torch.tensor(np.float32(class_weights))
-
+    class_weights = compute_class_weights(dataset)
     logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
 
     # initialize data loaders
-    dataset_loader = DataLoader(dataset, batch_size=params['batch_size'], shuffle=True, num_workers=c.getint("training", "num_workers"))
+    dataset_loader = DataLoader(dataset,
+                                batch_size=params['batch_size'],
+                                shuffle=True,
+                                num_workers=c.getint("training", "num_workers"),
+                                pin_memory=pin_memory)
     testing_dataset_loaders = [
-        DataLoader(test_dataset, batch_size=params['batch_size'], shuffle=False, num_workers=c.getint("training", "num_workers"))
+        DataLoader(test_dataset,
+                   batch_size=params['batch_size'],
+                   shuffle=False,
+                   num_workers=c.getint("training", "num_workers"))
         for test_dataset in testing_datasets
     ]
 
@@ -256,6 +263,7 @@ if __name__ == "__main__":
 
     if device != "cpu":
         network = nn.DataParallel(network).to(device)
+        torch.backends.cudnn.benchmark = True
 
     if c.getboolean("general", "wandb_enable"):
         wandb.watch(network)
@@ -356,7 +364,7 @@ if __name__ == "__main__":
     ############################## start training ##############################
 
     if params['load_epoch'] != 0:
-        trainer.load(params['load_epoch'])    
+        trainer.load(params['load_epoch'])
 
     if params['training']:
         logger.info("Validate network before training")

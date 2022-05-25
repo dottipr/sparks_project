@@ -142,6 +142,7 @@ cython_debug/
 # spark project files and folder to ignore
 *.pyc
 *.tif
+*.xlsx
 *.sh
 anaconda3/
 OLD/
@@ -176,3 +177,5 @@ test*
 *.json
 *.jpg
 *DELETEME*
+UNETR
+models/*

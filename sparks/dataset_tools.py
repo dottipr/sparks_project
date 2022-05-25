@@ -6,6 +6,7 @@ the spark datasets and compute the weights of the network.
 import os
 import imageio
 import glob
+import time
 
 import numpy as np
 import torch
@@ -18,7 +19,8 @@ import torch
 
 from metrics_tools import (nonmaxima_suppression,
                            get_sparks_locations_from_mask,
-                           empty_marginal_frames)
+                           empty_marginal_frames,
+                           empty_marginal_frames_from_coords)
 
 
 __all__ = ["get_chunks",
@@ -194,21 +196,21 @@ def get_new_mask_raw_sparks(mask,
 def get_chunks(video_length, step, duration):
     n_blocks = ((video_length-duration)//(step))+1
 
-    return np.arange(duration)[None,:] + step*np.arange(n_blocks)[:,None]
+    return torch.arange(duration)[None,:] + step*torch.arange(n_blocks)[:,None]
 
 
 def random_flip(x, y):
     # flip movie and annotation mask
-    if np.random.uniform() > 0.5:
-        x = x[..., ::-1]
-        y = y[..., ::-1]
+    #if np.random.uniform() > 0.5:
+    rand = torch.rand(1).item()
 
-    if np.random.uniform() > 0.5:
-        x = x[..., ::-1, :]
-        y = y[..., ::-1, :]
+    if torch.rand(1).item() > 0.5:
+        x = x.flip(-1)
+        y = y.flip(-1)
 
-    x = np.ascontiguousarray(x)
-    y = np.ascontiguousarray(y)
+    if torch.rand(1).item() > 0.5:
+        x = x.flip(-2)
+        y = y.flip(-2)
 
     return x, y
 
@@ -218,31 +220,36 @@ def random_flip_noise(x, y):
     x, y = random_flip(x, y)
 
     # add noise to movie with a 50% chance
-    if np.random.uniform() > 0.5:
+    if torch.rand(1).item() > 0.5:
         # 50/50 of being normal or Poisson noise
-        if np.random.uniform() > 0.5:
-            noise = np.random.normal(size=x.shape)
+        if torch.rand(1).item() > 0.5:
+            noise = torch.normal(mean=0., std=1., size=x.shape)
+            x = x+noise
         else:
-            noise = np.random.poisson(size=x.shape)
-        x = x+noise
-        x = x.astype('float32')
+            x = torch.poisson(x) # non so se funziona !!!
+
+        #x = x.astype('float32')
 
     # denoise input with a 50% chance
-    if np.random.uniform() > 0.5:
+    if torch.rand(1).item() > 0.5:
         # 50/50 of gaussian filtering or median filtering
-        if np.random.uniform() > 0.5:
+        if torch.rand(1).item() > 0.5:
             x = ndi.gaussian_filter(x, sigma=1)
         else:
             x = ndi.median_filter(x, size=2)
 
-    return x, y
+    return torch.tensor(x), torch.tensor(y)
 
 
 def remove_avg_background(video):
     # remove average background
-    avg = np.mean(video, axis = 0)
-    return np.add(video, -avg)
 
+    if torch.is_tensor(video):
+        avg = torch.mean(video, axis = 0)
+        return torch.add(video, -avg)
+    else:
+        avg = np.mean(video, axis = 0)
+        return np.add(video, -avg)
 
 ################## functions related to U-Net hyperparameters ##################
 
@@ -256,10 +263,10 @@ def compute_class_weights(dataset, w0=1, w1=1, w2=1, w3=1):
 
     with torch.no_grad():
         for _,y in dataset:
-            count0 += np.count_nonzero(y==0)
-            count1 += np.count_nonzero(y==1)
-            count2 += np.count_nonzero(y==2)
-            count3 += np.count_nonzero(y==3)
+            count0 += torch.count_nonzero(y==0)
+            count1 += torch.count_nonzero(y==1)
+            count2 += torch.count_nonzero(y==2)
+            count3 += torch.count_nonzero(y==3)
 
     total = count0 + count1 + count2 + count3
 
@@ -268,9 +275,8 @@ def compute_class_weights(dataset, w0=1, w1=1, w2=1, w3=1):
     w2_new = w2*total/(4*count2) if count2 != 0 else 0
     w3_new = w3*total/(4*count3) if count3 != 0 else 0
 
-    weights = np.array([w0_new, w1_new, w2_new, w3_new])
-
-    return np.float64(weights)
+    weights = torch.tensor([w0_new, w1_new, w2_new, w3_new])
+    return weights
 
 
 def weights_init(m):

@@ -6,6 +6,7 @@ import os
 import os.path
 import glob
 import logging
+import time
 
 import imageio
 import pandas as pd
@@ -17,12 +18,14 @@ from scipy import ndimage
 from scipy.ndimage.filters import convolve
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader
 
 from dataset_tools import (get_chunks, get_fps, video_spline_interpolation,
-                           remove_avg_background, shrink_mask)
+                           remove_avg_background, shrink_mask, get_new_mask)
+from metrics_tools import get_sparks_locations_from_mask
 
 
 __all__ = ["SparkDataset", "SparkTestDataset"]
@@ -87,10 +90,9 @@ class SparkDataset(Dataset):
 
 
         # get videos and masks data
-        self.data = [np.asarray(imageio.volread(file)) for file in self.files]
-        self.annotations = [np.asarray(imageio.volread(f)).astype('int')
-                            for f in self.annotations_files]
-
+        self.data = [torch.from_numpy(imageio.volread(file).astype('int')) for file in self.files] # int32
+        self.annotations = [torch.from_numpy(imageio.volread(f))
+                            for f in self.annotations_files] # int8
         # preprocess videos if necessary
         if self.remove_background == 'average':
             self.data = [remove_avg_background(video) for video in self.data]
@@ -99,12 +101,12 @@ class SparkDataset(Dataset):
             _smooth_filter = torch.tensor(([1/16,1/16,1/16],
                                            [1/16,1/2,1/16],
                                            [1/16,1/16,1/16]))
-            self.data = [np.asarray([convolve2d(frame, _smooth_filter,
+            self.data = [torch.from_numpy([convolve2d(frame, _smooth_filter,
                                             mode = 'same', boundary = 'symm')
                                             for frame in video])
                                             for video in self.data]
         if smoothing == '3d':
-            _smooth_filter = 1/52*np.ones((3,3,3))
+            _smooth_filter = 1/52*torch.ones((3,3,3))
             _smooth_filter[1,1,1] = 1/2
             self.data = [convolve(video, _smooth_filter) for video in self.data]
 
@@ -148,14 +150,15 @@ class SparkDataset(Dataset):
         # if training with sparks only, set puffs and waves to 0
         if only_sparks:
             logger.info("Removing puff and wave annotations in training set")
-            self.annotations = [np.where(np.logical_or(mask==1, mask==4),
+            self.annotations = [torch.where(torch.logical_or(mask==1, mask==4),
                                          mask, 0) for mask in self.annotations]
 
     def pad_short_video(self, video):
         # pad videos shorter than chunk duration with zeros on both sides
         if video.shape[0] < self.duration:
             pad = self.duration - video.shape[0]
-            video = np.pad(video, ((pad//2, (pad%2) + (pad//2)), (0,0), (0,0)))
+            video = F.pad(video,(0,0,0,0,pad//2,pad//2+pad%2),
+                                'constant',value=0)
 
             assert video.shape[0] == self.duration, "padding is wrong"
 
@@ -170,8 +173,8 @@ class SparkDataset(Dataset):
             pad = (self.duration
                         + self.step*(1+(length-self.duration)//self.step)
                         - length)
-            video = np.pad(video,((0,pad),(0,0),(0,0)),
-                                'constant',constant_values=0)
+            video = F.pad(video,(0,0,0,0,pad//2,pad//2+pad%2),
+                                'constant',value=0)
             length = video.shape[0]
             if not mask:
                 logger.info(f"Added padding of {pad} frames to video with unsuitable duration")
@@ -185,9 +188,10 @@ class SparkDataset(Dataset):
         # blocks in each video :
         blocks_number = [((length-self.duration)//self.step)+1
                          for length in lengths]
+        blocks_number = torch.tensor(blocks_number)
         # number of blocks in preceding videos in data :
-        preceding_blocks = np.roll(np.cumsum(blocks_number),1)
-        tot_blocks = preceding_blocks[0]
+        preceding_blocks = torch.roll(torch.cumsum(blocks_number, dim=0),1)
+        tot_blocks = preceding_blocks[0].detach().item()
         preceding_blocks[0] = 0
 
         return lengths, tot_blocks, preceding_blocks
@@ -199,7 +203,7 @@ class SparkDataset(Dataset):
         if idx < 0 : idx = self.__len__() + idx
 
         #index of video containing chunk idx
-        vid_id = np.where(self.preceding_blocks == max([y
+        vid_id = torch.where(self.preceding_blocks == max([y
                           for y in self.preceding_blocks
                           if y <= idx]))[0][0]
         #index of chunk idx in video vid_id
@@ -219,7 +223,6 @@ class SparkDataset(Dataset):
             chunk = (chunk - chunk.min()) / (chunk.max() - chunk.min())
         assert chunk.min() >= 0 and chunk.max() <= 1, \
                "chunk values not normalized between 0 and 1"
-        chunk = np.float32(chunk)
         #print("min and max value in chunk:", chunk.min(), chunk.max())
 
         #print("vid id", vid_id)
@@ -247,7 +250,7 @@ class SparkDataset(Dataset):
 
 class SparkTestDataset(Dataset): # dataset that load a single video for testing
 
-    def __init__(self, video_path,
+    def __init__(self, video_path, ignore_frames = 0,
                  step = 4, duration = 16, smoothing = False,
                  resampling = False, resampling_rate = 150,
                  remove_background = 'average', gt_available = True,
@@ -277,7 +280,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
 
         # get video path and array
         self.video_path = video_path
-        self.video = imageio.volread(self.video_path)
+        self.video = imageio.volread(self.video_path).astype('int')
 
         # get video name
         path, filename = os.path.split(video_path)
@@ -292,6 +295,27 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
             mask_path = os.path.join(path, mask_filename)
             self.mask = imageio.volread(mask_path)
 
+        # get sparks true locations as a class attribute
+        if sparks_type == 'peaks':
+            self.coords_true = get_sparks_locations_from_mask(mask=self.mask,
+                                                              min_dist_xy=self.min_dist_xy,
+                                                              min_dist_t=self.min_dist_t,
+                                                              ignore_frames=ignore_frames)
+        elif sparks_type == 'raw':
+            self.coords_true = get_new_mask(video=self.video,
+                                            mask=self.mask,
+                                            min_dist_xy=self.min_dist_xy,
+                                            min_dist_t=self.min_dist_t,
+                                            return_loc=True,
+                                            ignore_frames=ignore_frames)
+        else:
+            logger.warn("WARNING: something is wrong...")
+        self.coords_true = [coord.tolist() for coord in self.coords_true]
+
+        # convert input movie and annotations to Tensor
+        self.video = torch.from_numpy(self.video)
+        self.mask = torch.from_numpy(self.mask)
+
         # perform some preprocessing on videos, if required
         if self.remove_background == 'average':
             self.video = remove_avg_background(self.video)
@@ -299,11 +323,11 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
             _smooth_filter = torch.tensor(([1/16,1/16,1/16],
                                            [1/16,1/2,1/16],
                                            [1/16,1/16,1/16]))
-            self.video = np.asarray([convolve2d(frame, _smooth_filter,
+            self.video = torch.from_numpy([convolve2d(frame, _smooth_filter,
                                             mode = 'same', boundary = 'symm')
                                             for frame in self.video])
         if smoothing == '3d':
-            _smooth_filter = 1/52*np.ones((3,3,3))
+            _smooth_filter = 1/52*torch.ones((3,3,3))
             _smooth_filter[1,1,1] = 1/2
             self.video = convolve(self.video, _smooth_filter)
         if resampling:
@@ -330,10 +354,12 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
             self.pad = (self.duration
                         + self.step*(1+(self.length-self.duration)//self.step)
                         - self.length)
-            self.video = np.pad(self.video,((0,self.pad),(0,0),(0,0)),
-                                'constant',constant_values=0)
-            self.mask = np.pad(self.mask,((0,self.pad),(0,0),(0,0)),
-                                'constant',constant_values=0)
+            self.video = F.pad(self.video,
+                               (0,0,0,0,self.pad//2,self.pad//2+self.pad%2),
+                               'constant',value=0)
+            self.mask = F.pad(self.mask,
+                              (0,0,0,0,self.pad//2,self.pad//2+self.pad%2),
+                              'constant',value=0)
             self.length = self.video.shape[0]
 
             logger.info(f"Added padding of {self.pad} frames to video with unsuitable duration (test)")
@@ -350,7 +376,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         # if training with sparks only, set puffs and waves to 0
         if only_sparks:
             logger.info("Removing puff and wave annotations in testing sample")
-            self.mask = np.where(np.logical_or(self.mask==1, self.mask==4),
+            self.mask = torch.where(torch.logical_or(self.mask==1, self.mask==4),
                                  self.mask, 0)
 
 
@@ -358,8 +384,8 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
         # pad videos shorter than chunk duration with zeros on both sides
         if self.length < self.duration:
             pad = self.duration - self.length
-            video = np.pad(video, ((pad//2, (pad%2) + (pad//2)), (0,0), (0,0)))
-            mask = np.pad(mask, ((pad//2, (pad%2) + (pad//2)), (0,0), (0,0)))
+            video = torch.pad(video, ((pad//2, (pad%2) + (pad//2)), (0,0), (0,0)))
+            mask = torch.pad(mask, ((pad//2, (pad%2) + (pad//2)), (0,0), (0,0)))
 
             self.length = video.shape[0]
             assert self.length == self.duration, "padding is wrong (test)"
@@ -385,7 +411,7 @@ class SparkTestDataset(Dataset): # dataset that load a single video for testing
             chunk = (chunk - chunk.min()) / (chunk.max() - chunk.min())
         assert chunk.min() >= 0 and chunk.max() <= 1, \
                "chunk values not normalized between 0 and 1 (test)"
-        chunk = np.float32(chunk)
+
         if self.gt_available:
 
             if self.temporal_reduction:

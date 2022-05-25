@@ -25,6 +25,7 @@ import unet
 #from other_losses import focal_loss
 
 from metrics_tools import *
+from dataset_tools import get_new_mask
 
 __all__ = ["training_step",
            "test_function",
@@ -61,7 +62,7 @@ def training_step(sampler, network, optimizer, device, criterion,
                      y[...,ignore_frames:-ignore_frames].long())
 
 
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
 
@@ -79,37 +80,38 @@ def training_step(sampler, network, optimizer, device, criterion,
 def get_preds(network, test_dataset, compute_loss, device,
               criterion = None, detect_nan = False):
 
-    # check if function parameters are correct
-    if compute_loss:
-        assert criterion is not None, "provide criterion if computing loss"
-        loss = 0.
-
-    assert (test_dataset.duration-test_dataset.step)%2 == 0, "(duration-step) is not even"
-    half_overlap = (test_dataset.duration-test_dataset.step)//2
-    # to re-build videos from chunks
-
-    # adapt half_overlap duration if using temporal reduction
-    if test_dataset.temporal_reduction:
-        assert half_overlap % test_dataset.num_channels == 0, \
-        "with temporal reduction half_overlap must be a multiple of num_channels"
-        half_overlap_mask = half_overlap // test_dataset.num_channels
-    else:
-        half_overlap_mask = half_overlap
-
-    #print(f"chunk duration = {duration}; step = {step}; half_overlap = {half_overlap}; half_overlap_mask = {half_overlap_mask}")
-
-    xs = []
-    ys = []
-    preds = []
-
     with torch.no_grad():
+
+        # check if function parameters are correct
+        if compute_loss:
+            assert criterion is not None, "provide criterion if computing loss"
+            loss = 0.
+
+        assert (test_dataset.duration-test_dataset.step)%2 == 0, "(duration-step) is not even"
+        half_overlap = (test_dataset.duration-test_dataset.step)//2
+        # to re-build videos from chunks
+
+        # adapt half_overlap duration if using temporal reduction
+        if test_dataset.temporal_reduction:
+            assert half_overlap % test_dataset.num_channels == 0, \
+            "with temporal reduction half_overlap must be a multiple of num_channels"
+            half_overlap_mask = half_overlap // test_dataset.num_channels
+        else:
+            half_overlap_mask = half_overlap
+
+        #print(f"chunk duration = {duration}; step = {step}; half_overlap = {half_overlap}; half_overlap_mask = {half_overlap_mask}")
+
+        xs = []
+        ys = []
+        preds = []
+
         if (len(test_dataset)>1):
-            x,y = test_dataset[0]
+            x,y = test_dataset[0] # y is torch.ByteTensor
             xs.append(x[:-half_overlap])
             ys.append(y[:-half_overlap_mask])
 
-            x = torch.Tensor(x).to(device)
-            y = torch.Tensor(y[None]).to(device)
+            x = x.to(device) # torch.cuda.FloatTensor, d x 64 x 512
+            y = y[None].to(device)
             #print("X SHAPE", x.shape)
             #print("Y SHAPE", y.shape)
 
@@ -133,8 +135,8 @@ def get_preds(network, test_dataset, compute_loss, device,
                 xs.append(x[half_overlap:-half_overlap])
                 ys.append(y[half_overlap_mask:-half_overlap_mask])
 
-                x = torch.Tensor(x).to(device)
-                y = torch.Tensor(y[None]).to(device)
+                x = x.to(device)
+                y = y[None].to(device)
                 #print("X SHAPE", x.shape)
                 #print("Y SHAPE", y.shape)
 
@@ -157,8 +159,8 @@ def get_preds(network, test_dataset, compute_loss, device,
             xs.append(x[half_overlap:])
             ys.append(y[half_overlap_mask:])
 
-            x = torch.Tensor(x).to(device)
-            y = torch.Tensor(y[None]).to(device)
+            x = x.to(device)
+            y = y[None].to(device)
             #print("X SHAPE", x.shape)
             #print("Y SHAPE", y.shape)
 
@@ -181,8 +183,8 @@ def get_preds(network, test_dataset, compute_loss, device,
             xs.append(x)
             ys.append(y)
 
-            x = torch.Tensor(x).to(device)
-            y = torch.Tensor(y[None]).to(device)
+            x = x.to(device)
+            y = y[None].to(device)
             pred = network(x[None, None])
 
             loss += criterion(pred, y.long())
@@ -190,36 +192,40 @@ def get_preds(network, test_dataset, compute_loss, device,
             pred = pred[0].cpu().numpy()
             preds.append(pred)
 
-    # concatenated frames and predictions for a single video:
-    xs = np.concatenate(xs, axis=0)
-    ys = np.concatenate(ys, axis=0)
-    preds = np.concatenate(preds, axis=1)
+        # concatenated frames and predictions for a single video:
+        xs = np.concatenate(xs, axis=0)
+        ys = np.concatenate(ys, axis=0)
+        preds = np.concatenate(preds, axis=1)
 
-    #print("MASK OUTPUT SHAPE BEFORE REMOVING PADDING", ys.shape)
-    #print("MASK PADDING", test_dataset.pad)
-    #print("REMOVED FRAMES", test_dataset.pad // num_channels)
+        #print("MASK OUTPUT SHAPE BEFORE REMOVING PADDING", ys.shape)
+        #print("MASK PADDING", test_dataset.pad)
+        #print("REMOVED FRAMES", test_dataset.pad // num_channels)
 
-    if test_dataset.pad != 0:
-        xs = xs[:-test_dataset.pad]
-        if test_dataset.temporal_reduction:
-            ys = ys[:-(test_dataset.pad // test_dataset.num_channels)]
-            preds = preds[:,:-(test_dataset.pad // test_dataset.num_channels)]
+        if test_dataset.pad != 0:
+            pad = test_dataset.pad
+            xs = xs[pad//2 : -(pad//2+pad%2)]
+            if test_dataset.temporal_reduction:
+                ys = ys[(pad//2)//test_dataset.num_channels
+                        : -((pad//2+pad%2)//test_dataset.num_channels)]
+                preds = preds[:,
+                              (pad//2)//test_dataset.num_channels
+                              :-((pad//2+pad%2)//test_dataset.num_channels)]
+            else:
+                ys = ys[pad//2:-(pad//2+pad%2)]
+                preds = preds[:,pad//2:-(pad//2+pad%2)]
+
+        # predictions have logarithmic values
+        #print("INPUT SHAPE", xs.shape)
+        #print("MASK SHAPE", ys.shape)
+        #print("OUTPUT SHAPE", preds.shape)
+
+        if compute_loss:
+            # divide loss by number of samples in test_dataset
+            loss = loss.item()
+            loss /= len(test_dataset)
+            return xs, ys, preds, loss
         else:
-            ys = ys[:-test_dataset.pad]
-            preds = preds[:,:-test_dataset.pad]
-
-    # predictions have logarithmic values
-    #print("INPUT SHAPE", xs.shape)
-    #print("MASK SHAPE", ys.shape)
-    #print("OUTPUT SHAPE", preds.shape)
-
-    if compute_loss:
-        # divide loss by number of samples in test_dataset
-        loss = loss.item()
-        loss /= len(test_dataset)
-        return xs, ys, preds, loss
-    else:
-        return xs, ys, preds
+            return xs, ys, preds
 
 
 '''def test_function_fixed_t(network, device, criterion, testing_datasets, logger,
@@ -495,22 +501,6 @@ def test_function(network, device, criterion, ignore_frames, testing_datasets,
             ################### COMPUTE SPARK PEAKS RESULTS ####################
 
             if event_class == 'sparks':
-                # extract peak locations from annotations used during training
-                if sparks_type == 'peaks':
-                    coords_true = get_sparks_locations_from_mask(mask=ys,
-                                                                 min_dist_xy=min_dist_xy,
-                                                                 min_dist_t=min_dist_t,
-                                                                 ignore_frames=ignore_frames)
-                elif sparks_type == 'raw':
-                    coords_true = get_new_mask(video=xs,
-                                               mask=ys,
-                                               min_dist_xy=min_dist_xy,
-                                               min_dist_t=min_dist_t,
-                                               return_loc=True,
-                                               ignore_frames=ignore_frames)
-                else:
-                    logger.warn("WARNING: something is wrong...")
-
                 # get sparks preds
                 class_preds = argmax_preds[event_class]
 
@@ -531,7 +521,7 @@ def test_function(network, device, criterion, ignore_frames, testing_datasets,
                                                                     duration=mask_duration)
 
                 # get results as a dict {tp, tp_fp, tp_fn}
-                nb_results = correspondences_precision_recall(coords_real=coords_true,
+                nb_results = correspondences_precision_recall(coords_real=test_dataset.coords_true,
                                                               coords_pred=coords_pred,
                                                               match_distance_xy=min_dist_xy,
                                                               match_distance_t=min_dist_t,
@@ -539,10 +529,7 @@ def test_function(network, device, criterion, ignore_frames, testing_datasets,
 
                 spark_peaks_results[event_class][test_dataset.video_name] = nb_results
 
-
-
     ############################## reduce metrics ##############################
-
     metrics = {}
 
     # Compute average validation loss
