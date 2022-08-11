@@ -41,6 +41,7 @@ __all__ = ["get_chunks",
            "load_movies_ids",
            "load_annotations",
            "load_annotations_ids",
+           "load_rgb_annotations_ids",
            "load_predictions",
            "load_predictions_all_trainings"
            ]
@@ -389,20 +390,28 @@ def load_movies(data_folder):
     return xs_all_trainings
 
 
-def load_movies_ids(data_folder, ids):
+def load_movies_ids(data_folder, ids,
+                    names_available = False, movie_names = None):
     '''
     Same as load_movies but load only movies corresponding to a given list of
     indices.
 
-    data_folder: folder where movies are saved, movies are saved as
-                 "[0-9][0-9]*.tif"
-    ids : list of movies IDs (of the form "[0-9][0-9]")
+    data_folder:    folder where movies are saved, movies are saved as
+                    "[0-9][0-9]*.tif"
+    ids :           list of movies IDs (of the form "[0-9][0-9]")
+    names_available: if True, can specify name of the movie file, such as
+                    "XX_<movie_name>.tif"
+    movie_names:     movie name, if available
     '''
     xs_all_trainings = {}
 
-    xs_filenames = [os.path.join(data_folder,movie_name)
-                    for movie_name in os.listdir(data_folder)
-                    if movie_name.startswith(tuple(ids))]
+    if names_available:
+        xs_filenames = [os.path.join(data_folder,idx+"_"+movie_names+".tif")
+                        for idx in ids]
+    else:
+        xs_filenames = [os.path.join(data_folder,movie_name)
+                        for movie_name in os.listdir(data_folder)
+                        if movie_name.startswith(tuple(ids))]
 
     for f in xs_filenames:
         video_id = os.path.split(f)[1][:2]
@@ -449,6 +458,53 @@ def load_annotations_ids(data_folder, ids, mask_names="video_mask"):
     for f in ys_filenames:
         video_id = os.path.split(f)[1][:2]
         ys_all_trainings[video_id] = np.asarray(imageio.volread(f)).astype('int')
+
+    return ys_all_trainings
+
+
+def load_rgb_annotations_ids(data_folder, ids, mask_names="separated_events"):
+    '''
+    Same as load_annotations_ids but load original rbg annotations with
+    separated events.
+
+    data_folder: folder where annotations are saved, annotations are saved as
+                 "[0-9][0-9]_separated_events.tif"
+    ids:         list of ids of movies to be considered
+    mask_names:  name of the type of masks that will be loaded
+    '''
+
+    ys_all_trainings = {}
+
+    ys_filenames = [os.path.join(data_folder,idx+"_"+mask_names+".tif")
+                    for idx in ids]
+
+    # integer representing white colour in rgb mask
+    white_int = 255*255*255+255*255+255
+
+
+    for f in ys_filenames:
+        video_id = os.path.split(f)[1][:2]
+        rgb_video = np.asarray(imageio.volread(f)).astype('int')
+
+        #print((255*255*rgb_video[...,0]).shape)
+
+        #print("rgb video value at [0,0,0]",rgb_video[0,0,0])
+        #print("int value of rgb video value at [0,0,0]",255*255*rgb_video[0,0,0][...,0]+ 255*rgb_video[0,0,0][...,1]+ rgb_video[0,0,0][...,2])
+        #print("max value of first channel in rgb video",rgb_video[...,0].max())
+        #print("max value of 255*255*first channel in rgb video",(255*255*rgb_video[...,0]).max(),255*255*rgb_video[...,0].max())
+        #print("max value of 255*second channel in rgb video",(255*rgb_video[...,1]).max(),255*rgb_video[...,1].max())
+        #print("max value of third channel in rgb video",(rgb_video[...,2]).max(),rgb_video[...,2].max())
+        #print("theoretical max in sum",255*255*rgb_video[...,0].max()+255*rgb_video[...,0].max()+rgb_video[...,0].max())
+        #print("max value of int value in rgb video",((255*255*rgb_video[...,0])+ (255*rgb_video[...,1])+ (rgb_video[...,2])).max())
+
+        mask_video = (255*255*rgb_video[...,0]+ 255*rgb_video[...,1]+ rgb_video[...,2])
+
+        #print("np unique video", np.unique(mask_video))
+        #print("white", white_int)
+
+        mask_video[mask_video == white_int] = 0
+
+        ys_all_trainings[video_id] = mask_video
 
     return ys_all_trainings
 

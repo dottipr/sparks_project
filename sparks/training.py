@@ -17,7 +17,7 @@ import wandb
 
 import unet
 from dataset_tools import random_flip, random_flip_noise, compute_class_weights, weights_init
-from datasets import SparkDataset, SparkTestDataset
+from datasets import SparkDataset
 from training_tools import training_step, test_function, sampler
 from metrics_tools import take_closest
 from other_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz
@@ -151,6 +151,21 @@ if __name__ == "__main__":
 
     ############################ configure datasets ############################
 
+    # select samples that are used for training and testing
+    if params['dataset_size'] == 'full':
+        train_sample_ids = ["01","02","03","04","06","07","08","09",
+                            "11","12","13","14","16","17","18","19",
+                            "21","22","23","24","27","28","29",
+                            "30","33","35","36","38","39",
+                            "41","42","43","44","46"]
+        test_sample_ids = ["05","10","15","20","25","32","34","40","45"]
+    elif params['dataset_size'] == 'minimal':
+        train_sample_ids = ["01"]
+        test_sample_ids = ["34"]
+      else:
+          logger.error(f"{params['dataset_size']} is not a valid dataset size.")
+          exit()
+
     # detect CUDA devices
     if c.getboolean("general", "cuda", fallback=True):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -174,13 +189,13 @@ if __name__ == "__main__":
         logger.info("Normalizing whole video using 16-bit absolute max")
 
     # initialize training dataset
-    dataset_map = {'full': "", 'small': 'small_dataset', 'minimal': 'very_small_dataset'}
-    dataset_dir = dataset_map[params['dataset_size']]
-    dataset_path = os.path.realpath(f"{BASEDIR}/{params['dataset_basedir']}/{dataset_dir}")
+    dataset_path = os.path.realpath(f"{BASEDIR}/{params['dataset_basedir']}")
     assert os.path.isdir(dataset_path), f"\"{dataset_path}\" is not a directory"
     logger.info(f"Using {dataset_path} as dataset root path")
     dataset = SparkDataset(
         base_path=dataset_path,
+        sample_ids=train_sample_ids,
+        testing=False,
         smoothing=params['data_smoothing'],
         step=params['data_step'],
         duration=params['data_duration'],
@@ -203,21 +218,23 @@ if __name__ == "__main__":
     # initialize testing dataset
     pattern_test_filenames = os.path.join(f"{dataset_path}","videos_test",
                                            "[0-9][0-9]_video.tif")
-    test_filenames = sorted(glob.glob(pattern_test_filenames))
 
     testing_datasets = [
-        SparkTestDataset(
-            video_path=f,
-            smoothing=params['data_smoothing'],
-            step=params['data_step'],
-            duration=params['data_duration'],
-            remove_background=params['remove_background'],
-            temporal_reduction=params['temporal_reduction'],
-            num_channels=params['num_channels'],
-            normalize_video=params['norm_video'],
-            only_sparks=params['only_sparks'],
-            sparks_type=params['sparks_type'],
-            ignore_frames=params['ignore_frames_loss']
+                SparkDataset(
+                base_path=dataset_path,
+                sample_ids=test_sample_ids,
+                testing=False,
+                smoothing=params['data_smoothing'],
+                step=params['data_step'],
+                duration=params['data_duration'],
+                remove_background=params['remove_background'],
+                temporal_reduction=params['temporal_reduction'],
+                num_channels=params['num_channels'],
+                normalize_video=params['norm_video'],
+                only_sparks=params['only_sparks'],
+                sparks_type=params['sparks_type'],
+                ignore_frames=params['ignore_frames_loss']
+            )
         ) for f in test_filenames]
 
     for i, tds in enumerate(testing_datasets):

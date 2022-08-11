@@ -1,4 +1,6 @@
 '''
+25.11.2021
+
 Get sparks locations from given .tif unet spark class prediction
 Write sparks locations in .csv file
 '''
