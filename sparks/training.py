@@ -162,9 +162,9 @@ if __name__ == "__main__":
     elif params['dataset_size'] == 'minimal':
         train_sample_ids = ["01"]
         test_sample_ids = ["34"]
-      else:
-          logger.error(f"{params['dataset_size']} is not a valid dataset size.")
-          exit()
+    else:
+        logger.error(f"{params['dataset_size']} is not a valid dataset size.")
+        exit()
 
     # detect CUDA devices
     if c.getboolean("general", "cuda", fallback=True):
@@ -222,8 +222,8 @@ if __name__ == "__main__":
     testing_datasets = [
                 SparkDataset(
                 base_path=dataset_path,
-                sample_ids=test_sample_ids,
-                testing=False,
+                sample_ids=[sample_id],
+                testing=True,
                 smoothing=params['data_smoothing'],
                 step=params['data_step'],
                 duration=params['data_duration'],
@@ -234,8 +234,7 @@ if __name__ == "__main__":
                 only_sparks=params['only_sparks'],
                 sparks_type=params['sparks_type'],
                 ignore_frames=params['ignore_frames_loss']
-            )
-        ) for f in test_filenames]
+                ) for sample_id in test_sample_ids]
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
@@ -371,7 +370,8 @@ if __name__ == "__main__":
             logger=logger,
             ignore_frames=params['ignore_frames_loss'],
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
-            training_name=c.get("general", "run_name")
+            training_name=c.get("general", "run_name"),
+            training_mode=True
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),

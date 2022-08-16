@@ -25,6 +25,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from dataset_tools import (get_chunks, get_fps, video_spline_interpolation,
                            remove_avg_background, shrink_mask, get_new_mask,
+                           detect_spark_peaks,
                            load_movies_ids, load_annotations_ids
                            )
 from metrics_tools import get_sparks_locations_from_mask
@@ -92,14 +93,23 @@ class SparkDataset(Dataset):
         self.min_dist_t = round(20 / self.time_frame) # min distance in time
 
         # dataset parameters
-        self.training = training
+        self.testing = testing
         self.gt_available = gt_available
         self.sample_ids = sample_ids
+        self.only_sparks = only_sparks
+        self.sparks_type = sparks_type
+
         self.duration = duration
         self.step = step
 
-        self.only_sparks = only_sparks
-        self.sparks_type = sparks_type
+        # if testing, get video name and take note of the padding applied
+        # to the movie
+        if self.testing:
+            # if testing, the dataset contains a single video
+            assert len(sample_ids)==1, "Dataset set to testing mode, but it contains more than one sample."
+
+            self.video_name = sample_ids[0]
+            self.pad = 0
 
         self.temporal_reduction = temporal_reduction
         if self.temporal_reduction:
@@ -109,22 +119,58 @@ class SparkDataset(Dataset):
         self.remove_background = remove_background
 
         # get video samples
-        self.data = load_movies_ids(data_folder=self.base_path,
+        self.data = list(load_movies_ids(data_folder=self.base_path,
                                     ids=sample_ids,
                                     names_available=True,
                                     movie_names="video"
-                                    ).items()
+                                    ).values())
         self.data = [torch.from_numpy(movie.astype('int'))
-                     for movies in self.data] # int32
+                     for movie in self.data] # int32
 
         # get annotation masks, if ground truth is available:
         if self.gt_available:
-            self.annotations = load_annotations_ids(data_folder=self.base_path,
-                                                    ids=sample_ids,
-                                                    mask_names="video_mask"
-                                                    ).items()
-            self.annotations = [torch.from_numpy(mask
-                                for mask in self.annotations_files] # int8
+            # get class label masks
+            self.annotations = list(load_annotations_ids(
+                                        data_folder=self.base_path,
+                                        ids=sample_ids,
+                                        mask_names="class_label"
+                                        ).values())
+            self.annotations = [torch.from_numpy(mask)
+                                for mask in self.annotations] # int8
+
+            # preprocess annotations if necessary
+            assert self.sparks_type in ['peaks', 'smaller', 'raw'], "Sparks type should be 'peaks', 'smaller' or 'raw'."
+
+            if self.sparks_type == 'peaks':
+                # TODO: if necessary implement mask that contain only spark peaks
+                pass
+            elif self.sparks_type == 'smaller':
+                # reduce the size of sparks annotations and replace difference with
+                # an undefined label (4)
+
+                # TODO: ...........
+                # self.annotations = [process(mask) for mask is self.annotations]
+                pass
+
+            # if testing, load the event label masks too (for peaks detection)
+            # and compute the location of the spark peaks
+            if self.testing:
+                # if testing, the dataset contain a single video
+                self.events = list(load_annotations_ids(
+                                        data_folder=self.base_path,
+                                        ids=sample_ids,
+                                        mask_names="event_label"
+                                        ).values())
+                self.events = [torch.from_numpy(mask)
+                                    for mask in self.events] # int8
+
+                logger.info("Computing spark peaks...")
+                self.coords_true = detect_spark_peaks(movie=self.data[0],
+                                                      event_mask=self.events[0],
+                                                      class_mask=self.annotations[0],
+                                                      sigma=2,
+                                                      max_filter_size=10)
+                logger.info(f"Sample {self.video_name} contains {len(self.coords_true)} sparks.")
 
         # preprocess videos if necessary
         if self.remove_background == 'average':
@@ -157,27 +203,7 @@ class SparkDataset(Dataset):
             self.data = [(video-video.min())/(absolute_max-video.min())
                          for video in self.data]
 
-        # preprocess annotations if necessary
-        # TODO: aggiungere processing per ottenere peaks se si tratta di testing
-        #       data, oppure ridurre la dimensione degli sparks se richiesto
-        #       ...
 
-        # get sparks true locations as a class attribute
-        # TODO: ...something like:
-        #if sparks_type == 'peaks':
-        #    self.coords_true = get_sparks_locations_from_mask(mask=self.mask,
-        #                                                      min_dist_xy=self.min_dist_xy,
-        #                                                      min_dist_t=self.min_dist_t,
-        #                                                      ignore_frames=ignore_frames)
-        #elif sparks_type == 'raw':
-        #    self.coords_true = get_new_mask(video=self.video,
-        #                                    mask=self.mask,
-        #                                    min_dist_xy=self.min_dist_xy,
-        #                                    min_dist_t=self.min_dist_t,
-        #                                    return_loc=True,
-        #                                    ignore_frames=ignore_frames)
-        #else:
-        #    logger.warn("WARNING: something is wrong...")
 
         # pad movies shorter than chunk duration with zeros before beginning and after end
         self.data = [self.pad_short_video(video) for video in self.data]
@@ -196,14 +222,14 @@ class SparkDataset(Dataset):
 
 
         # if using temporal reduction, shorten the annotations duration
-        if self.temporal_reduction and self.gt_available::
+        if self.temporal_reduction and self.gt_available:
             self.annotations = [shrink_mask(mask, self.num_channels)
                                 for mask in self.annotations]
 
         #print("annotations shape", self.annotations[-1].shape)
 
         # if training with sparks only, set puffs and waves to 0
-        if self.only_sparks and self.gt_available::
+        if self.only_sparks and self.gt_available:
             logger.info("Removing puff and wave annotations in training set")
             self.annotations = [torch.where(torch.logical_or(mask==1, mask==4),
                                          mask, 0) for mask in self.annotations]
@@ -229,6 +255,11 @@ class SparkDataset(Dataset):
             pad = (self.duration
                         + self.step*(1+(length-self.duration)//self.step)
                         - length)
+
+            # if testing, store the pad lenght as class attribute
+            if self.testing:
+                self.pad = pad
+
             video = F.pad(video,(0,0,0,0,pad//2,pad//2+pad%2),
                                 'constant',value=0)
             length = video.shape[0]

@@ -36,7 +36,9 @@ __all__ = ["get_chunks",
            "get_new_voxel_label",
            "final_mask",
            "get_new_mask",
-           "get_new_mask_raw_sparks"
+           "get_new_mask_raw_sparks",
+           "detect_single_roi_peak",
+           "detect_spark_peaks",
            "load_movies",
            "load_movies_ids",
            "load_annotations",
@@ -251,6 +253,84 @@ def remove_avg_background(video):
     else:
         avg = np.mean(video, axis = 0)
         return np.add(video, -avg)
+
+
+def detect_single_roi_peak(movie, roi_mask, max_filter_size=10):
+    '''
+    Given a movie and a ROI, extract peak coords of the movie inside the ROI.
+
+    movie:      input movie (could be smoothed)
+    roi_mask:   binary mask with same shape as movie (containing one CC)
+
+    return:     coordinates t,y,x of movie's maximum inside ROI
+    '''
+    roi_movie = np.where(roi_mask, movie, 0.)
+
+    # compute max along t, for slices in [start, end]
+    t_max = roi_movie.max(axis=0)
+    # compute std along t, for slices in [start, end]
+    t_std = np.std(roi_movie, axis=0)
+    # multiply max and std
+    prod = t_max * t_std
+
+    # maximum filter
+    dilated = ndi.maximum_filter(prod, size=max_filter_size)
+    # find locations (y,x) of peaks
+    argmaxima = np.logical_and(prod==dilated, prod!=0)
+    argwhere = np.argwhere(argmaxima)
+    assert len(argwhere==1), f"found more than one spark peak in ROI: {argwhere}"
+
+    # find slice t corresponding to max location
+    y,x = argwhere[0]
+    t = np.argmax(roi_movie[:,y,x])
+
+    return t,y,x
+
+
+def detect_spark_peaks(movie, event_mask, class_mask,
+                       sigma=2, max_filter_size=10,
+                       return_mask=False,
+                       #annotations=False
+                      ):
+    '''
+    Extract local maxima from input array (t,x,y).
+    movie :           input array
+    event_mask :      mask with identified events
+    class_mask:       mask with classified events
+    sigma :           sigma parameter of gaussian filter
+    max_filter_size:  dimension of maximum filter size
+    return_mask :     if True return both masks with maxima and locations, if
+                      False only returns locations
+    annotations:      if true, apply specific processing for raw annotation masks
+    '''
+
+    # get sparks event mask
+    spark_mask = np.where(class_mask==1, event_mask, 0)
+
+    # get list of sparks IDs
+    event_list = list(np.unique(spark_mask))
+    event_list.remove(0)
+
+    # smooth movie only on (y,x)
+    smooth_movie = ndi.gaussian_filter(movie, sigma=(0,sigma,sigma))
+
+
+    peaks_coords = []
+    # find one peak in each ROI
+    for id_roi in event_list:
+        t,y,x = detect_single_roi_peak(movie=smooth_movie,
+                                       roi_mask=(spark_mask==id_roi),
+                                       max_filter_size=max_filter_size)
+
+        peaks_coords.append([t,y,x])
+
+    if return_mask:
+        peaks_mask = np.zeros_like(spark_mask)
+        peaks_mask[np.array(peaks_coords)] = 1
+        return peaks_coords, peaks_mask
+
+    return peaks_coords
+
 
 ################## functions related to U-Net hyperparameters ##################
 

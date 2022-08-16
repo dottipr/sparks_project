@@ -179,3 +179,8 @@ test*
 *DELETEME*
 UNETR
 models/*
+*TEST*
+
+# other projects' directories
+elektronn3-dev
+multi-object-tracker

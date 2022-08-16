@@ -29,7 +29,7 @@ from dataset_tools import get_new_mask
 
 __all__ = ["training_step",
            "test_function",
-           "test_function_fixed_t",
+           #"test_function_fixed_t",
            "mycycle",
            "sampler"
            ]
@@ -401,7 +401,7 @@ def get_preds(network, test_dataset, compute_loss, device,
     return results'''
 
 def test_function(network, device, criterion, ignore_frames, testing_datasets,
-                  logger, wandb_log, training_name):
+                  logger, wandb_log, training_name, training_mode=True):
     '''
     Validate UNet during training.
     Output segmentation is computed using argmax values (to avoid using
@@ -411,11 +411,13 @@ def test_function(network, device, criterion, ignore_frames, testing_datasets,
     network:            the model being trained
     device:             current device
     criterion:          loss function to be computed on the validation set
-    testing_datasets:   list of SparkTestDataset instances
+    testing_datasets:   list of SparkDataset instances
     logger:             logger to output results in the terminal
     ignore_frames:      frames ignored by the loss function
     wandb_log:          logger to store results on wandb
     training_name:      training name used to save predictions on disk
+    training_mode:      if True, compute a smaller set of metrics (only the ones
+                        that are interesting to see during training)
 
     '''
     network.eval()
@@ -492,6 +494,7 @@ def test_function(network, device, criterion, ignore_frames, testing_datasets,
                                                     ignore_mask=ignore_mask,
                                                     sparks=(event_class=='sparks'),
                                                     results_only=True)
+            # dict with keys 'iou', 'prec', 'rec' and accuracy
 
             pixel_based_results[event_class][test_dataset.video_name] = {'tp':tp,
                                                                          'tn':tn,
@@ -560,20 +563,28 @@ def test_function(network, device, criterion, ignore_frames, testing_datasets,
                 else:
                     res[r] = val/len(testing_datasets)
 
-        iou = res['tp']/(res['tp']+res['fn']+res['fp']) if (res['tp']+res['fn']+res['fp']) != 0 else 1.0
-        dice = res['tp']/(2*res['tp']+res['fn']+res['fp']) if (res['tp']+res['fn']+res['fp']) != 0 else 1.0
+        # during training, compute only iou, prec & rec for puffs & waves, and
+        # compute only prec & rec for sparks
+        if not training_mode:
+            dice = res['tp']/(2*res['tp']+res['fn']+res['fp']) if (res['tp']+res['fn']+res['fp']) != 0 else 1.0
+            accuracy = (res['tp']+res['tn'])/(res['tp']+res['tn']+res['fp']+res['fn'])
+            mcc = (res['tp']*res['tn']-res['fp']*res['fn'])/np.sqrt((res['tp']+res['fp'])*(res['tp']+res['fn'])*(res['tn']+res['fp'])*(res['tn']+res['fn'])) if (res['tp']+res['fp'])*(res['tp']+res['fn'])*(res['tn']+res['fp'])*(res['tn']+res['fn']) != 0 else 0.0
+            metrics[event_class+"/dice"] = dice
+            metrics[event_class+"/accuracy"] = accuracy
+            metrics[event_class+"/mcc"] = mcc
+
+            if event_class == 'sparks':
+                iou = res['tp']/(res['tp']+res['fn']+res['fp']) if (res['tp']+res['fn']+res['fp']) != 0 else 1.0
+                metrics[event_class+"/iou"] = iou
+
+        if event_class != 'sparks':
+            iou = res['tp']/(res['tp']+res['fn']+res['fp']) if (res['tp']+res['fn']+res['fp']) != 0 else 1.0
+            metrics[event_class+"/iou"] = iou
+
         prec = res['tp']/(res['tp']+res['fp']) if (res['tp']+res['fp']) != 0 else 1.0
         rec = res['tp']/(res['tp']+res['fn']) if (res['tp']+res['fn']) != 0 else 1.0
-        accuracy = (res['tp']+res['tn'])/(res['tp']+res['tn']+res['fp']+res['fn'])
-        mcc = (res['tp']*res['tn']-res['fp']*res['fn'])/np.sqrt((res['tp']+res['fp'])*(res['tp']+res['fn'])*(res['tn']+res['fp'])*(res['tn']+res['fn'])) if (res['tp']+res['fp'])*(res['tp']+res['fn'])*(res['tn']+res['fp'])*(res['tn']+res['fn']) != 0 else 0.0
-
-
-        metrics[event_class+"/iou"] = iou
-        metrics[event_class+"/dice"] = dice
         metrics[event_class+"/pixel_prec"] = prec
         metrics[event_class+"/pixel_rec"] = rec
-        metrics[event_class+"/accuracy"] = accuracy
-        metrics[event_class+"/mcc"] = mcc
 
 
         ################### COMPUTE SPARK PEAKS RESULTS ####################
@@ -602,7 +613,8 @@ def test_function(network, device, criterion, ignore_frames, testing_datasets,
             metrics[event_class+"/precision"] = prec
             metrics[event_class+"/recall"] = rec
 
-            betas = [0.5,1,2]
+            # during training compute only f_1 score for spark peaks
+            betas = [0.5,1,2] if not training_mode else [1]
             for beta in betas:
                 f_score = compute_f_score(prec, rec, beta)
                 metrics[event_class+f"/f{beta}_score"] = f_score
