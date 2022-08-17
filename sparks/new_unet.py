@@ -941,6 +941,9 @@ class UNet(nn.Module):
             i += 1
         x = self.conv_final(x)
         # self.feature_maps = [x]  # Currently disabled to save memory
+
+        if self.logsoftmax_layer:
+            x = self.logsoftmax(x)
         return x
 
 

@@ -75,7 +75,7 @@ config_directory = "config_files"
 #CONFIG_FILE = os.path.join(BASEDIR, "config_files", args.config)
 CONFIG_FILE = os.path.join(BASEDIR,
                            "config_files",
-                           "config_test_new_unet_architecture.ini")
+                           "config_new_unet_architecture_ubelix.ini")
 c = configparser.ConfigParser()
 if os.path.isfile(CONFIG_FILE):
     logger.info(f"Loading {CONFIG_FILE}")

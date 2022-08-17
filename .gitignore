@@ -180,6 +180,7 @@ test*
 UNETR
 models/*
 *TEST*
+pytorch/
 
 # other projects' directories
 elektronn3-dev
