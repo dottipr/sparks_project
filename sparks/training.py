@@ -30,10 +30,24 @@ logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser("Spark & Puff detector using U-Net.")
+    ############################# fixed parameters #############################
+
+    # General params
+    verbosity = 3
+    logfile = None # change this when publishing finished project on github
+    wandb_project_name = 'sparks'
+    output_relative_path = 'runs/' # directory where output, saved params and
+                                   # testing results are saved
+
+    # Dataset parameters
+    ignore_index = 4 # label ignored during training
+    num_classes = 4 # i.e., BG, sparks, waves, puffs
+    ndims = 3 # using 3D data
+
 
     ############################# load config file #############################
 
+    parser = argparse.ArgumentParser("Spark & Puff detector using U-Net.")
     parser.add_argument(
         'config',
         type=str,
@@ -41,7 +55,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    config_directory = "config_files"
     CONFIG_FILE = os.path.join(BASEDIR, "config_files", args.config)
     c = configparser.ConfigParser()
     if os.path.isfile(CONFIG_FILE):
@@ -54,76 +67,69 @@ if __name__ == "__main__":
 
     params = {}
 
-    # general params
-    params['name'] = c.get("general", "run_name", fallback="run") # Run name
-    params['load_name'] = c.get("general", "load_run_name", fallback=None)
-
     # training params
-    params['load_epoch'] = c.getint("state", "load_epoch", fallback=0)
-    params['train_epochs'] = c.getint("training", "epochs", fallback=5000)
-    params['training'] = c.getboolean("general", "training") # Run training procedure on data
-    params['testing'] = c.getboolean("general", "testing") # Run training procedure on data
-    params['loss_function'] = c.get("training", "criterion", fallback="nll_loss")
-    if (params['loss_function'] == 'focal_loss') or( params['loss_function'] == "sum_losses"):
-        params['gamma'] = c.getfloat("training", "gamma", fallback=2.0)
-    if params['loss_function'] == 'sum_losses':
-        params['w'] = c.getfloat("training", "w", fallback=0.5)
+    params['run_name'] = c.get("training", "run_name", fallback="TEST") # Run name
+    params['load_run_name'] = c.get("training", "load_run_name", fallback=None)
+    params['load_epoch'] = c.getint("training", "load_epoch", fallback=0)
+    params['train_epochs'] = c.getint("training", "train_epochs", fallback=5000)
+    params['criterion'] = c.get("training", "criterion", fallback="nll_loss")
     params['lr_start'] = c.getfloat("training", "lr_start", fallback=1e-4)
+    params['ignore_frames_loss'] = c.getint("training", "ignore_frames_loss")
+    if (params['criterion'] == 'focal_loss') or( params['criterion'] == "sum_losses"):
+        params['gamma'] = c.getfloat("training", "gamma", fallback=2.0)
+    if params['criterion'] == 'sum_losses':
+        params['w'] = c.getfloat("training", "w", fallback=0.5)
+    params['cuda'] = c.getboolean("training", "cuda")
 
-    # data params
-    params['dataset_basedir'] = c.get("data", "relative_path")
-    params['dataset_size'] = c.get("data", "size", fallback="full")
-    params['batch_size'] = c.getint("general", "batch_size", fallback="1")
-    params['data_duration'] = c.getint("data", "chunks_duration")
-    params['data_step'] = c.getint("data", "step")
-    params['ignore_frames_loss'] = c.getint("data", "ignore_frames_loss")
-    params['data_smoothing'] = c.get("data", "smoothing", fallback="2d")
-    params['norm_video'] = c.get("data", "norm_video", fallback="chunk")
-    params['remove_background'] = c.get("data", "remove_background", fallback='average')
-    params['only_sparks'] = c.getboolean("data", "only_sparks", fallback=False)
-    params['noise_data_augmentation'] = c.getboolean("data", "noise_data_augmentation", fallback=False)
-    params['sparks_type'] = c.get("data", "sparks_type", fallback="peaks")
+    # dataset params
+    params['relative_path'] = c.get("dataset", "relative_path")
+    params['dataset_size'] = c.get("dataset", "dataset_size", fallback="full")
+    params['batch_size'] = c.getint("dataset", "batch_size", fallback=1)
+    params['num_workers'] = c.getint("dataset", "num_workers", fallback=1)
+    params['data_duration'] = c.getint("dataset", "data_duration")
+    params['data_step'] = c.getint("dataset", "data_step")
+    params['data_smoothing'] = c.get("dataset", "data_smoothing", fallback="2d")
+    params['norm_video'] = c.get("dataset", "norm_video", fallback="chunk")
+    params['remove_background'] = c.get("dataset", "remove_background", fallback='average')
+    params['only_sparks'] = c.getboolean("dataset", "only_sparks", fallback=False)
+    params['noise_data_augmentation'] = c.getboolean("dataset", "noise_data_augmentation", fallback=False)
+    params['sparks_type'] = c.get("dataset", "sparks_type", fallback="peaks")
 
     # UNet params
-    params['unet_steps'] = c.getint("network", "step")
+    params['nn_architecture'] = c.get("network", "nn_architecture", fallback='pablos_unet')
+    params['unet_steps'] = c.getint("network", "unet_steps")
     params['first_layer_channels'] = c.getint("network", "first_layer_channels")
-    params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
     params['num_channels'] = c.getint("network", "num_channels", fallback=1)
-    params['nn_architecture'] = c.get("network", "architecture", fallback='pablos_unet')
-
-    # Testing params
-    params['t_detection_sparks'] = c.getfloat("testing", "t_sparks")
-    params['t_detection_puffs'] = c.getfloat("testing", "t_puffs")
-    params['t_detection_waves'] = c.getfloat("testing", "t_waves")
-    params['sparks_min_radius'] = c.getint("testing", "sparks_min_radius")
-    params['puffs_min_radius'] = c.getint("testing", "puffs_min_radius")
-    params['waves_min_radius'] = c.getint("testing", "waves_min_radius")
+    params['dilation'] = c.getboolean("network", "dilation", fallback=1)
+    params['border_mode'] = c.get("network", "border_mode", fallback='same')
+    params['batch_normalization'] = c.get("network", "batch_normalization", fallback='none')
+    params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
+    params['initialize_weights'] = c.getboolean("network", "initialize_weights", fallback=False)
 
     ############################# configure logger #############################
 
     level_map = {3: logging.DEBUG, 2: logging.INFO, 1: logging.WARNING, 0: logging.ERROR}
-    log_level = level_map[c.getint("general", "verbosity", fallback="0")]
+    log_level = level_map[verbosity]
     log_handlers = (logging.StreamHandler(sys.stdout), )
 
-    logfile = c.get("general", "logfile", fallback=None)
-
-    if logfile:
-        if not os.path.isdir(os.path.basename(logfile)):
-            logger.info("Creating parent directory for logs")
-            os.mkdir(os.path.basename(logfile))
-
-        if os.path.isdir(logfile):
-            logfile_path = os.path.abspath(os.path.join(logfile, f"{__name__}.log"))
-        else:
-            logfile_path = os.path.abspath(logfile)
-
-        logger.info(f"Storing logs in {logfile_path}")
-        file_handler = logging.RotatingFileHandler(
-            filename=logfile_path,
-            maxBytes=(1024 * 1024 * 8),  # 8 MB
-            backupCount=4,
-        )
-        log_handlers += (file_handler, )
+    # use this when project is finished:
+    #if logfile:
+    #    if not os.path.isdir(os.path.basename(logfile)):
+    #        logger.info("Creating parent directory for logs")
+    #        os.mkdir(os.path.basename(logfile))
+    #
+    #    if os.path.isdir(logfile):
+    #        logfile_path = os.path.abspath(os.path.join(logfile, f"{__name__}.log"))
+    #    else:
+    #        logfile_path = os.path.abspath(logfile)
+    #
+    #    logger.info(f"Storing logs in {logfile_path}")
+    #    file_handler = logging.RotatingFileHandler(
+    #        filename=logfile_path,
+    #        maxBytes=(1024 * 1024 * 8),  # 8 MB
+    #        backupCount=4,
+    #    )
+    #    log_handlers += (file_handler, )
 
     logging.basicConfig(
         level=log_level,
@@ -135,7 +141,8 @@ if __name__ == "__main__":
     ############################# configure wandb ##############################
 
     if c.getboolean("general", "wandb_enable", fallback=False):
-        wandb.init(project=c.get("general", "wandb_project_name"), name=params['name'])
+        wandb.init(project=wandb_project_name,
+                   name=params['run_name'])
         logging.getLogger('wandb').setLevel(logging.DEBUG)
         #wandb.save(CONFIG_FILE)
 
@@ -170,7 +177,7 @@ if __name__ == "__main__":
         exit()
 
     # detect CUDA devices
-    if c.getboolean("general", "cuda", fallback=True):
+    if params['cuda']:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         pin_memory = True
     else:
@@ -192,7 +199,7 @@ if __name__ == "__main__":
         logger.info("Normalizing whole video using 16-bit absolute max")
 
     # initialize training dataset
-    dataset_path = os.path.realpath(f"{BASEDIR}/{params['dataset_basedir']}")
+    dataset_path = os.path.realpath(f"{BASEDIR}/{params['relative_path']}")
     assert os.path.isdir(dataset_path), f"\"{dataset_path}\" is not a directory"
     logger.info(f"Using {dataset_path} as dataset root path")
     dataset = SparkDataset(
@@ -250,13 +257,13 @@ if __name__ == "__main__":
     dataset_loader = DataLoader(dataset,
                                 batch_size=params['batch_size'],
                                 shuffle=True,
-                                num_workers=c.getint("training", "num_workers"),
+                                num_workers=params['num_workers'],
                                 pin_memory=pin_memory)
     testing_dataset_loaders = [
         DataLoader(test_dataset,
                    batch_size=params['batch_size'],
                    shuffle=False,
-                   num_workers=c.getint("training", "num_workers"))
+                   num_workers=params['num_workers'])
         for test_dataset in testing_datasets
     ]
 
@@ -264,14 +271,16 @@ if __name__ == "__main__":
 
     if params['nn_architecture'] == 'pablos_unet':
 
+        batch_norm = {'batch': True, 'none': False}
+
         unet_config = unet.UNetConfig(
             steps=params['unet_steps'],
             first_layer_channels=params['first_layer_channels'],
-            num_classes=c.getint("network", "num_classes"),
-            ndims=c.getint("network", "ndims"),
-            dilation=c.getint("network", "dilation", fallback=1),
-            border_mode=c.get("network", "border_mode"),
-            batch_normalization=c.getboolean("network", "batch_normalization"),
+            num_classes=num_classes,
+            ndims=ndims,
+            dilation=params['dilation'],
+            border_mode=params['border_mode'],
+            batch_normalization=batch_norm[params['batch_normalization']],
             num_input_channels=params['num_channels'],
         )
 
@@ -285,18 +294,17 @@ if __name__ == "__main__":
     elif params['nn_architecture'] == 'github_unet':
         network = UNet(
             in_channels=params['num_channels'],
-            out_channels=c.getint("network", "num_classes"),
-            n_blocks=params['unet_steps'],
+            out_channels=num_classes,
+            n_blocks=params['unet_steps']+1,
             start_filts=params['first_layer_channels'],
             #up_mode = ... # TESTARE DIVERSE POSSIBILTÀ, e.g.'resizeconv_nearest' to avoid checkerboard artifacts
             merge_mode='concat', # Default, dicono che funziona meglio
             #planar_blocks=(0,), # magari capire cos'è e testarlo ??
             activation='relu',
-            #normalization='batch', # Penso che nell'implementazione di Pablo è 'none'
-            normalization='none', # Penso che nell'implementazione di Pablo è 'none'
+            normalization=params['batch_normalization'], # Penso che nell'implementazione di Pablo è 'none'
             attention=False, # magari da testare con 'True' ??
             #full_norm=False,  # Uncomment to restore old sparse normalization scheme
-            dim=c.getint("network", "ndims"),
+            dim=ndims,
             #conv_mode='valid',  # magari testare, ha dei vantaggi a quanto pare...
             #up_mode='resizeconv_nearest',  # Enable to avoid checkerboard artifacts
         )
@@ -305,66 +313,51 @@ if __name__ == "__main__":
         network = nn.DataParallel(network).to(device)
         torch.backends.cudnn.benchmark = True
 
-    if c.getboolean("general", "wandb_enable"):
+    if c.getboolean("general", "wandb_enable", fallback=False):
         wandb.watch(network)
 
-    if c.getboolean("network", "initialize_weights", fallback=False):
+    if params['initialize_weights']:
         logger.info("Initializing UNet weights...")
         network.apply(weights_init)
-
-    ########################### set testing function ###########################
-
-    #thresholds = np.linspace(0, 1, num=21) # thresholds for events detection
-                                           # TODO: maybe change because
-                                           # nonmaxima supression is computed
-                                           # for every threshold (slow)
-    fixed_threshold = c.getfloat("testing", "fixed_threshold", fallback = 0.9)
-    #closest_t = take_closest(thresholds, fixed_threshold) # Compute idx of t in
-                                                          # thresholds list that
-                                                          # is closest to
-                                                          # fixed_threshold
-    #idx_fixed_t = list(thresholds).index(closest_t)
 
     ########################### initialize training ############################
 
     optimizer = optim.Adam(network.parameters(), lr=params['lr_start'])
     network.train()
 
-    output_path = os.path.join(c.get("network", "output_relative_path"),
-                               params['name'])
+    output_path = os.path.join(output_relative_path, params['run_name'])
     logger.info(f"Output directory: {output_path}")
 
     summary_writer = SummaryWriter(os.path.join(output_path, "summary"),
                                    purge_step=0)
 
-    if params['load_name'] != None:
-        load_path = os.path.join(c.get("network", "output_relative_path"),
-                                   params['load_name'])
+    if params['load_run_name'] != None:
+        load_path = os.path.join(output_relative_path, params['load_run_name'])
         logger.info(f"Model loaded from directory: {load_path}")
     else:
         load_path = None
 
 
-    if params['loss_function'] == "nll_loss":
-        criterion = nn.NLLLoss(ignore_index=c.getint("data", "ignore_index"),
+    if params['criterion'] == "nll_loss":
+        criterion = nn.NLLLoss(ignore_index=ignore_index,
                                weight=class_weights.to(device))
-    elif params['loss_function'] == "focal_loss":
+    elif params['criterion'] == "focal_loss":
         criterion = FocalLoss(reduction='mean',
-                              ignore_index=c.getint("data", "ignore_index"),
+                              ignore_index=ignore_index,
                               alpha=class_weights,
                               gamma=params['gamma'])
-    elif params['loss_function'] == 'lovasz_softmax':
+    elif params['criterion'] == 'lovasz_softmax':
         criterion = LovaszSoftmax3d(classes='present',
                                     per_image=False,
-                                    ignore=c.getint("data", "ignore_index"))
-    elif params['loss_function'] == 'sum_losses':
-        criterion = SumFocalLovasz(classes ='present',
-                                   per_image = False,
-                                   ignore = c.getint("data", "ignore_index"),
-                                   alpha = class_weights,
-                                   gamma = params['gamma'],
-                                   reduction = 'mean',
-                                   w = params['w'])
+                                    ignore=ignore_index)
+    elif params['criterion'] == 'sum_losses':
+        criterion = SumFocalLovasz(classes='present',
+                                   per_image=False,
+                                   ignore=ignore_index,
+                                   alpha=class_weights,
+                                   gamma=params['gamma'],
+                                   reduction='mean',
+                                   w=params['w'])
 
     trainer = unet.TrainingManager(
         # training items
@@ -394,11 +387,11 @@ if __name__ == "__main__":
             logger=logger,
             ignore_frames=params['ignore_frames_loss'],
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
-            training_name=c.get("general", "run_name"),
+            training_name=params['run_name'],
             training_mode=True
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
-        plot_every=c.getint("training", "plot_every", fallback=1000),
+        plot_every=c.getint("training", "test_every", fallback=1000),
         summary_writer=summary_writer
     )
 
@@ -407,12 +400,13 @@ if __name__ == "__main__":
     if params['load_epoch'] != 0:
         trainer.load(params['load_epoch'])
 
-    if params['training']:
+    if c.getboolean("general", "training"): # Run training procedure on data
         logger.info("Validate network before training")
         trainer.run_validation()
         logger.info("Starting training")
-        trainer.train(params['train_epochs'], print_every=100)
+        trainer.train(params['train_epochs'],
+                      print_every=c.getint("training", "print_every", fallback=100))
 
-    if params['testing']:
+    if c.getboolean("general", "testing"): # Run training procedure on data
         logger.info("Starting final validation")
         trainer.run_validation()
