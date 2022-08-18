@@ -16,6 +16,8 @@ from torch.utils.tensorboard import SummaryWriter
 import wandb
 
 import unet
+from new_unet import UNet
+
 from dataset_tools import random_flip, random_flip_noise, compute_class_weights, weights_init
 from datasets import SparkDataset
 from training_tools import training_step, test_function, sampler
@@ -87,6 +89,7 @@ if __name__ == "__main__":
     params['first_layer_channels'] = c.getint("network", "first_layer_channels")
     params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
     params['num_channels'] = c.getint("network", "num_channels", fallback=1)
+    params['nn_architecture'] = c.get("network", "architecture", fallback='pablos_unet')
 
     # Testing params
     params['t_detection_sparks'] = c.getfloat("testing", "t_sparks")
