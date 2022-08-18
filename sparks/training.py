@@ -89,7 +89,7 @@ if __name__ == "__main__":
     params['first_layer_channels'] = c.getint("network", "first_layer_channels")
     params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
     params['num_channels'] = c.getint("network", "num_channels", fallback=1)
-    params['nn_architecture'] = c.get("network", "nn_architecture", fallback='pablos_unet')
+    params['nn_architecture'] = c.get("network", "architecture", fallback='pablos_unet')
 
     # Testing params
     params['t_detection_sparks'] = c.getfloat("testing", "t_sparks")
