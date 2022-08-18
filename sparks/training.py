@@ -16,6 +16,8 @@ from torch.utils.tensorboard import SummaryWriter
 import wandb
 
 import unet
+from new_unet import UNet
+
 from dataset_tools import random_flip, random_flip_noise, compute_class_weights, weights_init
 from datasets import SparkDataset
 from training_tools import training_step, test_function, sampler
@@ -87,6 +89,7 @@ if __name__ == "__main__":
     params['first_layer_channels'] = c.getint("network", "first_layer_channels")
     params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
     params['num_channels'] = c.getint("network", "num_channels", fallback=1)
+    params['nn_architecture'] = c.get("network", "nn_architecture", fallback='pablos_unet')
 
     # Testing params
     params['t_detection_sparks'] = c.getfloat("testing", "t_sparks")
@@ -259,23 +262,44 @@ if __name__ == "__main__":
 
     ############################## configure UNet ##############################
 
-    unet_config = unet.UNetConfig(
-        steps=params['unet_steps'],
-        first_layer_channels=params['first_layer_channels'],
-        num_classes=c.getint("network", "num_classes"),
-        ndims=c.getint("network", "ndims"),
-        dilation=c.getint("network", "dilation", fallback=1),
-        border_mode=c.get("network", "border_mode"),
-        batch_normalization=c.getboolean("network", "batch_normalization"),
-        num_input_channels=params['num_channels'],
-    )
+    if params['nn_architecture'] == 'pablos_unet':
 
-    if not params['temporal_reduction']:
-        network = unet.UNetClassifier(unet_config)
-    else:
-        assert params['data_duration'] % params['num_channels'] == 0, \
-        "using temporal reduction chunks_duration must be a multiple of num_channels"
-        network = TempRedUNet(unet_config)
+        unet_config = unet.UNetConfig(
+            steps=params['unet_steps'],
+            first_layer_channels=params['first_layer_channels'],
+            num_classes=c.getint("network", "num_classes"),
+            ndims=c.getint("network", "ndims"),
+            dilation=c.getint("network", "dilation", fallback=1),
+            border_mode=c.get("network", "border_mode"),
+            batch_normalization=c.getboolean("network", "batch_normalization"),
+            num_input_channels=params['num_channels'],
+        )
+
+        if not params['temporal_reduction']:
+            network = unet.UNetClassifier(unet_config)
+        else:
+            assert params['data_duration'] % params['num_channels'] == 0, \
+            "using temporal reduction chunks_duration must be a multiple of num_channels"
+            network = TempRedUNet(unet_config)
+
+    elif params['nn_architecture'] == 'github_unet':
+        network = UNet(
+            in_channels=params['num_channels'],
+            out_channels=c.getint("network", "num_classes"),
+            n_blocks=params['unet_steps'],
+            start_filts=params['first_layer_channels'],
+            #up_mode = ... # TESTARE DIVERSE POSSIBILTÀ, e.g.'resizeconv_nearest' to avoid checkerboard artifacts
+            merge_mode='concat', # Default, dicono che funziona meglio
+            #planar_blocks=(0,), # magari capire cos'è e testarlo ??
+            activation='relu',
+            #normalization='batch', # Penso che nell'implementazione di Pablo è 'none'
+            normalization='none', # Penso che nell'implementazione di Pablo è 'none'
+            attention=False, # magari da testare con 'True' ??
+            #full_norm=False,  # Uncomment to restore old sparse normalization scheme
+            dim=c.getint("network", "ndims"),
+            #conv_mode='valid',  # magari testare, ha dei vantaggi a quanto pare...
+            #up_mode='resizeconv_nearest',  # Enable to avoid checkerboard artifacts
+        )
 
     if device != "cpu":
         network = nn.DataParallel(network).to(device)
