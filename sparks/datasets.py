@@ -108,6 +108,9 @@ class SparkDataset(Dataset):
             # if testing, the dataset contains a single video
             assert len(sample_ids)==1, "Dataset set to testing mode, but it contains more than one sample."
 
+            # if testing, ground truth must be available
+            assert gt_available, "If testing, ground truth must be available."
+
             self.video_name = sample_ids[0]
             self.pad = 0
 
@@ -156,6 +159,11 @@ class SparkDataset(Dataset):
             # and compute the location of the spark peaks
             if self.testing:
                 # if testing, the dataset contain a single video
+
+                # if testing, need to keep track of movie duration, in case it
+                # is shorter than `chunks_duration and a pad is added
+                self.movie_duration = (self.data[0]).shape[0]
+
                 self.events = list(load_annotations_ids(
                                         data_folder=self.base_path,
                                         ids=sample_ids,

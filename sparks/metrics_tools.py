@@ -88,33 +88,6 @@ def empty_marginal_frames_from_coords(coords, n_frames, duration):
     return coords
 
 
-
-
-def write_videos_on_disk(training_name, video_name, path="predictions",
-                         xs=None, ys=None, preds=None):
-    '''
-     Write all videos on disk
-     xs : input video used by network
-     ys: segmentation video used in loss function
-     preds : all u-net preds [bg preds, sparks preds, puffs preds, waves preds]
-    '''
-    out_name_root = training_name + "_" + video_name + "_"
-
-    if not isinstance(xs, type(None)):
-        imageio.volwrite(os.path.join(path, out_name_root + "xs.tif"),
-                                      xs)
-    if not isinstance(ys, type(None)):
-        imageio.volwrite(os.path.join(path, out_name_root + "ys.tif"),
-                                      np.uint8(ys))
-    if not isinstance(preds, type(None)):
-        imageio.volwrite(os.path.join(path, out_name_root + "sparks.tif"),
-                                      np.exp(preds[1]))
-        imageio.volwrite(os.path.join(path, out_name_root + "waves.tif"),
-                                      np.exp(preds[2]))
-        imageio.volwrite(os.path.join(path, out_name_root + "puffs.tif"),
-                                      np.exp(preds[3]))
-
-
 def take_closest(myList, myNumber):
     """
     Assumes myList is sorted. Returns closest value to myNumber.
@@ -434,7 +407,7 @@ def nonmaxima_suppression(img,maxima_mask=None,
     # DEBUG: compute minimal distance between pair of sparks
 
     argwhere = np.array(argwhere, dtype=np.float)
-    if argwhere.size > 0:
+    '''if argwhere.size > 0:
         argwhere[:,0] /= min_dist_t
         argwhere[:,1] /= min_dist_xy
         argwhere[:,2] /= min_dist_xy
@@ -450,7 +423,7 @@ def nonmaxima_suppression(img,maxima_mask=None,
         argwhere[:,2] *= min_dist_xy
 
         close_coords = argwhere[min_coords][0]
-        print(f"Closest coordinates: \n{close_coords}")
+        print(f"Closest coordinates: \n{close_coords}")'''
 
     if not return_mask:
         return argwhere
@@ -634,9 +607,29 @@ def correspondences_precision_recall(coords_real, coords_pred,
             # false negative (annotations):
             false_negatives = sorted(diff(coords_real, paired_real))
 
-            return paired_real, paired_pred, false_positives, false_negatives
+            if return_nb_results:
+                tp = np.count_nonzero(w[row_ind, col_ind] <= 1)
+                tp_fp = len(coords_pred)
+                tp_fn = len(coords_real)
+
+                res = {'tp': tp,
+                       'tp_fp': tp_fp,
+                       'tp_fn': tp_fn}
+                return res, paired_real, paired_pred, false_positives, false_negatives
+            else:
+                return paired_real, paired_pred, false_positives, false_negatives
         else:
-            return [], [], coords_pred, coords_real
+            if return_nb_results:
+                tp = 0
+                tp_fp = len(coords_pred)
+                tp_fn = len(coords_real)
+
+                res = {'tp': tp,
+                       'tp_fp': tp_fp,
+                       'tp_fn': tp_fn}
+                return res, paired_real, paired_pred, false_positives, false_negatives                
+            else:
+                return [], [], coords_pred, coords_real
 
     else:
         if (coords_real.size > 0) and (coords_pred.size > 0):

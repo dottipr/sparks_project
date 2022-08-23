@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import sys
 import os
 import logging
@@ -105,6 +103,8 @@ if __name__ == "__main__":
     params['batch_normalization'] = c.get("network", "batch_normalization", fallback='none')
     params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
     params['initialize_weights'] = c.getboolean("network", "initialize_weights", fallback=False)
+    if params['nn_architecture'] == 'github_unet':
+        params['attention'] = c.getboolean("network", 'attention')
 
     ############################# configure logger #############################
 
@@ -142,7 +142,8 @@ if __name__ == "__main__":
 
     if c.getboolean("general", "wandb_enable", fallback=False):
         wandb.init(project=wandb_project_name,
-                   name=params['run_name'])
+                   name=params['run_name'],
+                   notes=c.get("general", "wandb_notes", fallback=None))
         logging.getLogger('wandb').setLevel(logging.DEBUG)
         #wandb.save(CONFIG_FILE)
 
@@ -155,9 +156,9 @@ if __name__ == "__main__":
 
     ############################ init random seeds #############################
 
-    torch.manual_seed(0)
+    #torch.manual_seed(0)
     #random.seed(0)
-    np.random.seed(0)
+    #np.random.seed(0)
 
     ############################ configure datasets ############################
 
@@ -297,16 +298,16 @@ if __name__ == "__main__":
             out_channels=num_classes,
             n_blocks=params['unet_steps']+1,
             start_filts=params['first_layer_channels'],
-            #up_mode = ... # TESTARE DIVERSE POSSIBILTÀ, e.g.'resizeconv_nearest' to avoid checkerboard artifacts
+            #up_mode = 'transpose', # TESTARE DIVERSE POSSIBILTÀ
+            #up_mode='resizeconv_nearest',  # Enable to avoid checkerboard artifacts
             merge_mode='concat', # Default, dicono che funziona meglio
             #planar_blocks=(0,), # magari capire cos'è e testarlo ??
             activation='relu',
             normalization=params['batch_normalization'], # Penso che nell'implementazione di Pablo è 'none'
-            attention=False, # magari da testare con 'True' ??
+            attention=params['attention'], # magari da testare con 'True' ??
             #full_norm=False,  # Uncomment to restore old sparse normalization scheme
             dim=ndims,
             #conv_mode='valid',  # magari testare, ha dei vantaggi a quanto pare...
-            #up_mode='resizeconv_nearest',  # Enable to avoid checkerboard artifacts
         )
 
     if device != "cpu":
@@ -359,6 +360,12 @@ if __name__ == "__main__":
                                    reduction='mean',
                                    w=params['w'])
 
+    # directory where predicted class movies are saved
+    preds_output_dir = os.path.join(output_relative_path,
+                                    params['run_name'],
+                                    'predictions')
+    os.makedirs(preds_output_dir, exist_ok=True)
+
     trainer = unet.TrainingManager(
         # training items
         training_step=lambda _: training_step(
@@ -388,6 +395,7 @@ if __name__ == "__main__":
             ignore_frames=params['ignore_frames_loss'],
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=params['run_name'],
+            output_dir=preds_output_dir,
             training_mode=True
         ),
         test_every=c.getint("training", "test_every", fallback=1000),

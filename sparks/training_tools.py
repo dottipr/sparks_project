@@ -26,6 +26,7 @@ import unet
 
 from metrics_tools import *
 from dataset_tools import get_new_mask
+from preds_output_tools import write_videos_on_disk, write_colored_sparks_on_disk
 
 __all__ = ["training_step",
            "test_function",
@@ -199,10 +200,25 @@ def get_preds(network, test_dataset, compute_loss, device,
 
         #print("MASK OUTPUT SHAPE BEFORE REMOVING PADDING", ys.shape)
         #print("MASK PADDING", test_dataset.pad)
-        #print("REMOVED FRAMES", test_dataset.pad // num_channels)
+        #print("REMOVED FRAMES", test_dataset.pad // test_dataset.num_channels)
 
         if test_dataset.pad != 0:
             pad = test_dataset.pad
+            xs = xs[pad//2 : -(pad//2+pad%2)]
+            if test_dataset.temporal_reduction:
+                ys = ys[(pad//2)//test_dataset.num_channels
+                        : -((pad//2+pad%2)//test_dataset.num_channels)]
+                preds = preds[:,
+                              (pad//2)//test_dataset.num_channels
+                              :-((pad//2+pad%2)//test_dataset.num_channels)]
+            else:
+                ys = ys[pad//2:-(pad//2+pad%2)]
+                preds = preds[:,pad//2:-(pad//2+pad%2)]
+
+        # If original sample was shorter than current movie duration, remove
+        # additional padded frames
+        if test_dataset.movie_duration < xs.shape[0]:
+            pad = xs.shape[0] - test_dataset.movie_duration
             xs = xs[pad//2 : -(pad//2+pad%2)]
             if test_dataset.temporal_reduction:
                 ys = ys[(pad//2)//test_dataset.num_channels
@@ -401,7 +417,8 @@ def get_preds(network, test_dataset, compute_loss, device,
     return results'''
 
 def test_function(network, device, criterion, ignore_frames, testing_datasets,
-                  logger, wandb_log, training_name, training_mode=True):
+                  logger, wandb_log, training_name, output_dir,
+                  training_mode=True):
     '''
     Validate UNet during training.
     Output segmentation is computed using argmax values (to avoid using
@@ -416,6 +433,7 @@ def test_function(network, device, criterion, ignore_frames, testing_datasets,
     ignore_frames:      frames ignored by the loss function
     wandb_log:          logger to store results on wandb
     training_name:      training name used to save predictions on disk
+    output_dir:         directory where the predicted movies are saved
     training_mode:      if True, compute a smaller set of metrics (only the ones
                         that are interesting to see during training)
 
@@ -453,7 +471,7 @@ def test_function(network, device, criterion, ignore_frames, testing_datasets,
         write_videos_on_disk(xs=xs,ys=ys,preds=preds,
                              training_name=training_name,
                              video_name=test_dataset.video_name,
-                             path="predictions"
+                             path=output_dir
                              )
 
         ################## compute metrics for current video ###################
@@ -522,15 +540,30 @@ def test_function(network, device, criterion, ignore_frames, testing_datasets,
                     coords_pred = empty_marginal_frames_from_coords(coords=coords_pred,
                                                                     n_frames=ignore_frames,
                                                                     duration=mask_duration)
+                    coords_true = empty_marginal_frames_from_coords(coords=test_dataset.coords_true,
+                                                                    n_frames=ignore_frames,
+                                                                    duration=mask_duration)
 
                 # get results as a dict {tp, tp_fp, tp_fn}
-                nb_results = correspondences_precision_recall(coords_real=test_dataset.coords_true,
-                                                              coords_pred=coords_pred,
-                                                              match_distance_xy=min_dist_xy,
-                                                              match_distance_t=min_dist_t,
-                                                              return_nb_results=True)
+                res = correspondences_precision_recall(coords_real=coords_true,
+                                                       coords_pred=coords_pred,
+                                                       match_distance_xy=min_dist_xy,
+                                                       match_distance_t=min_dist_t,
+                                                       return_pairs_coords=True,
+                                                       return_nb_results=True)
+
+                nb_results, paired_real, paired_pred, false_positives, false_negatives = res
 
                 spark_peaks_results[event_class][test_dataset.video_name] = nb_results
+
+                # write videos with colored sparks on disk
+                write_colored_sparks_on_disk(training_name=training_name,
+                                             video_name=test_dataset.video_name,
+                                             paired_real=paired_real,
+                                             paired_pred=paired_pred,
+                                             false_positives=false_positives,
+                                             false_negatives=false_negatives,
+                                             path=output_dir, xs=xs)
 
     ############################## reduce metrics ##############################
     metrics = {}

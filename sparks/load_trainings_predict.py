@@ -28,7 +28,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 import unet
 from architecture import TempRedUNet
-from metrics_tools import write_videos_on_disk
+from preds_output_tools import write_videos_on_disk
 from datasets import SparkTestDataset
 from training_tools import get_preds
 
