@@ -52,7 +52,7 @@ class SparkDataset(Dataset):
                  resampling = False, resampling_rate = 150,
                  remove_background = 'average', temporal_reduction = False,
                  num_channels = 1, normalize_video = 'chunk',
-                 only_sparks = False, sparks_type = 'peaks',
+                 only_sparks = False, sparks_type = 'peaks', ignore_index=4
                  ignore_frames = 0, gt_available = True):
 
         '''
@@ -98,6 +98,7 @@ class SparkDataset(Dataset):
         self.sample_ids = sample_ids
         self.only_sparks = only_sparks
         self.sparks_type = sparks_type
+        self.ignore_index = ignore_index
 
         self.duration = duration
         self.step = step
@@ -216,13 +217,13 @@ class SparkDataset(Dataset):
         # pad movies shorter than chunk duration with zeros before beginning and after end
         self.data = [self.pad_short_video(video) for video in self.data]
         if self.gt_available:
-            self.annotations = [self.pad_short_video(mask)
+            self.annotations = [self.pad_short_video(mask, padding_value=ignore_index)
                                 for mask in self.annotations]
 
         # pad movies whose length does not match chunks_duration and step params
         self.data = [self.pad_end_of_video(video) for video in self.data]
         if self.gt_available:
-            self.annotations = [self.pad_end_of_video(mask, mask=True)
+            self.annotations = [self.pad_end_of_video(mask, mask=True, padding_value=ignore_index)
                                 for mask in self.annotations]
 
         # compute chunks indices
@@ -242,12 +243,12 @@ class SparkDataset(Dataset):
             self.annotations = [torch.where(torch.logical_or(mask==1, mask==4),
                                          mask, 0) for mask in self.annotations]
 
-    def pad_short_video(self, video):
+    def pad_short_video(self, video, padding_value=0):
         # pad videos shorter than chunk duration with zeros on both sides
         if video.shape[0] < self.duration:
             pad = self.duration - video.shape[0]
             video = F.pad(video,(0,0,0,0,pad//2,pad//2+pad%2),
-                                'constant',value=0)
+                                'constant',value=padding_value)
 
             assert video.shape[0] == self.duration, "padding is wrong"
 
@@ -255,7 +256,7 @@ class SparkDataset(Dataset):
 
         return video
 
-    def pad_end_of_video(self, video, mask=False):
+    def pad_end_of_video(self, video, mask=False, padding_value=0):
         # pad videos whose length does not match with chunks_duration and
         # step params
         length = video.shape[0]
@@ -269,7 +270,7 @@ class SparkDataset(Dataset):
                 self.pad = pad
 
             video = F.pad(video,(0,0,0,0,pad//2,pad//2+pad%2),
-                                'constant',value=0)
+                                'constant',value=padding_value)
             length = video.shape[0]
             if not mask:
                 logger.info(f"Added padding of {pad} frames to video with unsuitable duration")

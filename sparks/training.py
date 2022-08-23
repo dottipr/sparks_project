@@ -215,7 +215,8 @@ if __name__ == "__main__":
         num_channels=params['num_channels'],
         normalize_video=params['norm_video'],
         only_sparks=params['only_sparks'],
-        sparks_type=params['sparks_type']
+        sparks_type=params['sparks_type'],
+        ignore_index=ignore_index
     )
 
     # apply transforms
@@ -244,8 +245,9 @@ if __name__ == "__main__":
                 normalize_video=params['norm_video'],
                 only_sparks=params['only_sparks'],
                 sparks_type=params['sparks_type'],
-                ignore_frames=params['ignore_frames_loss']
-                ) for sample_id in test_sample_ids]
+                ignore_frames=params['ignore_frames_loss'],
+                ignore_index=ignore_index
+            ) for sample_id in test_sample_ids]
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
