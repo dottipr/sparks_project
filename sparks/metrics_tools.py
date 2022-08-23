@@ -28,7 +28,6 @@ __all__ = ["Metrics",
            "reduce_metrics",
            "empty_marginal_frames",
            "empty_marginal_frames_from_coords",
-           "write_videos_on_disk",
            "compute_prec_rec",
            "reduce_metrics_thresholds",
            "compute_f_score",
@@ -81,7 +80,11 @@ def empty_marginal_frames_from_coords(coords, n_frames, duration):
     if n_frames > 0:
         if len(coords) > 0:
             n_frames_up = duration - n_frames
-            new_coords = [loc.tolist() for loc in coords
+
+            if type(coords[0]) != list:
+                [loc.tolist() for loc in coords]
+
+            new_coords = [loc for loc in coords
                           if loc[0]>=n_frames and loc[0]<n_frames_up]
             return new_coords
 
@@ -627,7 +630,7 @@ def correspondences_precision_recall(coords_real, coords_pred,
                 res = {'tp': tp,
                        'tp_fp': tp_fp,
                        'tp_fn': tp_fn}
-                return res, paired_real, paired_pred, false_positives, false_negatives                
+                return res, [], [], coords_pred, coords_real
             else:
                 return [], [], coords_pred, coords_real
 

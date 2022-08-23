@@ -99,12 +99,13 @@ if __name__ == "__main__":
     params['first_layer_channels'] = c.getint("network", "first_layer_channels")
     params['num_channels'] = c.getint("network", "num_channels", fallback=1)
     params['dilation'] = c.getboolean("network", "dilation", fallback=1)
-    params['border_mode'] = c.get("network", "border_mode", fallback='same')
+    params['border_mode'] = c.get("network", "border_mode")
     params['batch_normalization'] = c.get("network", "batch_normalization", fallback='none')
     params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
     params['initialize_weights'] = c.getboolean("network", "initialize_weights", fallback=False)
     if params['nn_architecture'] == 'github_unet':
         params['attention'] = c.getboolean("network", 'attention')
+        params['up_mode'] = c.get("network", 'up_mode')
 
     ############################# configure logger #############################
 
@@ -309,7 +310,7 @@ if __name__ == "__main__":
             attention=params['attention'], # magari da testare con 'True' ??
             #full_norm=False,  # Uncomment to restore old sparse normalization scheme
             dim=ndims,
-            #conv_mode='valid',  # magari testare, ha dei vantaggi a quanto pare...
+            conv_mode=params['border_mode'],  # 'valid' ha dei vantaggi a quanto pare...
         )
 
     if device != "cpu":

@@ -572,7 +572,7 @@ def test_function(network, device, criterion, ignore_frames, testing_datasets,
     loss /= len(testing_datasets)
 
     metrics['validation_loss'] = loss
-    logger.info(f"\tvalidation loss: {loss:.4g}")
+    #logger.info(f"\tvalidation loss: {loss:.4g}")
 
     for event_class in classes_list:
 

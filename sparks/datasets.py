@@ -52,7 +52,7 @@ class SparkDataset(Dataset):
                  resampling = False, resampling_rate = 150,
                  remove_background = 'average', temporal_reduction = False,
                  num_channels = 1, normalize_video = 'chunk',
-                 only_sparks = False, sparks_type = 'peaks', ignore_index=4
+                 only_sparks = False, sparks_type = 'peaks', ignore_index=4,
                  ignore_frames = 0, gt_available = True):
 
         '''

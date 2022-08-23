@@ -136,14 +136,14 @@ def write_colored_sparks_on_disk(training_name, video_name,
     rgb_video = [Image.fromarray(frame).convert('RGB') for frame in sample_video]
 
     annotated_video = add_colored_annotations_to_video(paired_real, rgb_video, [0,255,0], 0.8*transparency)
-    annotated_video = add_colored_annotations_to_video(paired_preds, annotated_video, [0,255,200], 0.8*transparency)
+    annotated_video = add_colored_annotations_to_video(paired_pred, annotated_video, [0,255,200], 0.8*transparency)
     annotated_video = add_colored_annotations_to_video(false_positives, annotated_video, [255,255,0], transparency)
     annotated_video = add_colored_annotations_to_video(false_negatives, annotated_video, [255,0,0], transparency)
 
     annotated_video = [np.array(frame) for frame in annotated_video]
 
     # set saved movies filenames
-    white_background_fn = "_white_backgroud" if white_background else ""
+    white_background_fn = "_white_backgroud" if isinstance(xs, type(None)) else ""
     out_name_root = training_name + "_" + video_name + white_background_fn + "_"
 
     # save video on disk
@@ -156,7 +156,7 @@ def write_colored_sparks_on_disk(training_name, video_name,
     with open(file_path, 'w') as f:
         f.write(f"{datetime.datetime.now()}\n\n")
         f.write(f"Paired annotations and preds:\n")
-        for p_true, p_preds in zip(paired_real, paired_preds):
+        for p_true, p_preds in zip(paired_real, paired_pred):
             f.write(f"{list(map(int, p_true))} {list(map(int, p_preds))}\n")
         f.write(f"\n")
         f.write(f"Unpaired preds (false positives):\n")
