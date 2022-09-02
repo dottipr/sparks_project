@@ -29,7 +29,7 @@ from torch.utils.tensorboard import SummaryWriter
 import unet
 from architecture import TempRedUNet
 from preds_output_tools import write_videos_on_disk
-from datasets import SparkTestDataset
+from datasets import SparkDataset
 from training_tools import get_preds
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
@@ -65,11 +65,12 @@ training_names = [#"temporal_reduction",
                   #"no_smoothing_physio",
                   #"new_sparks_V3_physio",
                   #"abs_max_normalization_ubelix",
-                  "focal_loss_updated_physio",
-                  "raw_sparks_no_bg_removal_ubelix",
-                  "peak_sparks_lovasz_physio",
-                  "raw_sparks_lovasz_physio",
-                  #"peak_sparks_sum_losses_physio"
+                  #"focal_loss_updated_physio",
+                  #"raw_sparks_no_bg_removal_ubelix",
+                  #"peak_sparks_lovasz_physio",
+                  #"raw_sparks_lovasz_physio",
+                  #"peak_sparks_sum_losses_physio",
+                  'TEMP_new_annotated_peaks_physio'
                   ]
 config_files = [#"config_temporal_reduction.ini",
                 #"config_normalize_whole_video.ini",
@@ -84,21 +85,36 @@ config_files = [#"config_temporal_reduction.ini",
                 #"config_no_smoothing_physio.ini",
                 #"config_new_sparks_V3_physio.ini",
                 #"config_abs_max_normalization_ubelix.ini",
-                "config_focal_loss_updated_physio.ini",
-                "config_raw_sparks_ubelix.ini",
-                "config_peak_sparks_lovasz_physio.ini",
-                "config_raw_sparks_lovasz_physio.ini",
-                #"config_peak_sparks_sum_losses_physio.ini"
+                #"config_focal_loss_updated_physio.ini",
+                #"config_raw_sparks_ubelix.ini",
+                #"config_peak_sparks_lovasz_physio.ini",
+                #"config_raw_sparks_lovasz_physio.ini",
+                #"config_peak_sparks_sum_losses_physio.ini",
+                'config_temp_new_annotated_peaks_physio.ini'
                 ]
 
 
 ### Select if prediction are computed for training or testing dataset
 
 use_train_data = False
+dataset_size = c.get("testing", "dataset_size")
+
 if use_train_data:
     logger.info("Predict outputs for training data")
+    if dataset_size == 'full':
+        sample_ids = ["01","02","03","04","06","07","08","09",
+                            "11","12","13","14","16","17","18","19",
+                            "21","22","23","24","27","28","29",
+                            "30","33","35","36","38","39",
+                            "41","42","43","44","46"]
+    elif dataset_size == 'minimal':
+        sample_ids = ["01"]
 else:
     logger.info("Predict outputs for testing data")
+    if dataset_size == 'full':
+        sample_ids = ["05","10","15","20","25","32","34","40","45"]
+    elif dataset_size == 'minimal':
+        sample_ids = ["34"]
 
 
 ### Configure output folder
@@ -253,14 +269,11 @@ for training_name, config_name in zip(training_names, config_files):
 
     ########################### load dataset ###########################
 
-    dataset_map = {'full': "", 'small': 'small_dataset', 'minimal': 'very_small_dataset'}
-    dataset_size = c.get("testing", "dataset_size")
-    dataset_dir = dataset_map[dataset_size]
 
-    dataset_basedir = c.get("data", "relative_path")
-    dataset_path = os.path.realpath(f"{BASEDIR}/{dataset_basedir}/{dataset_dir}")
 
-    logger.info(f"\tUsing {dataset_size} dataset located in {dataset_path}")
+    dataset_basedir = c.get("dataset", "relative_path")
+
+    logger.info(f"\tUsing {dataset_size} dataset located in {dataset_basedir}")
 
     if not use_train_data:
         pattern_test_filenames = os.path.join(f"{dataset_path}","videos_test",
@@ -273,18 +286,22 @@ for training_name, config_name in zip(training_names, config_files):
 
     # create dataset
     testing_datasets = [
-        SparkTestDataset(
-            video_path=f,
-            smoothing=c.get("data", "smoothing", fallback="2d"),
-            step=c.getint("data", "step"),
-            duration=c.getint("data", "chunks_duration"),
-            remove_background=c.get("data", "remove_background", fallback='average'),
-            temporal_reduction=c.getboolean("network", "temporal_reduction", fallback=False),
-            num_channels=c.getint("network", "num_channels", fallback=1),
-            normalize_video=c.get("data", "norm_video", fallback="chunk"),
-            only_sparks=c.getboolean("data", "only_sparks", fallback=False),
-            sparks_type=c.get("data", "sparks_type", fallback="peaks")
-        ) for f in test_filenames]
+        SparkDataset(
+            base_path=dataset_basedir,
+            sample_ids=sample_id,
+            testing=True,
+            smoothing=c.get("dataset", "smoothing"),
+            step=c.getint("dataset", "data_step"),
+            duration=c.getint("dataset", "data_duration"),
+            remove_background=c.get("dataset", "remove_background"),
+            temporal_reduction=c.getboolean("network", "temporal_reduction"),
+            num_channels=c.getint("network", "num_channels"),
+            normalize_video=c.get("dataset", "norm_video"),
+            only_sparks=c.getboolean("dataset", "only_sparks"),
+            sparks_type=c.get("dataset", "sparks_type"),
+            ignore_frames=c.get("training", "ignore_frames_loss"),
+            ignore_index=4
+        ) for sample_id in sample_ids]
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"\t\tTesting dataset {i} contains {len(tds)} samples")

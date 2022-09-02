@@ -11,8 +11,8 @@ results for given parameters (e.g. detection thresholds):
 Predictions and training annotations are saved in
 `.\trainings_validation\{training_name}`
 
-Movies are saved in `..\data\raw_data_and_processing\original_movies`
-Raw annotations are saved in `..\data\raw_data_and_processing\original_masks`
+Movies are saved in `..\data\raw_data_and_processing\original_movies` (CHANGE THIS)
+Raw annotations are saved in `..\data\raw_data_and_processing\original_masks` (CHANGE THIS)
 
 Metrics will be saved in
 `.\trainings_validation\{training_name}\per_pixel_results`
@@ -47,9 +47,9 @@ from metrics_tools import (correspondences_precision_recall,
                            get_argmax_segmented_output,
                            nonmaxima_suppression
                           )
-from dataset_tools import (load_annotations,
+from dataset_tools import (load_annotations_ids,
                            load_predictions,
-                           load_movies,
+                           load_movies_ids,
                            get_new_mask
                           )
 
@@ -272,15 +272,17 @@ if __name__ == "__main__":
     ############################################################################
 
     # Select predictions to load
-    training_names = ['raw_sparks_lovasz_physio',
+    training_names = [#'raw_sparks_lovasz_physio',
                       #"peak_sparks_lovasz_physio",
-                      #"peak_sparks_sum_losses_physio"
+                      #"peak_sparks_sum_losses_physio",
+                      'TEMP_new_annotated_peaks_physio'
                      ]
 
     # Select corresponding config file
-    config_files = ['config_raw_sparks_lovasz_physio.ini',
+    config_files = [#'config_raw_sparks_lovasz_physio.ini',
                     #"config_peak_sparks_lovasz_physio.ini",
-                    #"config_peak_sparks_sum_losses_physio.ini"
+                    #"config_peak_sparks_sum_losses_physio.ini",
+                    'config_temp_new_annotated_peaks_physio.ini'
                    ]
 
     # set simple_mode to True to compute metrics for fewer parameters & thresholds
@@ -295,8 +297,14 @@ if __name__ == "__main__":
     use_train_data = False
     if use_train_data:
         print("Get results for training data")
+        sample_ids = ["01","02","03","04","06","07","08","09",
+                            "11","12","13","14","16","17","18","19",
+                            "21","22","23","24","27","28","29",
+                            "30","33","35","36","38","39",
+                            "41","42","43","44","46"]
     else:
         print("Get results for testing data")
+        sample_ids = ["05","10","15","20","25","32","34","40","45"]
 
     # Set folder where data is loaded and saved
     if not use_train_data:
@@ -313,14 +321,22 @@ if __name__ == "__main__":
     ################## LOAD DATA SHARED FOR ALL TRAININGS ######################
     ############################################################################
 
+    dataset_path = os.path.join("..","data","sparks_dataset")
 
     # Load raw annotations (sparks unprocessed, most recent version, train and test samples)
-    raw_ys_path = os.path.join("..","data","raw_data_and_processing","original_masks")
-    raw_ys = load_annotations(raw_ys_path, mask_names="mask")
+    #raw_ys_path = os.path.join("..","data","raw_data_and_processing","original_masks")
+    #raw_ys = load_annotations(raw_ys_path, mask_names="mask")
+    raw_ys = load_annotations_ids(data_folder=dataset_path,
+                                  ids=sample_ids,
+                                  mask_names="class_label")
 
     # Load original movies (train and test samples)
-    movies_path = os.path.join("..","data","raw_data_and_processing","original_movies")
-    movies = load_movies(movies_path)
+    #movies_path = os.path.join("..","data","raw_data_and_processing","original_movies")
+    #movies = load_movies(movies_path)
+    movies = load_movies_ids(data_folder=dataset_path,
+                             ids=sample_ids,
+                             names_available=True,
+                             movie_names="video")
 
 
     ############################################################################
@@ -388,7 +404,7 @@ if __name__ == "__main__":
 
         ########################## general parameters ##########################
 
-        ignore_frames = c.getint("data", "ignore_frames_loss")
+        ignore_frames = c.getint("training", "ignore_frames_loss")
 
         ################### import .tif files as numpy array ###################
 
@@ -470,7 +486,7 @@ if __name__ == "__main__":
 
                     ######### compute results using a detection threshold ##########
 
-                    if (event_class == 'sparks') and (c.get("data","sparks_type") == 'peaks'):
+                    if (event_class == 'sparks') and (c.get("dataset","sparks_type") == 'peaks'):
                         print("WARNING: pixel-based results for sparks when training using peaks are not really meaningful...")
 
                     # get raw preds and ys
@@ -566,12 +582,12 @@ if __name__ == "__main__":
                     ys_sample_training = ys[movie_name]
 
                     # extract peak locations from annotations used during training
-                    if c.get("data","sparks_type") == 'peaks':
+                    if c.get("dataset","sparks_type") == 'peaks':
                         coords_true = get_sparks_locations_from_mask(mask=ys_sample_training,
                                                                      min_dist_xy=MIN_DIST_XY,
                                                                      min_dist_t=MIN_DIST_T,
                                                                      ignore_frames=ignore_frames)
-                    elif c.get("data","sparks_type") == 'raw':
+                    elif c.get("dataset","sparks_type") == 'raw':
                         print("\t\tModel trained using raw sparks, extracting locations from annotations...")
                         coords_true = get_new_mask(video=movie_sample,
                                                    mask=ys_sample_training,
