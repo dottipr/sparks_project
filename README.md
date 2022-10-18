@@ -84,12 +84,12 @@ These parameters are not important to be printed for comparison with the success
 
 ### Currently not used
 
-These parameters are currently unused, they are only present in the _config_....ini_ files.
+These parameters are currently unused, they are only present in the *config_....ini* files.
 
-	* fixed_threshold: detection threshold for test function, currently not used
-	* t_detection_sparks: threshold applied to sparks detection to compute metrics (currently not used since computing ouptput segmentation with argmax, hence its value is 'none' and it is not printed)
-	* t_detection_puffs: threshold applied to puffs detection to compute metrics (currently not used since computing ouptput segmentation with argmax, hence its value is 'none' and it is not printed)
-	* t_detection_waves: threshold applied to waves detection to compute metrics (currently not used since computing ouptput segmentation with argmax, hence its value is 'none' and it is not printed)
-	* sparks_min_radius: minimal radius below which spark predictions are removed in the output segmentation (currently not used hence it value is 'none' and it is not printed)
-	* puffs_min_radius: minimal radius below which puff predictions are removed in the output segmentation (currently not used hence it value is 'none' and it is not printed)
-	* waves_min_radius: minimal radius below which wave predictions are removed in the output segmentation (currently not used hence it value is 'none' and it is not printed)
+* fixed_threshold: detection threshold for test function, currently not used
+* t_detection_sparks: threshold applied to sparks detection to compute metrics (currently not used since computing ouptput segmentation with argmax, hence its value is 'none' and it is not printed)
+* t_detection_puffs: threshold applied to puffs detection to compute metrics (currently not used since computing ouptput segmentation with argmax, hence its value is 'none' and it is not printed)
+* t_detection_waves: threshold applied to waves detection to compute metrics (currently not used since computing ouptput segmentation with argmax, hence its value is 'none' and it is not printed)
+* sparks_min_radius: minimal radius below which spark predictions are removed in the output segmentation (currently not used hence it value is 'none' and it is not printed)
+* puffs_min_radius: minimal radius below which puff predictions are removed in the output segmentation (currently not used hence it value is 'none' and it is not printed)
+* waves_min_radius: minimal radius below which wave predictions are removed in the output segmentation (currently not used hence it value is 'none' and it is not printed)
