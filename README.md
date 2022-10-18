@@ -1,5 +1,42 @@
 # Detection and Classification of Local Ca²⁺ Release Events in Cardiomyocytes Using 3D-UNet Neural Network
 
+## List of main Python scripts (status at 18/10/2022)
+
+Short explanation of the purposes of each script present in this project.
+
+1. *architecture.py*: in questo file scrivo tutte le variazioni della UNet architecture oppure altre architectures completamente diverse
+2. *dataset_tools.py*: script con tutte le funzioni che sono specifiche per la creazione dei datasets
+	* 🠊 magari il file sarebbe da "merge" con *dataset.py* (?)
+	* controllare se le funzioni sono piuttosto da includere nella class `SparkDataset`
+	* muovere le funzioni più generiche in altri script
+3. *datasets.py*: file dove ho implementato il dataset [movie(s)-> chunks]
+4. *generate_unet_annotations_raw_sparks.py*: qui processo le raw annotations per ottenere un input per la UNet
+4. *generate_unet_annotations.py*: stessa cosa, ma produco degli input per la network dove gli sparks sono particolarmente processati (e.g. peaks)
+	* 🠊 probabilmente da "merge" con il file precedente, aggiungendo un parametro per scegliere che tipo di processing voglio fare
+	* idea: ottenere un file unico per fare il processing "raw annotations" -> "movies ready for UNET", cioè tutte quei processing che non voglio ripetere ogni volta che genero un dataset per il training (tipo aggiungere la ignore region, visto che ci va una vita)
+5. *get_sparks_from_preds.py*: file che apre un output della network e salva le locations degli sparks in un file .csv
+	* 🠊 probabilmente inutile ora, tasferire le funzioni utili in uno script con tutte le funzioni per scrivere cose sul disco e eliminare questo script
+6. *load_trainings_predict.py*
+7. *metrics_tools.py*
+8. *new_unet.py*: questa è un implementazione della UNet che ho trovato su github, ha dei parametri in più che si possono cambiare rispetto a quella di Pablo, ma non sono sicura che abbia davvero dei vantaggi, tengo il file solo per sicurezza e se caso lo elimino alla fine del progetto
+9. ~~*other_losses.py*~~ 🠊 *custom_losses.py*: in questo file salvo tutte le loss functions che provo e che non sono già implementate in Pytorch
+	* 🠊 cambiare nome del file e adattare scripts dove viene importato
+10. ~~*preds_output_tools.py*~~ 🠊 "disc_output_tools.py": script con funzioni per salvare vari outputs sul disco (video, immagini, csv files...)
+	* 🠊 cambiare nome del file e adattare scripts dove viene importato
+11. *preds_processing_tools.py*: script che contiene tutte le funzioni necessarie per processare gli output della UNet (partendo dalle raw preds dei chunks, a come li rimetto assieme, fino all'ottenimento di segmentation masks e instances detection)
+	* 🠊 pensare bene se le funzioni che sono contenute qui starebbero meglio in un altro script
+	* magari a un certo punto si potrà chiamare *inference_tools.py*, ma per intanto lascio così
+	* !!! magari bisogna mantenere qui le funzioni per l'inferenza e avere un file separato con le funzioni che vanno bene sia per il pre- che per il post-processing !!! (ad es., *data_processing.py*)
+12. *save_metrics_to_json.py*: in questo file apro input movies, annotations e predictions per calcolare delle metrics
+	* 🠊 molto probabilmente outdated, vedere se ci sono delle funzioni da tenere e salvare da un'altra parte e poi da eliminare
+13. *save_results_to_json.py*: in questo file apro input movies, annotations e predictions per calcolare tp, fp, fn da salvare sul disco per poi calcolare le metrics
+	* 🠊 molto probabilmente outdated, vedere se ci sono delle funzioni da tenere e salvare da un'altra parte e poi da eliminare
+14. *separate_events.py*: qui stavo cominciando a riassumere il notebook di Jupyter corrispondente, però non sono sicura che abbia senso avere un file che non sia su Jupyter...
+15. *track_objects_from_preds.py*: file scritto per separare gli eventi
+	* 🠊 molto probabilmente outdated, vedere se ci sono delle funzioni da tenere e salvare da un'altra parte e poi da eliminare
+16. *training_tools.py*: script che contiene la training e testing functions
+17. *training.py*: script da eseguire per fare il training della network
+
 ## Parameters summary
 
 ### Fixed parameters
