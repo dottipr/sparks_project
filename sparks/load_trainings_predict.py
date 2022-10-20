@@ -27,7 +27,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 import unet
-from architecture import TempRedUNet
+from architectures import TempRedUNet
 from preds_output_tools import write_videos_on_disk
 from datasets import SparkDataset
 from training_tools import get_preds
@@ -96,26 +96,11 @@ config_files = [#"config_temporal_reduction.ini",
 
 ### Select if prediction are computed for training or testing dataset
 
-use_train_data = False
-dataset_size = c.get("testing", "dataset_size")
-
+use_train_data = True
 if use_train_data:
     logger.info("Predict outputs for training data")
-    if dataset_size == 'full':
-        sample_ids = ["01","02","03","04","06","07","08","09",
-                            "11","12","13","14","16","17","18","19",
-                            "21","22","23","24","27","28","29",
-                            "30","33","35","36","38","39",
-                            "41","42","43","44","46"]
-    elif dataset_size == 'minimal':
-        sample_ids = ["01"]
 else:
     logger.info("Predict outputs for testing data")
-    if dataset_size == 'full':
-        sample_ids = ["05","10","15","20","25","32","34","40","45"]
-    elif dataset_size == 'minimal':
-        sample_ids = ["34"]
-
 
 ### Configure output folder
 
@@ -262,42 +247,49 @@ for training_name, config_name in zip(training_names, config_files):
     ########################### parameters ###########################
 
     batch_size = c.getint("testing", "batch_size", fallback="1")
-    ignore_frames = c.getint("data", "ignore_frames_loss")
+    ignore_frames = c.getint("training", "ignore_frames_loss")
 
     temporal_reduction = c.getboolean("network", "temporal_reduction", fallback=False)
     num_channels = c.getint("network", "num_channels", fallback=1) if temporal_reduction else 1
 
     ########################### load dataset ###########################
 
+    dataset_size = c.get("testing", "dataset_size")
 
-
-    dataset_basedir = c.get("dataset", "relative_path")
-
-    logger.info(f"\tUsing {dataset_size} dataset located in {dataset_basedir}")
-
-    if not use_train_data:
-        pattern_test_filenames = os.path.join(f"{dataset_path}","videos_test",
-                                               "[0-9][0-9]_video.tif")
+    if use_train_data:
+        if dataset_size == 'full':
+            sample_ids = ["01","02","03","04","06","07","08","09",
+                                "11","12","13","14","16","17","18","19",
+                                "21","22","23","24","27","28","29",
+                                "30","33","35","36","38","39",
+                                "41","42","43","44","46"]
+        elif dataset_size == 'minimal':
+            sample_ids = ["01"]
     else:
-        pattern_test_filenames = os.path.join(f"{dataset_path}","videos",
-                                               "[0-9][0-9]_video.tif")
+        if dataset_size == 'full':
+            sample_ids = ["05","10","15","20","25","32","34","40","45"]
+        elif dataset_size == 'minimal':
+            sample_ids = ["34"]
 
-    test_filenames = sorted(glob.glob(pattern_test_filenames))
+    relative_path = c.get("dataset", "relative_path")
+    dataset_path = os.path.realpath(f"{BASEDIR}/{relative_path}")
+    assert os.path.isdir(dataset_path), f"\"{dataset_path}\" is not a directory"
+    logger.info(f"Using {dataset_path} as dataset root path")
 
     # create dataset
     testing_datasets = [
         SparkDataset(
-            base_path=dataset_basedir,
-            sample_ids=sample_id,
+            base_path=dataset_path,
+            sample_ids=[sample_id],
             testing=True,
-            smoothing=c.get("dataset", "smoothing"),
+            smoothing=c.get("dataset", "data_smoothing"),
             step=c.getint("dataset", "data_step"),
             duration=c.getint("dataset", "data_duration"),
             remove_background=c.get("dataset", "remove_background"),
-            temporal_reduction=c.getboolean("network", "temporal_reduction"),
-            num_channels=c.getint("network", "num_channels"),
+            temporal_reduction=c.getboolean("network", "temporal_reduction", fallback=False),
+            num_channels=num_channels,
             normalize_video=c.get("dataset", "norm_video"),
-            only_sparks=c.getboolean("dataset", "only_sparks"),
+            only_sparks=c.getboolean("dataset", "only_sparks", fallback=False),
             sparks_type=c.get("dataset", "sparks_type"),
             ignore_frames=c.get("training", "ignore_frames_loss"),
             ignore_index=4
@@ -311,26 +303,28 @@ for training_name, config_name in zip(training_names, config_files):
         DataLoader(test_dataset,
                    batch_size=c.getint("testing", "batch_size", fallback="1"),
                    shuffle=False,
-                   num_workers=c.getint("training", "num_workers"))
+                   num_workers=c.getint("dataset", "num_workers"))
         for test_dataset in testing_datasets
     ]
 
     ########################### configure UNet ###########################
 
+    batch_norm = {'batch': True, 'none': False}
+
     unet_config = unet.UNetConfig(
-        steps=c.getint("network", "step"),
+        steps=c.getint("network", "unet_steps"),
         first_layer_channels=c.getint("network", "first_layer_channels"),
-        num_classes=c.getint("network", "num_classes"),
-        ndims=c.getint("network", "ndims"),
+        num_classes=4,
+        ndims=3,
         dilation=c.getint("network", "dilation", fallback=1),
         border_mode=c.get("network", "border_mode"),
-        batch_normalization=c.getboolean("network", "batch_normalization"),
+        batch_normalization=batch_norm[c.get("network", "batch_normalization")],
         num_input_channels=num_channels,
     )
     if not temporal_reduction:
         network = unet.UNetClassifier(unet_config)
     else:
-        assert c.getint("data", "chunks_duration") % num_channels == 0, \
+        assert c.getint("dataset", "data_duration") % num_channels == 0, \
         "using temporal reduction chunks_duration must be a multiple of num_channels"
         network = TempRedUNet(unet_config)
 
@@ -338,7 +332,8 @@ for training_name, config_name in zip(training_names, config_files):
 
     ########################### load trained UNet params ###########################
 
-    output_path = os.path.join(c.get("network", "output_relative_path"), training_name)
+    output_relative_path = 'runs/'
+    output_path = os.path.join(output_relative_path, training_name)
     logger.info(f"Saved model path: {output_path}")
     summary_writer = SummaryWriter(os.path.join(output_path, "summary"), purge_step=0)
 

@@ -48,7 +48,7 @@ from metrics_tools import (correspondences_precision_recall,
                            nonmaxima_suppression
                           )
 from dataset_tools import (load_annotations_ids,
-                           load_predictions,
+                           load_predictions_ids,
                            load_movies_ids,
                            get_new_mask
                           )
@@ -409,9 +409,11 @@ if __name__ == "__main__":
         ################### import .tif files as numpy array ###################
 
         data_folder = os.path.join(metrics_folder, training_name)
-        ys, sparks, puffs, waves = load_predictions(training_name,
-                                                    epoch,
-                                                    data_folder)
+        ys, sparks, puffs, waves = load_predictions_ids(training_name=training_name,
+                                                    epoch=epoch,
+                                                    metrics_folder=data_folder,
+                                                    ids=sample_ids
+                                                    )
 
         movie_names = ys.keys()
         # compute results for each sample movie

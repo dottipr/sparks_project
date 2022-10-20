@@ -16,8 +16,9 @@ Short explanation of the purposes of each script present in this project.
 	* idea: ottenere un file unico per fare il processing "raw annotations" -> "movies ready for UNET", cioè tutte quei processing che non voglio ripetere ogni volta che genero un dataset per il training (tipo aggiungere la ignore region, visto che ci va una vita)
 5. *get_sparks_from_preds.py*: file che apre un output della network e salva le locations degli sparks in un file .csv
 	* 🠊 probabilmente inutile ora, tasferire le funzioni utili in uno script con tutte le funzioni per scrivere cose sul disco e eliminare questo script
-6. *load_trainings_predict.py*
-7. *metrics_tools.py*
+6. *load_trainings_predict.py*: load un trained model della UNet e produce delle raw merged predictions che vengono poi salvate sul disco
+	* 🠊 da tenere e controllare solo se e come aggiornarlo (e.g., per fare diversi tipi di assemblaggi dai chunks)
+7. *metrics_tools.py*: funzioni che vengono usate per calcolare le metrics (cioè funzioni che prendono come input le raw preds/segmented preds/events instances)
 8. *new_unet.py*: questa è un implementazione della UNet che ho trovato su github, ha dei parametri in più che si possono cambiare rispetto a quella di Pablo, ma non sono sicura che abbia davvero dei vantaggi, tengo il file solo per sicurezza e se caso lo elimino alla fine del progetto
 9. ~~*other_losses.py*~~ 🠊 *custom_losses.py*: in questo file salvo tutte le loss functions che provo e che non sono già implementate in Pytorch
 	* 🠊 cambiare nome del file e adattare scripts dove viene importato

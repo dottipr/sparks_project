@@ -24,6 +24,7 @@ from bisect import bisect_left
 
 __all__ = ["Metrics",
            "nonmaxima_suppression",
+           "simple_nonmaxima_suppression",
            "correspondences_precision_recall",
            "reduce_metrics",
            "empty_marginal_frames",
@@ -38,7 +39,6 @@ __all__ = ["Metrics",
            "process_wave_prediction",
            "compute_puff_wave_metrics",
            "compute_average_puff_wave_metrics",
-           "get_argmax_segmented_output",
            "compute_filtered_butter"
            ]
 
@@ -128,28 +128,6 @@ def flood_fill_hull(image):
     out_img = np.zeros(image.shape)
     out_img[out_idx] = 1
     return out_img, hull
-
-
-def get_argmax_segmented_output(preds, get_classes=True):
-    '''
-    preds are the (exponential) raw outputs of the unet for each class:
-    [background, sparks, waves, puffs] (4 x duration x 64 x 512)
-    '''
-
-    argmax_classes = np.argmax(preds, axis=0)
-
-    if not get_classes:
-        return argmax_classes
-
-    preds = {}
-    preds['sparks'] = np.where(argmax_classes==1,1,0)
-    preds['waves'] = np.where(argmax_classes==2,1,0)
-    preds['puffs'] = np.where(argmax_classes==3,1,0)
-
-    imageio.volwrite("TEST_argmax.tif", np.uint8(argmax_classes))
-
-    return preds, argmax_classes
-
 
 
 
@@ -299,7 +277,62 @@ def compute_filtered_butter(movie_array,
     return filtered
 
 
+def simple_nonmaxima_suppression(img,maxima_mask=None,
+                                 min_dist=None,
+                                 return_mask=False, threshold=0.5, sigma=2):
+    '''
+    Extract local maxima from input array (t,x,y).
+    img :           input array
+    maxima_mask :   if not None, look for local maxima only inside the mask
+    min_dist :      define minimal distance between two peaks
+    return_mask :   if True return both masks with maxima and locations, if
+                    False only returns locations
+    threshold :     minimal value of maximum points
+    sigma :         sigma parameter of gaussian filter
+    '''
+    img = img.astype(np.float64)
 
+    # handle min_dist connectivity mask
+    if min_dist is None:
+        min_dist = 1
+
+    if np.isscalar(min_dist):
+        c_min_dist = ndi.generate_binary_structure(img.ndim, min_dist)
+    else:
+        c_min_dist = np.array(min_dist, bool)
+        if c_min_dist.ndim != img.ndim:
+            raise ValueError("Connectivity dimension must be same as image")
+
+    if maxima_mask is not None:
+        # mask out region from img with mask
+        masked_img = np.where(maxima_mask, img, 0.)
+
+        # smooth masked input image
+        smooth_img = ndi.gaussian_filter(masked_img, sigma=sigma)
+
+    else:
+        smooth_img = ndi.gaussian_filter(img, sigma=sigma)
+
+    # search for local maxima
+    dilated = ndi.maximum_filter(smooth_img,
+                                 footprint=c_min_dist)
+
+    if maxima_mask is not None:
+        # hyp: maxima belong to maxima mask
+        masked_smooth_img = np.where(maxima_mask, smooth_img, 0.)
+        argmaxima = np.logical_and(smooth_img == dilated, masked_smooth_img > threshold)
+    else:
+        argmaxima = np.logical_and(smooth_img == dilated, smooth_img > threshold)
+
+
+    argwhere = np.argwhere(argmaxima)
+    argwhere = np.argwhere(argmaxima).tolist()
+    #argwhere = np.array(argwhere, dtype=float)
+
+    if not return_mask:
+        return argwhere
+
+    return argwhere, argmaxima
 
 
 def nonmaxima_suppression(img,maxima_mask=None,

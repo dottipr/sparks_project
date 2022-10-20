@@ -107,7 +107,7 @@ class SparkDataset(Dataset):
         # to the movie
         if self.testing:
             # if testing, the dataset contains a single video
-            assert len(sample_ids)==1, "Dataset set to testing mode, but it contains more than one sample."
+            assert len(sample_ids)==1, f"Dataset set to testing mode, but it contains {len(sample_ids)} samples: {sample_ids}."
 
             # if testing, ground truth must be available
             assert gt_available, "If testing, ground truth must be available."
