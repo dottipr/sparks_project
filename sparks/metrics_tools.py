@@ -1,46 +1,25 @@
 '''
-This script will contain methods useful for processing the unet outputs
-'''
-import glob
-import imageio
-import os
-import matplotlib.pyplot as plt
-import time
-import math
+24.10.2022
 
+Script with function for metrics on UNet output computation.
+
+REMARKS
+24.10.2022: functions that aren't currently used are commented out and put at
+the end of the script (such as ..., )
+'''
 from collections import namedtuple, defaultdict
 
 import numpy as np
-import cc3d
-from scipy import ndimage as ndi
 from scipy.ndimage.morphology import binary_dilation, binary_erosion
-from scipy import optimize, spatial, signal, fftpack
-from skimage import morphology
-from skimage.draw import ellipsoid
-from skimage.restoration import (denoise_wavelet, estimate_sigma)
+from scipy import optimize, spatial
 from sklearn.metrics import auc
 from bisect import bisect_left
 
+from data_processing_tools import (empty_marginal_frames,
+                                   process_spark_prediction,
+                                   simple_nonmaxima_suppression,
+                                   sparks_connectivity_mask)
 
-__all__ = ["Metrics",
-           "nonmaxima_suppression",
-           "simple_nonmaxima_suppression",
-           "correspondences_precision_recall",
-           "reduce_metrics",
-           "empty_marginal_frames",
-           "empty_marginal_frames_from_coords",
-           "compute_prec_rec",
-           "reduce_metrics_thresholds",
-           "compute_f_score",
-           "take_closest",
-           "get_sparks_locations_from_mask",
-           "process_spark_prediction",
-           "process_puff_prediction",
-           "process_wave_prediction",
-           "compute_puff_wave_metrics",
-           "compute_average_puff_wave_metrics",
-           "compute_filtered_butter"
-           ]
 
 
 ################################ Global params #################################
@@ -57,38 +36,6 @@ MIN_DIST_T = round(20 / TIME_FRAME) # min distance in time between sparks
 
 
 ################################ Generic utils #################################
-
-
-def empty_marginal_frames(video, n_frames):
-    '''
-    Set first and last n_frames of a video to zero.
-    '''
-    if n_frames > 0:
-        new_video = video[n_frames:-n_frames]
-        new_video = np.pad(new_video,((n_frames,),(0,),(0,)), mode='constant')
-    else: new_video = video
-
-    assert(np.shape(video) == np.shape(new_video))
-
-    return new_video
-
-def empty_marginal_frames_from_coords(coords, n_frames, duration):
-    '''
-    Remove sparks 'coords' located in first and last 'n_frames' of a video of
-    duration 'duration'.
-    '''
-    if n_frames > 0:
-        if len(coords) > 0:
-            n_frames_up = duration - n_frames
-
-            if type(coords[0]) != list:
-                [loc.tolist() for loc in coords]
-
-            new_coords = [loc for loc in coords
-                          if loc[0]>=n_frames and loc[0]<n_frames_up]
-            return new_coords
-
-    return coords
 
 
 def take_closest(myList, myNumber):
@@ -116,18 +63,53 @@ def diff(l1, l2):
     return list(map(list,(set(map(tuple,l1))).difference(set(map(tuple,l2)))))
 
 
-def flood_fill_hull(image):
+
+############################### Generic metrics ################################
+
+
+def compute_iou(ys_roi, preds_roi, ignore_mask=None):
     '''
-    Compute convex hull of a Numpy array.
+    Compute IoU for given single annotated and predicted events.
+    ys_roi :            annotated event ROI
+    preds_roi :         predicted event ROI
+    ignore_mask :       mask that is ignored by loss function during training
     '''
-    points = np.transpose(np.where(image))
-    hull = spatial.ConvexHull(points)
-    deln = spatial.Delaunay(points[hull.vertices])
-    idx = np.stack(np.indices(image.shape), axis = -1)
-    out_idx = np.nonzero(deln.find_simplex(idx) + 1)
-    out_img = np.zeros(image.shape)
-    out_img[out_idx] = 1
-    return out_img, hull
+    # define mask where pixels aren't ignored by loss function
+    if ignore_mask is not None:
+        compute_mask = np.logical_not(ignore_mask)
+        preds_roi_real = np.logical_and(preds_roi, compute_mask)
+    else:
+        preds_roi_real = preds_roi
+
+    intersection = np.logical_and(ys_roi, preds_roi_real)
+    union = np.logical_or(ys_roi, preds_roi_real)
+    iou = np.count_nonzero(intersection) / np.count_nonzero(union)
+    return iou
+
+
+def compute_inter_min(ys_roi, preds_roi, ignore_mask=None):
+    '''
+    Compute intersection over minimum area for given single annotated and predicted events.
+    ys_roi :            annotated event ROI
+    preds_roi :         predicted event ROI
+    ignore_mask :       mask that is ignored by loss function during training
+    '''
+    # define mask where pixels aren't ignored by loss function
+    if ignore_mask is not None:
+        compute_mask = np.logical_not(ignore_mask)
+        preds_roi_real = np.logical_and(preds_roi, compute_mask)
+    else:
+        preds_roi_real = preds_roi
+
+    intersection = np.logical_and(ys_roi, preds_roi_real)
+    ys_area = np.count_nonzero(ys_roi)
+    preds_area = np.count_nonzero(preds_roi_real)
+
+    if preds_area > 0:
+        iomin = np.count_nonzero(intersection) / min(preds_area, ys_area)
+    else:
+        iomin = 0
+    return iomin
 
 
 
@@ -139,447 +121,13 @@ Utils for computing metrics related to sparks, e.g.
 - compute precision and recall
 '''
 
-Metrics = namedtuple('Metrics', ['precision', 'recall', 'f1_score', 'tp', 'tp_fp', 'tp_fn'])
+Metrics = namedtuple('Metrics', ['precision',
+                                 'recall',
+                                 'f1_score',
+                                 'tp',
+                                 'tp_fp',
+                                 'tp_fn'])
 
-#def in_bounds(points, shape):
-#
-#    return np.logical_and.reduce([(coords_i >= 0) & (coords_i < shape_i)
-#                                for coords_i, shape_i in zip(points.T, shape)])
-
-def filter_nan_gaussian_david(arr, sigma):
-    # https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
-    """Allows intensity to leak into the nan area.
-    According to Davids answer:
-        https://stackoverflow.com/a/36307291/7128154
-    """
-    gauss = arr.copy()
-    gauss[np.isnan(gauss)] = 0
-    gauss = ndi.gaussian_filter(
-            gauss, sigma=sigma, mode='constant', cval=0)
-
-    norm = np.ones(shape=arr.shape)
-    norm[np.isnan(arr)] = 0
-    norm = ndi.gaussian_filter(
-            norm, sigma=sigma, mode='constant', cval=0)
-
-    # avoid RuntimeWarning: invalid value encountered in true_divide
-    norm = np.where(norm==0, 1, norm)
-    gauss = gauss/norm
-    gauss[np.isnan(arr)] = np.nan
-    return gauss
-
-
-def compute_filtered_butter(movie_array,
-                            min_prominence=2,
-                            band_stop_width=2,
-                            min_freq=7,
-                            filter_order=4,
-                            Fs=150,
-                            debug=False):
-    '''
-    Apply Butterworth filter to input movie.
-
-    movie_array: input movie to be filtered
-    min_prominence: minimal prominence of filtered peaks in frequency domain
-    band_stop_width: width of the filtered band for each peak
-    min_freq: minimal frequence that can be filtered (???)
-    filter_order: order of Butterworth filter
-    Fs: sampling frequency [Hz]
-
-    output: filtered version of input movie
-    '''
-
-    # sampling period [s]
-    T = 1/Fs
-    # signal's length [s]
-    L = movie_array.shape[0]
-    # time vector
-    t = np.arange(L)/ Fs
-
-    # movie's signal average along time (time profile of image series)
-    movie_average = np.mean(movie_array, axis=(1,2))
-
-    # get noise frequencies
-    # compute Fourier transform
-    fft = fftpack.fft(movie_average)
-    # compute two-sided spectrum
-    P2 = np.abs(fft/L)
-    # compute single-sided spectrum
-    P1 = P2[:(L//2)]
-    P1[1:-1] = 2*P1[1:-1]
-
-    freqs = fftpack.fftfreq(L) * Fs
-    f = freqs[:L//2]
-
-    # detrend single-sided spectrum
-    #P1_decomposed = seasonal_decompose(P1, model='additive', period=1) # don't know period
-    #P1_detrend = signal.detrend(P1) # WRONG??
-
-    # set spectrum corresponding to frequencies lower than min freq to zero
-    P1_cut = np.copy(P1)
-    P1_cut[:min_freq] = 0
-
-    # find peaks in spectrum
-    peaks = signal.find_peaks(P1)[0] # coords in P1 of peaks
-    #peaks = signal.find_peaks(P1_detrend)[0] # need first to detrend data properly
-    peaks_cut = peaks[peaks >= min_freq] # coords in P1_cut of peaks
-
-    # compute peaks prominence
-    prominences = signal.peak_prominences(P1_cut, peaks_cut)[0]
-
-    # keep only peaks with prominence large enough
-    prominent_peaks = peaks_cut[prominences > min_prominence]
-
-    # regions to filter
-    bands_low = prominent_peaks-band_stop_width
-    bands_high = prominent_peaks+band_stop_width
-    bands_indices = np.transpose([bands_low,bands_high])
-
-    bands_freq = f[bands_indices]
-
-    # make sure that nothing is outside interval (0,max(f))
-    if bands_freq.size > 0:
-        bands_freq[:,0][bands_freq[:,0] < 0] = 0
-        bands_freq[:,1][bands_freq[:,1] > max(f)] = max(f) - np.mean(np.diff(f))/1000
-
-    # create butterworth filter
-    filter_type = 'bandstop'
-    filtered = np.copy(movie_array)
-
-    for i, band in enumerate(bands_freq):
-        Wn = band / max(f)
-
-        sos = signal.butter(N=filter_order,
-                            Wn=Wn,
-                            btype=filter_type,
-                            output='sos')
-
-        filtered = signal.sosfiltfilt(sos, filtered, axis=0)
-
-    if debug:
-        # filtered movie's signal average along time (time profile of image series)
-        filtered_movie_average = np.mean(filtered, axis=(1,2))
-
-        # get frequencies of filtered movie
-        # compute Fourier transform
-        filtered_fft = fftpack.fft(filtered_movie_average)
-        # compute two-sided spectrum
-        filtered_P2 = np.abs(filtered_fft/L)
-        # compute single-sided spectrum
-        filtered_P1 = filtered_P2[:(L//2)]
-        filtered_P1[1:-1] = 2*filtered_P1[1:-1]
-
-        # detrend single-sided spectrum
-        #filtered_P1_detrend = signal.detrend(filtered_P1) # WRONG??
-
-        return filtered, movie_average, filtered_movie_average, Fs, f, P1, filtered_P1
-
-    return filtered
-
-
-def simple_nonmaxima_suppression(img,maxima_mask=None,
-                                 min_dist=None,
-                                 return_mask=False, threshold=0.5, sigma=2):
-    '''
-    Extract local maxima from input array (t,x,y).
-    img :           input array
-    maxima_mask :   if not None, look for local maxima only inside the mask
-    min_dist :      define minimal distance between two peaks
-    return_mask :   if True return both masks with maxima and locations, if
-                    False only returns locations
-    threshold :     minimal value of maximum points
-    sigma :         sigma parameter of gaussian filter
-    '''
-    img = img.astype(np.float64)
-
-    # handle min_dist connectivity mask
-    if min_dist is None:
-        min_dist = 1
-
-    if np.isscalar(min_dist):
-        c_min_dist = ndi.generate_binary_structure(img.ndim, min_dist)
-    else:
-        c_min_dist = np.array(min_dist, bool)
-        if c_min_dist.ndim != img.ndim:
-            raise ValueError("Connectivity dimension must be same as image")
-
-    if maxima_mask is not None:
-        # mask out region from img with mask
-        masked_img = np.where(maxima_mask, img, 0.)
-
-        # smooth masked input image
-        smooth_img = ndi.gaussian_filter(masked_img, sigma=sigma)
-
-    else:
-        smooth_img = ndi.gaussian_filter(img, sigma=sigma)
-
-    # search for local maxima
-    dilated = ndi.maximum_filter(smooth_img,
-                                 footprint=c_min_dist)
-
-    if maxima_mask is not None:
-        # hyp: maxima belong to maxima mask
-        masked_smooth_img = np.where(maxima_mask, smooth_img, 0.)
-        argmaxima = np.logical_and(smooth_img == dilated, masked_smooth_img > threshold)
-    else:
-        argmaxima = np.logical_and(smooth_img == dilated, smooth_img > threshold)
-
-
-    argwhere = np.argwhere(argmaxima)
-    argwhere = np.argwhere(argmaxima).tolist()
-    #argwhere = np.array(argwhere, dtype=float)
-
-    if not return_mask:
-        return argwhere
-
-    return argwhere, argmaxima
-
-
-def nonmaxima_suppression(img,maxima_mask=None,
-                          min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T,
-                          return_mask=False, threshold=0.5, sigma=2,
-                          annotations=False):
-    '''
-    Extract local maxima from input array (t,x,y).
-    img :           input array
-    maxima_mask :   if not None, look for local maxima only inside the mask
-    min_dist_xy :   minimal spatial distance between two maxima
-    min_dist_t :    minimal temporal distance between two maxima
-    return_mask :   if True return both masks with maxima and locations, if
-                    False only returns locations
-    threshold :     minimal value of maximum points
-    sigma :         sigma parameter of gaussian filter
-    annotations:    if true, apply specific processing for raw annotation masks
-    '''
-    img = img.astype(np.float64)
-
-    # compute shape for maximum filter -> min distance between peaks
-    #min_dist = ellipsoid(min_dist_t/2, min_dist_xy/2, min_dist_xy/2)
-    radius = math.ceil(min_dist_xy/2)
-    y,x = np.ogrid[-radius: radius+1, -radius: radius+1]
-    disk = x**2+y**2 <= radius**2
-    min_dist = np.stack([disk]*(min_dist_t+1), axis=0)
-
-
-
-    if maxima_mask is not None:
-        # apply butterworth filter along t-axis
-        filtered_img = compute_filtered_butter(img) # apply butterworth filter
-
-        # apply dilation to maxima mask
-        #min_dist_eroded = ndi.binary_erosion(min_dist)
-        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, structure=min_dist_eroded)
-        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=round(sigma))
-        maxima_mask_dilated = maxima_mask
-
-        # mask out region from img with dilated mask
-        masked_img = np.where(maxima_mask_dilated, filtered_img, 0.)
-        imageio.volwrite("TEST_masked_video.tif", masked_img)
-
-        # smooth masked input image
-        smooth_img = ndi.gaussian_filter(masked_img, sigma=sigma)
-        imageio.volwrite("TEST_smooth_video.tif", smooth_img)
-
-    else:
-        smooth_img = ndi.gaussian_filter(img, sigma=sigma)
-
-    # search for local maxima
-
-    dilated = ndi.maximum_filter(smooth_img,
-                                 footprint=min_dist)
-    imageio.volwrite("TEST_dilated.tif", dilated)
-
-    if maxima_mask is not None:
-        # hyp: maxima belong to maxima mask
-        masked_smooth_img = np.where(maxima_mask, smooth_img, 0.)
-        argmaxima = np.logical_and(smooth_img == dilated, masked_smooth_img > threshold)
-    else:
-        argmaxima = np.logical_and(smooth_img == dilated, smooth_img > threshold)
-
-
-    imageio.volwrite("TEST_maxima.tif", np.uint8(argmaxima))
-
-    # save movie containing ALL local maxima
-    #dilated_all = ndi.maximum_filter(original_smoothed, footprint=min_dist)
-    #imageio.volwrite("TEST_all_maxima.tif", np.uint8(original_smoothed == dilated_all))
-    #imageio.volwrite("TEST_all_video_maxima.tif", np.uint8(np.logical_and(smooth_img == dilated, smooth_img > threshold)))
-
-    '''# multiply values of video inside maxima mask
-    #img = np.where(maxima_mask, img*1.5, img)
-    imageio.volwrite("TEST_DEBUG.tif", img)
-
-    smooth_img = ndi.gaussian_filter(img, sigma=sigma)
-    imageio.volwrite("TEST_smooth_video.tif", smooth_img)
-
-    if maxima_mask is not None:
-        # apply dilation to mask
-        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=round(sigma))
-        maxima_mask_dilated = maxima_mask
-        # set pixels outside maxima_mask to zero
-        masked_img = np.where(maxima_mask_dilated, smooth_img, 0.)
-        #masked_img = np.where(maxima_mask, smooth_img, 0.)
-        imageio.volwrite("TEST_masked_video.tif", masked_img)
-    else:
-        masked_img = smooth_img
-
-
-    # compute shape for maximum filter
-    #min_dist = ellipsoid(min_dist_t/2, min_dist_xy/2, min_dist_xy/2)
-    radius = round(min_dist_xy/2)
-    y,x = np.ogrid[-radius: radius+1, -radius: radius+1]
-    disk = x**2+y**2 <= radius**2
-    min_dist = np.stack([disk]*min_dist_t, axis=0)
-
-    # detect local maxima
-    dilated = ndi.maximum_filter(smooth_img,
-                                 footprint=min_dist)
-    imageio.volwrite("TEST_dilated.tif", dilated)
-    argmaxima = np.logical_and(smooth_img == dilated, masked_img > threshold)
-    imageio.volwrite("TEST_maxima.tif", np.uint8(argmaxima))
-    #imageio.volwrite("TEST_all_video_maxima.tif", np.uint8(np.logical_and(smooth_img == dilated, smooth_img > threshold)))'''
-
-    argwhere = np.argwhere(argmaxima)
-
-    # DEBUG: compute minimal distance between pair of sparks
-
-    argwhere = np.array(argwhere, dtype=np.float)
-    '''if argwhere.size > 0:
-        argwhere[:,0] /= min_dist_t
-        argwhere[:,1] /= min_dist_xy
-        argwhere[:,2] /= min_dist_xy
-
-        w = spatial.distance_matrix(argwhere, argwhere)
-        w = np.tril(w)
-        w[w==0.0] = 9999999
-        min_w = np.min(w)
-        min_coords = np.argwhere(w==min_w)
-
-        argwhere[:,0] *= min_dist_t
-        argwhere[:,1] *= min_dist_xy
-        argwhere[:,2] *= min_dist_xy
-
-        close_coords = argwhere[min_coords][0]
-        print(f"Closest coordinates: \n{close_coords}")'''
-
-    if not return_mask:
-        return argwhere
-
-    return argwhere, argmaxima
-
-
-def get_sparks_locations_from_mask(mask, min_dist_xy, min_dist_t,
-                                   ignore_frames=0):
-    '''
-    Get sparks coords from annotations mask.
-
-    mask : annotations mask (values 0,1,2,3,4) where sparks are denoted by peaks
-    ignore_frames: number of frames ignored by loss fct during training
-    '''
-
-    sparks_mask = np.where(mask == 1, 1.0, 0.0)
-    #sparks_mask = empty_marginal_frames(sparks_mask, ignore_frames)
-    coords = nonmaxima_suppression(img=sparks_mask,
-                                   min_dist_xy=min_dist_xy,
-                                   min_dist_t=min_dist_t,
-                                   threshold=0, sigma=0.5)
-
-    # remove first and last frames
-    if ignore_frames > 0:
-        mask_duration = mask.shape[0]
-        coords = empty_marginal_frames_from_coords(coords=coords,
-                                                   n_frames=ignore_frames,
-                                                   duration=mask_duration)
-    return coords
-
-
-def process_spark_prediction(pred,
-                             movie=None,
-                             t_detection = 0.9,
-                             min_dist_xy = MIN_DIST_XY,
-                             min_dist_t = MIN_DIST_T,
-                             min_radius = 3,
-                             return_mask = False,
-                             return_clean_pred = False,
-                             ignore_frames = 0,
-                             sigma = 2):
-    '''
-    Get sparks centres from preds: remove small events + nonmaxima suppression
-
-    pred: network's sparks predictions
-    movie: original sample movie
-    t_detection: sparks detection threshold
-    min_dist_xy : minimal spatial distance between two maxima
-    min_dist_t : minimal temporal distance between two maxima
-    min_radius: minimal 'radius' of a valid spark
-    return_mask: if True return mask and locations of sparks
-    return_clean_pred: if True only return preds without small events
-    ignore_frames: set preds in region ignored by loss fct to 0
-    sigma: sigma value used in gaussian smoothing in nonmaxima suppression
-    '''
-    # get binary preds
-    pred_boolean = pred > t_detection
-
-    # remove small objects and get clean binary preds
-    if min_radius > 0:
-        min_size = (2 * min_radius) ** pred.ndim
-        small_objs_removed = morphology.remove_small_objects(pred_boolean,
-                                                             min_size=min_size)
-    else:
-        small_objs_removed = pred_boolean
-
-
-    # remove first and last object from sparks mask
-    #small_objs_removed = empty_marginal_frames(small_objs_removed,
-    #                                           ignore_frames)
-
-    #imageio.volwrite("TEST_small_objs_removed.tif", np.uint8(small_objs_removed))
-    #imageio.volwrite("TEST_clean_preds.tif", np.where(small_objs_removed, pred, 0))
-    if return_clean_pred:
-        # original movie without small objects:
-        big_pred = np.where(small_objs_removed, pred, 0)
-        return big_pred
-
-    assert movie is not None, "Provide original movie to detect spark peaks"
-
-    # detect events (nonmaxima suppression)
-    argwhere, argmaxima = nonmaxima_suppression(img=movie,
-                                                maxima_mask=small_objs_removed,
-                                                min_dist_xy=min_dist_xy,
-                                                min_dist_t=min_dist_t,
-                                                return_mask=True,
-                                                threshold=0,
-                                                sigma=sigma)
-
-    # remove first and last frames
-    if ignore_frames > 0:
-        mask_duration = pred.shape[0]
-        argwhere = empty_marginal_frames_from_coords(coords=argwhere,
-                                                     n_frames=ignore_frames,
-                                                     duration=mask_duration)
-
-    if not return_mask:
-        return argwhere
-
-    # set frames ignored by loss fct to 0
-    argmaxima = empty_marginal_frames(argmaxima, ignore_frames)
-
-    return argwhere, argmaxima
-
-
-#def inverse_argwhere(coords, shape, dtype):
-#    """
-#    Creates an array with given shape and dtype such that
-#
-#    np.argwhere(inverse_argwhere(coords, shape, dtype)) == coords
-#
-#    up to a rounding of `coords`.
-#    """
-#
-#    res = np.zeros(shape, dtype=dtype)
-#    intcoords = np.int_(np.round(coords))
-#    intcoords = intcoords[in_bounds(intcoords, shape)]
-#    res[intcoords[:, 0], intcoords[:, 1], intcoords[:, 2]] = 1
-#    return res
 
 
 def correspondences_precision_recall(coords_real, coords_pred,
@@ -715,6 +263,7 @@ def reduce_metrics(results):
 
     return Metrics(precision, recall, f1_score, tp, tp_fp, tp_fn)
 
+
 def compute_prec_rec(annotations, preds, movie, thresholds,
                      min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T,
                      min_radius=3, ignore_frames=0, ignore_mask=None):
@@ -741,9 +290,13 @@ def compute_prec_rec(annotations, preds, movie, thresholds,
     metrics = {} # list of 'Metrics' tuples: precision, recall, f1_score, tp, tp_fp, tp_fn
                  # indexed by threshold value
 
-    coords_true = get_sparks_locations_from_mask(annotations,
-                                                 min_dist_xy,
-                                                 min_dist_t)
+    connectivity_mask = sparks_connectivity_mask(min_dist_xy, min_dist_t)
+    coords_true = simple_nonmaxima_suppression(img=movie,
+                                               maxima_mask=annotations,
+                                               min_dist=connectivity_mask,
+                                               return_mask=False,
+                                               threshold=0,
+                                               sigma=2)
 
     # compute prec and rec for every threshold
     prec = []
@@ -776,44 +329,6 @@ def compute_prec_rec(annotations, preds, movie, thresholds,
     return metrics#, area_under_curve
 
 
-def reduce_metrics_thresholds(results):
-    '''
-    apply metrics reduction to results corresponding to different thresholds
-
-    results: dict of Metrics object, indexed by video name (?? TODO: Check!!)
-    returns: list of dictionaires for every threshold [reduced_metrics, prec, rec, f1_score]
-    '''
-    # revert nested dictionaires
-    results_t = defaultdict(dict)
-    for video_id, video_metrics in results.items():
-        for t, t_metrics in video_metrics.items():
-            results_t[t][video_id] = t_metrics
-
-    reduced_metrics = {}
-    prec = {}
-    rec = {}
-    f1_score = {}
-
-    for t, res in results_t.items():
-        # res is a dict of 'Metrics' for all videos
-        reduced_res = reduce_metrics(list(res.values()))
-
-        reduced_metrics[t] = reduced_res
-        prec[t] = reduced_res.precision
-        rec[t] = reduced_res.recall
-        f1_score[t] = reduced_res.f1_score
-
-
-    # compute area under the curve for reduced metrics
-    #print("REC",rec)
-    #print("PREC",prec)
-    #area_under_curve = auc(list(prec.values()), list(rec.values()))
-    #print("AREA UNDER CURVE", area_under_curve)
-
-    # TODO: adattare altri scripts che usano questa funzione!!!!
-    return reduced_metrics, prec, rec, f1_score#, area_under_curve
-
-
 def compute_f_score(prec,rec,beta=1):
     if beta == 1:
         f_score = 2*prec*rec/(prec+rec) if prec+rec != 0 else 0.
@@ -821,75 +336,13 @@ def compute_f_score(prec,rec,beta=1):
         f_score = (1+beta*beta)*(prec+rec)/(beta*beta*prec+rec) if prec+rec != 0 else 0.
     return f_score
 
-############################ Puffs and waves metrics ###########################
+########################## Segmentation-based metrics ###########################
 
 '''
 Utils for computing metrics related to puffs and waves, e.g.:
 - Jaccard index
 - exclusion region for Jaccard index
 '''
-
-def separate_events(pred, t_detection=0.5, min_radius=4):
-    '''
-    Apply threshold to prediction and separate the events (1 event = 1 connected
-    component).
-    '''
-    # apply threshold to prediction
-    pred_boolean = pred >= t_detection
-
-    # clean events
-    min_size = (2 * min_radius) ** pred.ndim
-    pred_clean = morphology.remove_small_objects(pred_boolean,
-                                                 min_size=min_size)
-    #big_pred = np.where(small_objs_removed, pred, 0)
-
-    # separate events
-    connectivity = 26
-    labels, n_events = cc3d.connected_components(pred_clean,
-                                                 connectivity=connectivity,
-                                                 return_N=True)
-
-    return labels, n_events
-
-
-def process_puff_prediction(pred, t_detection = 0.5,
-                            min_radius = 4,
-                            ignore_frames = 0,
-                            convex_hull = False):
-    '''
-    Get binary clean predictions of puffs (remove small preds)
-
-    pred :          network's puffs predictions
-    min_radius :    minimal 'radius' of a valid puff
-    ignore_frames : set preds in region ignored by loss fct to 0
-    convex_hull :   if true remove holes inside puffs
-    '''
-    # get binary predictions
-    pred_boolean = pred > t_detection
-
-    if convex_hull:
-        # remove holes inside puffs (compute convex hull)
-        pred_boolean = binary_dilation(pred_boolean, iterations=5)
-        pred_boolean = binary_erosion(pred_boolean, iterations=5, border_value=1)
-
-    min_size = (2 * min_radius) ** pred.ndim
-    small_objs_removed = morphology.remove_small_objects(pred_boolean,
-                                                         min_size=min_size)
-
-    # set first and last frames to 0 according to ignore_frames
-    if ignore_frames != 0:
-        pred_puffs = empty_marginal_frames(small_objs_removed, ignore_frames)
-
-    return pred_puffs
-
-
-def process_wave_prediction(pred, t_detection = 0.5,
-                            min_radius = 4,
-                            ignore_frames = 0):
-
-    # for now: do the same as with puffs
-
-    return process_puff_prediction(pred, t_detection, min_radius, ignore_frames)
 
 
 def compute_puff_wave_metrics(ys, preds, exclusion_radius,
@@ -982,50 +435,274 @@ def compute_average_puff_wave_metrics(metrics):
     return res
 
 
-''' OLD: adapt code to use compute_puff_wave_metrics instead
-def jaccard_score_exclusion_zone(ys,preds,exclusion_radius,
-                                 ignore_mask=None,sparks=False):
-
-    #compute IoU score adding exclusion zone if necessary
-    #ys, preds and ignore_mask are binary masks
 
 
-    # Compute intersection and union
-    intersection = np.logical_and(ys, preds)
-    union = np.logical_or(ys, preds)
+############################### Unused functions ###############################
 
-    if exclusion_radius != 0:
-        # Compute exclusion zone: 1 where Jaccard index has to be computed, 0 otherwise
-        dilated = binary_dilation(ys, iterations=exclusion_radius)
 
-        if not sparks:
-            eroded = binary_erosion(ys, iterations=exclusion_radius)
-            exclusion_mask = 1 - np.logical_xor(eroded,dilated)
-        else:
-            # Erosion is not computed for spark class
-            exclusion_mask = 1 - np.logical_xor(ys,dilated)
+#def in_bounds(points, shape):
+#
+#    return np.logical_and.reduce([(coords_i >= 0) & (coords_i < shape_i)
+#                                for coords_i, shape_i in zip(points.T, shape)])
 
-        # If ignore mask is given, don't compute values where it is 1
-        if ignore_mask is not None:
-            # Compute dilation for ignore mask too (erosion not necessary)
-            ignore_mask = binary_dilation(ignore_mask, iterations=exclusion_radius)
 
-            # Ignore regions where ignore mask is 1
-            compute_mask = np.logical_and(1 - ignore_mask, exclusion_mask)
-    else:
-        compute_mask = 1 - ignore_mask
+#def inverse_argwhere(coords, shape, dtype):
+#    """
+#    Creates an array with given shape and dtype such that
+#
+#    np.argwhere(inverse_argwhere(coords, shape, dtype)) == coords
+#
+#    up to a rounding of `coords`.
+#    """
+#
+#    res = np.zeros(shape, dtype=dtype)
+#    intcoords = np.int_(np.round(coords))
+#    intcoords = intcoords[in_bounds(intcoords, shape)]
+#    res[intcoords[:, 0], intcoords[:, 1], intcoords[:, 2]] = 1
+#    return res
 
-        # Compute intersecion of exclusion mask with intersection and union
-        intersection = np.logical_and(intersection, compute_mask)
-        union = np.logical_and(union, compute_mask)
 
-    #print("Pixels in intersection:", np.count_nonzero(intersection))
-    #print("Pixels in union:", np.count_nonzero(union))
+#def reduce_metrics_thresholds(results):
+#    '''
+#    apply metrics reduction to results corresponding to different thresholds
+#
+#    results: dict of Metrics object, indexed by video name (?? TODO: Check!!)
+#    returns: list of dictionaires for every threshold [reduced_metrics, prec, rec, f1_score]
+#    '''
+#    # revert nested dictionaires
+#    results_t = defaultdict(dict)
+#    for video_id, video_metrics in results.items():
+#        for t, t_metrics in video_metrics.items():
+#            results_t[t][video_id] = t_metrics
+#
+#    reduced_metrics = {}
+#    prec = {}
+#    rec = {}
+#    f1_score = {}
+#
+#    for t, res in results_t.items():
+#        # res is a dict of 'Metrics' for all videos
+#        reduced_res = reduce_metrics(list(res.values()))
+#
+#        reduced_metrics[t] = reduced_res
+#        prec[t] = reduced_res.precision
+#        rec[t] = reduced_res.recall
+#        f1_score[t] = reduced_res.f1_score
+#
+#
+#    # compute area under the curve for reduced metrics
+#    #print("REC",rec)
+#    #print("PREC",prec)
+#    #area_under_curve = auc(list(prec.values()), list(rec.values()))
+#    #print("AREA UNDER CURVE", area_under_curve)
+#
+#    # TODO: adattare altri scripts che usano questa funzione!!!!
+#    return reduced_metrics, prec, rec, f1_score#, area_under_curve
 
-    if np.count_nonzero(union) != 0:
-        iou = np.count_nonzero(intersection)/np.count_nonzero(union)
-    else:
-        iou = 1.
 
-    return iou
-'''
+################# fcts from save_results_to_json.py (old file) #################
+
+# compute pixel-based results, for given binary predictions
+#def get_binary_preds_pixel_based_results(binary_preds, ys, ignore_mask,
+#                                         min_radius, exclusion_radius,
+#                                         sparks=False):
+#    '''
+#    For given binary preds and annotations of a class and given params,
+#    compute number of tp, tn, fp and fn pixels.
+#
+#    binary_preds:       binary UNet predictions with values in {0,1}
+#    ys:                 binary annotation mask with values in {0,1}
+#    ignore_mask:        mask == 1 where pixels have been ignored during training
+#    min_radius:         list of minimal radius of valid predicted events
+#    exclusion_radius:   list of exclusion radius for metrics computation
+#    sparks:             if True, do not compute erosion on annotations
+#
+#    returns:    dict with keys
+#                min radius x exclusion radius
+#    '''
+#
+#    results_dict = defaultdict(dict)
+#
+#    for min_r in min_radius:
+#        if min_r > 0:
+#            # remove small predicted events
+#            min_size = (2 * min_r) ** binary_preds.ndim
+#            binary_preds = remove_small_objects(binary_preds, min_size=min_size)
+#
+#        for exclusion_r in exclusion_radius:
+#            # compute results wrt to exclusion radius
+#            tp,tn,fp,fn = compute_puff_wave_metrics(ys=ys,
+#                                                    preds=binary_preds,
+#                                                    exclusion_radius=exclusion_r,
+#                                                    ignore_mask=ignore_mask,
+#                                                    sparks=sparks,
+#                                                    results_only=True)
+#
+#            results_dict[min_r][exclusion_r] = {'tp': tp,
+#                                                'tn': tn,
+#                                                'fp': fp,
+#                                                'fn': fn}
+#
+#    return results_dict
+
+
+# compute pixel-based results, using a detection threshold
+#def get_class_pixel_based_results(raw_preds, ys, ignore_mask,
+#                                  t_detection, min_radius, exclusion_radius,
+#                                  sparks=False):
+#    '''
+#    For given preds and annotations of a class and given params, compute number
+#    of tp, tn, fp and fn pixels.
+#
+#    raw_preds:          raw UNet predictions with values in [0,1]
+#    ys:                 binary annotation mask with values in {0,1}
+#    ignore_mask:        mask == 1 where pixels have been ignored during training
+#    t_detection:        list of detection thresholds
+#    min_radius:         list of minimal radius of valid predicted events
+#    exclusion_radius:   list of exclusion radius for metrics computation
+#
+#    returns:    dict with keys
+#                t x min radius x exclusion radius
+#    '''
+#    results_dict = {}
+#
+#    for t in t_detection:
+#        # get binary preds
+#        binary_preds = raw_preds > t
+#
+#        results_dict[t] = get_binary_preds_pixel_based_results(binary_preds,
+#                                                               ys, ignore_mask,
+#                                                               min_radius,
+#                                                               exclusion_radius,
+#                                                               sparks)
+#
+#    return results_dict
+
+
+# compute spark peaks results, for given binary prediction
+#def get_binary_preds_spark_peaks_results(binary_preds, coords_true, movie,
+#                                         ignore_mask, ignore_frames,
+#                                         min_radius_sparks):
+#    '''
+#    For given binary preds, annotated sparks locations and given params,
+#    compute number of tp, tp_fp (# preds), tp_fn (# annot) events.
+#
+#    binary_preds:       raw UNet predictions with values in {0,1}
+#    coords_true:        list of annotated events
+#    movie:              sample movie
+#    ignore_mask:        mask == 1 where pixels have been ignored during training
+#    ignore_frames:      first and last frames ignored during training
+#    min_radius_sparks:  list of minimal radius of valid predicted events
+#
+#    returns:    dict with keys
+#                min radius
+#    '''
+#    results_dict = {}
+#
+#    for min_r in min_radius_sparks:
+#        # remove small objects and get clean binary preds
+#        if min_r > 0:
+#            min_size = (2 * min_r) ** binary_preds.ndim
+#            binary_preds = remove_small_objects(binary_preds, min_size=min_size)
+#
+#        # detect predicted peaks
+#        connectivity_mask = sparks_connectivity_mask(MIN_DIST_XY,MIN_DIST_T)
+#        coords_pred =simple_nonmaxima_suppression(img=movie,
+#                                                  maxima_mask=binary_preds,
+#                                                  min_dist=connectivity_mask,
+#                                                  return_mask=False,
+#                                                  threshold=0,
+#                                                  sigma=2)
+#
+#        # remove events in ignored regions
+#        # in ignored first and last frames...
+#        if ignore_frames > 0:
+#            mask_duration = binary_preds.shape[0]
+#            ignore_frames_up = mask_duration - ignore_frames
+#            coords_pred = [list(loc) for loc in coords_pred if loc[0]>=ignore_frames and loc[0]<ignore_frames_up]
+#
+#        # and in ignored mask...
+#        ignored_pixel_list = np.argwhere(ignore_mask)
+#        ignored_pixel_list = [list(loc) for loc in ignored_pixel_list]
+#        coords_pred = [loc for loc in coords_pred if loc not in ignored_pixel_list]
+#
+#        # compute results (tp, tp_fp, tp_fn)
+#        results_dict[min_r] = correspondences_precision_recall(coords_real=coords_true,
+#                                                              coords_pred=coords_pred,
+#                                                              match_distance_t = MIN_DIST_T,
+#                                                              match_distance_xy = MIN_DIST_XY,
+#                                                              return_nb_results = True)
+#
+#    return results_dict
+
+
+# compute spark peaks results, using a detection threshold
+#def get_spark_peaks_results(raw_preds, coords_true, movie, ignore_mask,
+#                            ignore_frames, t_detection, min_radius_sparks):
+#        '''
+#        For given raw preds, annotated sparks locations and given params,
+#        compute number of tp, tp_fp (# preds), tp_fn (# annot) events.
+#
+#        raw_preds:          raw UNet predictions with values in [0,1]
+#        coords_true:        list of annotated events
+#        movie:              sample movie
+#        ignore_mask:        mask == 1 where pixels have been ignored during training
+#        ignore_frames:      first and last frames ignored during training
+#        t_detection:        list of detection thresholds
+#        min_radius_sparks:  list of minimal radius of valid predicted events
+#
+#        returns:    dict with keys
+#                    t x min radius
+#        '''
+#        result_dict = {}
+#
+#        for t in t_detection:
+#            # get binary preds
+#            binary_preds = raw_preds > t
+#
+#            result_dict[t] = get_binary_preds_spark_peaks_results(binary_preds,
+#                                                                  coords_true,
+#                                                                  movie,
+#                                                                  ignore_mask,
+#                                                                  ignore_frames,
+#                                                                  min_radius_sparks)
+#
+#        return result_dict
+
+
+# compute average over movies of pixel-based results
+#def get_sum_results(per_movie_results, pixel_based=True):
+#    '''
+#    Given a dict containing the results for all video wrt to all parameters
+#    (detection threshold/argmax; min radius; (exclusion radius)) return a dict
+#    containing the sum over all movies, necessary for reducing the metrics.
+#
+#    per_movie_results:  dict with keys
+#                        movie_name x t/argmax x min radius (x exclusion radius)
+#    pixel_based:        if True consider exclusion radius as well
+#
+#    return:             dict with keys
+#                        t/argmax x min radius (x exclusion radius)
+#    '''
+#
+#    sum_res = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+#
+#    # sum values of each movie for every paramenter
+#    for movie_name, movie_results in per_movie_results.items():
+#        for t, t_res in movie_results.items():
+#            for min_r, min_r_res in t_res.items():
+#                if pixel_based:
+#                    for excl_r, excl_r_res in min_r_res.items():
+#                        for res, val in excl_r_res.items():
+#                            if res in sum_res[t][min_r][excl_r]:
+#                                sum_res[t][min_r][excl_r][res] += val
+#                            else:
+#                                sum_res[t][min_r][excl_r][res] = val
+#                else:
+#                    for res, val in min_r_res.items():
+#                        if res in sum_res[t][min_r]:
+#                            sum_res[t][min_r][res] += val
+#                        else:
+#                            sum_res[t][min_r][res] = val
+#
+#    return sum_res

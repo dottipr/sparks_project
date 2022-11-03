@@ -3,7 +3,6 @@ import os
 import logging
 import argparse
 import configparser
-import glob
 
 import numpy as np
 import torch
@@ -16,12 +15,16 @@ import wandb
 import unet
 from new_unet import UNet
 
-from dataset_tools import random_flip, random_flip_noise, compute_class_weights, weights_init
+from training_inference_tools import (random_flip,
+                                      random_flip_noise,
+                                      compute_class_weights,
+                                      weights_init,
+                                      training_step,
+                                      test_function,
+                                      sampler)
 from datasets import SparkDataset
-from training_tools import training_step, test_function, sampler
-from metrics_tools import take_closest
-from other_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz
-from architecture import TempRedUNet
+from custom_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz
+from architectures import TempRedUNet
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
 logger = logging.getLogger(__name__)
@@ -92,6 +95,7 @@ if __name__ == "__main__":
     params['only_sparks'] = c.getboolean("dataset", "only_sparks", fallback=False)
     params['noise_data_augmentation'] = c.getboolean("dataset", "noise_data_augmentation", fallback=False)
     params['sparks_type'] = c.get("dataset", "sparks_type", fallback="peaks")
+    params['inference'] = c.get("dataset", "inference", fallback="overlap")
 
     # UNet params
     params['nn_architecture'] = c.get("network", "nn_architecture", fallback='pablos_unet')
@@ -217,7 +221,8 @@ if __name__ == "__main__":
         normalize_video=params['norm_video'],
         only_sparks=params['only_sparks'],
         sparks_type=params['sparks_type'],
-        ignore_index=ignore_index
+        ignore_index=ignore_index,
+        inference=None
     )
 
     # apply transforms
@@ -247,15 +252,12 @@ if __name__ == "__main__":
                 only_sparks=params['only_sparks'],
                 sparks_type=params['sparks_type'],
                 ignore_frames=params['ignore_frames_loss'],
-                ignore_index=ignore_index
+                ignore_index=ignore_index,
+                inference=params['inference']
             ) for sample_id in test_sample_ids]
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
-
-    # class weights
-    class_weights = compute_class_weights(dataset)
-    logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
 
     # initialize data loaders
     dataset_loader = DataLoader(dataset,
@@ -263,13 +265,13 @@ if __name__ == "__main__":
                                 shuffle=True,
                                 num_workers=params['num_workers'],
                                 pin_memory=pin_memory)
-    testing_dataset_loaders = [
-        DataLoader(test_dataset,
-                   batch_size=params['batch_size'],
-                   shuffle=False,
-                   num_workers=params['num_workers'])
-        for test_dataset in testing_datasets
-    ]
+    #testing_dataset_loaders = [
+    #    DataLoader(test_dataset,
+    #               batch_size=params['batch_size'],
+    #               shuffle=False,
+    #               num_workers=params['num_workers'])
+    #    for test_dataset in testing_datasets
+    #] NON VIENE USATO ???
 
     ############################## configure UNet ##############################
 
@@ -341,11 +343,15 @@ if __name__ == "__main__":
     else:
         load_path = None
 
+    # class weights
+    if params['criterion'] in ['nll_loss', 'focal_loss', 'sum_losses']:
+        class_weights = compute_class_weights(dataset)
+        logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))
 
-    if params['criterion'] == "nll_loss":
+    if params['criterion'] == 'nll_loss':
         criterion = nn.NLLLoss(ignore_index=ignore_index,
                                weight=class_weights.to(device))
-    elif params['criterion'] == "focal_loss":
+    elif params['criterion'] == 'focal_loss':
         criterion = FocalLoss(reduction='mean',
                               ignore_index=ignore_index,
                               alpha=class_weights,
