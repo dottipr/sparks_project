@@ -172,7 +172,7 @@ test*
 *.png
 *.csv
 .Xauthority
-*.txt
+#*.txt
 *.json
 *.jpg
 *DELETEME*
@@ -181,6 +181,7 @@ models/*
 data2/*
 *TEST*
 pytorch/
+sparks/trainings_validation/*
 
 # other projects' directories
 elektronn3-dev
