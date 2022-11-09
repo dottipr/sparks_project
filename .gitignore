@@ -178,6 +178,7 @@ test*
 *DELETEME*
 UNETR
 models/*
+data/*
 *TEST*
 pytorch/
 
