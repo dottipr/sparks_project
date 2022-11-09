@@ -1,5 +1,12 @@
 # Detection and Classification of Local Ca²⁺ Release Events in Cardiomyocytes Using 3D-UNet Neural Network
 
+## How to clone this repo
+
+Use command:
+`git clone --recurse-submodules -j8 git://github.com/foo/bar.git`
+
+(See: [How do I "git clone" a repo, including its submodules?](https://stackoverflow.com/questions/3796927/how-do-i-git-clone-a-repo-including-its-submodules))
+
 ## List of main Python scripts (status at 18/10/2022)
 
 Short explanation of the purposes of each script present in this project.
