@@ -182,7 +182,7 @@ data2/*
 *TEST*
 pytorch/
 sparks/trainings_validation/*
-#data/*
+data/*
 
 # other projects' directories
 elektronn3-dev
