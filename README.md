@@ -4,7 +4,7 @@
 
 Use command:
 ```
-git clone --recurse-submodules -j8 git://github.com/foo/bar.git
+git clone --recurse-submodules -j8 git@github.com:priscacheese/sparks_project.git
 ```
 
 (See: [How do I "git clone" a repo, including its submodules?](https://stackoverflow.com/questions/3796927/how-do-i-git-clone-a-repo-including-its-submodules))
