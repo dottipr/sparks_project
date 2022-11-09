@@ -147,7 +147,6 @@ cython_debug/
 anaconda3/
 OLD/
 wandb/
-/data
 *runs/
 predictions/
 .keras/
