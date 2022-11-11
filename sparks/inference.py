@@ -10,23 +10,22 @@ Predictions are saved as:
 **Idea**: Use predictions to produce plots and tables to visualize the results.
 '''
 
-import numpy as np
-import sys
-import os
-import logging
 import configparser
+import logging
+import os
+import sys
 
+import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from architectures import TempRedUNet
+from datasets import SparkDataset
+from in_out_tools import write_videos_on_disk
 from torch import nn
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-
+from training_inference_tools import run_samples_in_model
 
 import unet
-from architectures import TempRedUNet
-from in_out_tools import write_videos_on_disk
-from datasets import SparkDataset
-from training_inference_tools import run_samples_in_model
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
 
@@ -126,6 +125,7 @@ dataset_path = os.path.realpath(f"{BASEDIR}/{relative_path}")
 assert os.path.isdir(dataset_path), f"\"{dataset_path}\" is not a directory"
 logger.info(f"Using {dataset_path} as dataset root path")
 logger.info(f"Annotations and predictions will be saved on '{save_folder}'")
+
 ### Configure UNet ###
 
 batch_norm = {'batch': True, 'none': False}
@@ -168,7 +168,8 @@ logger.info(f"Loading trained model '{training_name}' at epoch {load_epoch}...")
 trainer.load(load_epoch)
 #logger.info(f"Loaded trained model located in '{model_path}'")
 
-### Run samples in UNet ###
+
+############################# Run samples in UNet ##############################
 
 for sample_id in sample_ids:
     ### Create dataset ###

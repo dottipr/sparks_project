@@ -2,20 +2,19 @@
 Classes to create training and testing datasets
 '''
 
-import os
 import logging
+import os
 
 import numpy as np
-from scipy.signal import convolve2d
-from scipy.ndimage.filters import convolve
-
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset
-
 from data_processing_tools import detect_spark_peaks
-from in_out_tools import load_movies_ids, load_annotations_ids
-
+from in_out_tools import load_annotations_ids, load_movies_ids
+from scipy.ndimage.filters import convolve
+from scipy.signal import convolve2d
+from scipy.interpolate import interp1d
+from torch.utils.data import Dataset
+from PIL import Image
 
 __all__ = ["SparkDataset"]
 
@@ -112,7 +111,7 @@ class SparkDataset(Dataset):
             self.pad = 0
             self.inference = inference
 
-
+        
         self.temporal_reduction = temporal_reduction
         if self.temporal_reduction:
             self.num_channels = num_channels
@@ -129,7 +128,7 @@ class SparkDataset(Dataset):
         self.data = [torch.from_numpy(movie.astype('int'))
                      for movie in self.data] # int32
 
-        if self.inference:
+        if inference is not None:
             # need to keep track of movie duration, in case it is shorter than
             # `chunks_duration` and a pad is added
             self.movie_duration = (self.data[0]).shape[0]

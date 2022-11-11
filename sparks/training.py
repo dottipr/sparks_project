@@ -1,30 +1,25 @@
-import sys
-import os
-import logging
 import argparse
 import configparser
+import logging
+import os
+import sys
 
 import numpy as np
 import torch
-from torch import nn
-from torch import optim
+import wandb
+from architectures import TempRedUNet
+from custom_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz
+from datasets import SparkDataset
+from new_unet import UNet
+from torch import nn, optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-import wandb
+from training_inference_tools import (compute_class_weights, random_flip,
+                                      random_flip_noise, sampler,
+                                      test_function, training_step,
+                                      weights_init)
 
 import unet
-from new_unet import UNet
-
-from training_inference_tools import (random_flip,
-                                      random_flip_noise,
-                                      compute_class_weights,
-                                      weights_init,
-                                      training_step,
-                                      test_function,
-                                      sampler)
-from datasets import SparkDataset
-from custom_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz
-from architectures import TempRedUNet
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
 logger = logging.getLogger(__name__)
