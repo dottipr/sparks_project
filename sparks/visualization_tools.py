@@ -4,15 +4,14 @@
 Script with tools for data visualisation (e.g. plots and Napari)
 '''
 
-from matplotlib import cm
-import vispy.color
-from PIL import Image
 import itertools
+import math
 
 import numpy as np
-import math
+import vispy.color
+from matplotlib import cm
+from PIL import Image
 from scipy import ndimage as ndi
-
 
 ### REMARK
 # Come creare un dataframe con vari parametri
@@ -122,8 +121,8 @@ def get_annotations_contour(annotations, contour_val=2):
     # need to dilate and erode each class separately
     for class_nb in range(1,5):
         class_ys = annotations == class_nb
-        class_dilated = binary_dilation(class_ys, structure=struct)
-        class_eroded = binary_erosion(class_ys, structure=struct)
+        class_dilated = ndi.binary_dilation(class_ys, structure=struct)
+        class_eroded = ndi.binary_erosion(class_ys, structure=struct)
         class_contour = np.where(np.logical_not(class_eroded.astype(bool)),
                                  class_dilated,
                                  0

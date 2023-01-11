@@ -1,4 +1,4 @@
-'''
+"""
 24.10.2022
 
 Script with function for metrics on UNet output computation.
@@ -6,33 +6,33 @@ Script with function for metrics on UNet output computation.
 REMARKS
 24.10.2022: functions that aren't currently used are commented out and put at
 the end of the script (such as ..., )
-'''
-from collections import namedtuple, defaultdict
+"""
+from bisect import bisect_left
+from collections import defaultdict, namedtuple
 
 import numpy as np
-from scipy.ndimage.morphology import binary_dilation, binary_erosion
 from scipy import optimize, spatial
+from scipy.ndimage.morphology import binary_dilation, binary_erosion
 from sklearn.metrics import auc
-from bisect import bisect_left
 
-from data_processing_tools import (empty_marginal_frames,
-                                   process_spark_prediction,
-                                   simple_nonmaxima_suppression,
-                                   sparks_connectivity_mask)
-
-
+from data_processing_tools import (
+    empty_marginal_frames,
+    process_spark_prediction,
+    simple_nonmaxima_suppression,
+    sparks_connectivity_mask,
+)
 
 ################################ Global params #################################
 
 # physiological params to get sparks locations
 # these have to be coherent in the whole project
 
-PIXEL_SIZE = 0.2 # 1 pixel = 0.2 um x 0.2 um
+PIXEL_SIZE = 0.2  # 1 pixel = 0.2 um x 0.2 um
 global MIN_DIST_XY
-MIN_DIST_XY = round(1.8 / PIXEL_SIZE) # min distance in space between sparks
-TIME_FRAME = 6.8 # 1 frame = 6.8 ms
+MIN_DIST_XY = round(1.8 / PIXEL_SIZE)  # min distance in space between sparks
+TIME_FRAME = 6.8  # 1 frame = 6.8 ms
 global MIN_DIST_T
-MIN_DIST_T = round(20 / TIME_FRAME) # min distance in time between sparks
+MIN_DIST_T = round(20 / TIME_FRAME)  # min distance in time between sparks
 
 
 ################################ Generic utils #################################
@@ -52,28 +52,28 @@ def take_closest(myList, myNumber):
     before = myList[pos - 1]
     after = myList[pos]
     if after - myNumber < myNumber - before:
-       return after
+        return after
     else:
-       return before
+        return before
 
 
 def diff(l1, l2):
     # l1 and l2 are lists
     # return l1 - l2
-    return list(map(list,(set(map(tuple,l1))).difference(set(map(tuple,l2)))))
-
+    return list(map(list, (set(map(tuple, l1))).difference(set(map(tuple, l2)))))
 
 
 ############################### Generic metrics ################################
 
 
-def compute_iou(ys_roi, preds_roi, ignore_mask=None):
-    '''
+def compute_iou(ys_roi, preds_roi, ignore_mask=None, debug=False):
+    """
     Compute IoU for given single annotated and predicted events.
     ys_roi :            annotated event ROI
     preds_roi :         predicted event ROI
     ignore_mask :       mask that is ignored by loss function during training
-    '''
+    debug:              if true, print when both ys and preds are empty
+    """
     # define mask where pixels aren't ignored by loss function
     if ignore_mask is not None:
         compute_mask = np.logical_not(ignore_mask)
@@ -83,17 +83,22 @@ def compute_iou(ys_roi, preds_roi, ignore_mask=None):
 
     intersection = np.logical_and(ys_roi, preds_roi_real)
     union = np.logical_or(ys_roi, preds_roi_real)
-    iou = np.count_nonzero(intersection) / np.count_nonzero(union)
+    if np.count_nonzero(union):
+        iou = np.count_nonzero(intersection) / np.count_nonzero(union)
+    else:
+        iou = 1.0
+        if debug:
+            print("Warning: both annotations and preds are empty")
     return iou
 
 
 def compute_inter_min(ys_roi, preds_roi, ignore_mask=None):
-    '''
+    """
     Compute intersection over minimum area for given single annotated and predicted events.
     ys_roi :            annotated event ROI
     preds_roi :         predicted event ROI
     ignore_mask :       mask that is ignored by loss function during training
-    '''
+    """
     # define mask where pixels aren't ignored by loss function
     if ignore_mask is not None:
         compute_mask = np.logical_not(ignore_mask)
@@ -112,29 +117,27 @@ def compute_inter_min(ys_roi, preds_roi, ignore_mask=None):
     return iomin
 
 
-
 ################################ Sparks metrics ################################
 
-'''
+"""
 Utils for computing metrics related to sparks, e.g.
 - compute correspondences between annotations and preds
 - compute precision and recall
-'''
+"""
 
-Metrics = namedtuple('Metrics', ['precision',
-                                 'recall',
-                                 'f1_score',
-                                 'tp',
-                                 'tp_fp',
-                                 'tp_fn'])
+Metrics = namedtuple(
+    "Metrics", ["precision", "recall", "f1_score", "tp", "tp_fp", "tp_fn"]
+)
 
 
-
-def correspondences_precision_recall(coords_real, coords_pred,
-                                     match_distance_t = MIN_DIST_T,
-                                     match_distance_xy = MIN_DIST_XY,
-                                     return_pairs_coords = False,
-                                     return_nb_results = False):
+def correspondences_precision_recall(
+    coords_real,
+    coords_pred,
+    match_distance_t=MIN_DIST_T,
+    match_distance_xy=MIN_DIST_XY,
+    return_pairs_coords=False,
+    return_nb_results=False,
+):
     """
     Compute best matches given two sets of coordinates, one from the
     ground-truth and another one from the network predictions. A match is
@@ -152,38 +155,44 @@ def correspondences_precision_recall(coords_real, coords_pred,
     # divide temporal coords by match_distance_t and spatial coords by
     # match_distance_xy
     if coords_real.size > 0:
-        coords_real[:,0] /= match_distance_t
-        coords_real[:,1] /= match_distance_xy
-        coords_real[:,2] /= match_distance_xy
+        coords_real[:, 0] /= match_distance_t
+        coords_real[:, 1] /= match_distance_xy
+        coords_real[:, 2] /= match_distance_xy
 
     if coords_pred.size > 0:
-        coords_pred[:,0] /= match_distance_t
-        coords_pred[:,1] /= match_distance_xy
-        coords_pred[:,2] /= match_distance_xy # check if integer!!!!!!!!!!!
+        coords_pred[:, 0] /= match_distance_t
+        coords_pred[:, 1] /= match_distance_xy
+        coords_pred[:, 2] /= match_distance_xy  # check if integer!!!!!!!!!!!
 
     if coords_real.size and coords_pred.size > 0:
         w = spatial.distance_matrix(coords_real, coords_pred)
-        w[w > 1] = 9999999 # NEW
+        w[w > 1] = 9999999  # NEW
         row_ind, col_ind = optimize.linear_sum_assignment(w)
 
     if return_pairs_coords:
         if coords_real.size > 0:
             # multiply coords by match distances
-            coords_real[:,0] *= match_distance_t
-            coords_real[:,1] *= match_distance_xy
-            coords_real[:,2] *= match_distance_xy
+            coords_real[:, 0] *= match_distance_t
+            coords_real[:, 1] *= match_distance_xy
+            coords_real[:, 2] *= match_distance_xy
 
         if coords_pred.size > 0:
-            coords_pred[:,0] *= match_distance_t
-            coords_pred[:,1] *= match_distance_xy
-            coords_pred[:,2] *= match_distance_xy
+            coords_pred[:, 0] *= match_distance_t
+            coords_pred[:, 1] *= match_distance_xy
+            coords_pred[:, 2] *= match_distance_xy
 
         if coords_real.size and coords_pred.size > 0:
             # true positive pairs:
-            paired_real = [coords_real[i].tolist()
-                           for i,j in zip(row_ind,col_ind) if w[i,j]<=1]
-            paired_pred = [coords_pred[j].tolist()
-                           for i,j in zip(row_ind,col_ind) if w[i,j]<=1]
+            paired_real = [
+                coords_real[i].tolist()
+                for i, j in zip(row_ind, col_ind)
+                if w[i, j] <= 1
+            ]
+            paired_pred = [
+                coords_pred[j].tolist()
+                for i, j in zip(row_ind, col_ind)
+                if w[i, j] <= 1
+            ]
 
             # false positive (predictions):
             false_positives = sorted(diff(coords_pred, paired_pred))
@@ -196,9 +205,7 @@ def correspondences_precision_recall(coords_real, coords_pred,
                 tp_fp = len(coords_pred)
                 tp_fn = len(coords_real)
 
-                res = {'tp': tp,
-                       'tp_fp': tp_fp,
-                       'tp_fn': tp_fn}
+                res = {"tp": tp, "tp_fp": tp_fp, "tp_fn": tp_fn}
                 return res, paired_real, paired_pred, false_positives, false_negatives
             else:
                 return paired_real, paired_pred, false_positives, false_negatives
@@ -208,9 +215,7 @@ def correspondences_precision_recall(coords_real, coords_pred,
                 tp_fp = len(coords_pred)
                 tp_fn = len(coords_real)
 
-                res = {'tp': tp,
-                       'tp_fp': tp_fp,
-                       'tp_fn': tp_fn}
+                res = {"tp": tp, "tp_fp": tp_fp, "tp_fn": tp_fn}
                 return res, [], [], coords_pred, coords_real
             else:
                 return [], [], coords_pred, coords_real
@@ -225,9 +230,7 @@ def correspondences_precision_recall(coords_real, coords_pred,
         tp_fn = len(coords_real)
 
         if return_nb_results:
-            return {'tp': tp,
-                    'tp_fp': tp_fp,
-                    'tp_fn': tp_fn}
+            return {"tp": tp, "tp_fp": tp_fp, "tp_fn": tp_fn}
 
         if tp_fp > 0:
             precision = tp / tp_fp
@@ -239,7 +242,7 @@ def correspondences_precision_recall(coords_real, coords_pred,
         else:
             recall = 1.0
 
-        f1_score = compute_f_score(precision,recall)
+        f1_score = compute_f_score(precision, recall)
 
         return precision, recall, f1_score, tp, tp_fp, tp_fn
 
@@ -259,15 +262,23 @@ def reduce_metrics(results):
     else:
         recall = 1.0
 
-    f1_score = compute_f_score(precision,recall)
+    f1_score = compute_f_score(precision, recall)
 
     return Metrics(precision, recall, f1_score, tp, tp_fp, tp_fn)
 
 
-def compute_prec_rec(annotations, preds, movie, thresholds,
-                     min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T,
-                     min_radius=3, ignore_frames=0, ignore_mask=None):
-    '''
+def compute_prec_rec(
+    annotations,
+    preds,
+    movie,
+    thresholds,
+    min_dist_xy=MIN_DIST_XY,
+    min_dist_t=MIN_DIST_T,
+    min_radius=3,
+    ignore_frames=0,
+    ignore_mask=None,
+):
+    """
     annotations: video of sparks segmentation w/ values in {0,1}
     preds: video of sparks preds w/ values in [0,1]
     thresholds : list of thresholds applied to the preds above which events are kept
@@ -277,7 +288,7 @@ def compute_prec_rec(annotations, preds, movie, thresholds,
     ignore_frames : number of frames ignored at beginning and end of movie
     ignore_mask: binary mask indicating where to ignore the values
     returns : list of Metrics tuples corresponding to thresholds and AUC
-    '''
+    """
 
     if ignore_frames != 0:
         annotations = empty_marginal_frames(annotations, ignore_frames)
@@ -287,68 +298,82 @@ def compute_prec_rec(annotations, preds, movie, thresholds,
     if ignore_mask is not None:
         preds = preds * (1 - ignore_mask)
 
-    metrics = {} # list of 'Metrics' tuples: precision, recall, f1_score, tp, tp_fp, tp_fn
-                 # indexed by threshold value
+    metrics = (
+        {}
+    )  # list of 'Metrics' tuples: precision, recall, f1_score, tp, tp_fp, tp_fn
+    # indexed by threshold value
 
     connectivity_mask = sparks_connectivity_mask(min_dist_xy, min_dist_t)
-    coords_true = simple_nonmaxima_suppression(img=movie,
-                                               maxima_mask=annotations,
-                                               min_dist=connectivity_mask,
-                                               return_mask=False,
-                                               threshold=0,
-                                               sigma=2)
+    coords_true = simple_nonmaxima_suppression(
+        img=movie,
+        maxima_mask=annotations,
+        min_dist=connectivity_mask,
+        return_mask=False,
+        threshold=0,
+        sigma=2,
+    )
 
     # compute prec and rec for every threshold
     prec = []
     rec = []
     for t in thresholds:
-        coords_preds = process_spark_prediction(preds,
-                                                movie,
-                                                t_detection=t,
-                                                min_dist_xy=min_dist_xy,
-                                                min_dist_t=min_dist_t,
-                                                min_radius=min_radius)
+        coords_preds = process_spark_prediction(
+            preds,
+            movie,
+            t_detection=t,
+            min_dist_xy=min_dist_xy,
+            min_dist_t=min_dist_t,
+            min_radius=min_radius,
+        )
 
-        prec_rec = Metrics(*correspondences_precision_recall(coords_real=coords_true,
-                                                             coords_pred=coords_preds,
-                                                             match_distance_t=min_dist_t,
-                                                             match_distance_xy=min_dist_xy))
+        prec_rec = Metrics(
+            *correspondences_precision_recall(
+                coords_real=coords_true,
+                coords_pred=coords_preds,
+                match_distance_t=min_dist_t,
+                match_distance_xy=min_dist_xy,
+            )
+        )
 
         metrics[t] = prec_rec
-        #print("threshold", t)
+        # print("threshold", t)
         prec.append(prec_rec.precision)
         rec.append(prec_rec.recall)
 
-
     # compute AUC for this sample
-    #print("PREC", prec)
-    #print("REC", rec)
-    #area_under_curve = auc(rec, prec)
+    # print("PREC", prec)
+    # print("REC", rec)
+    # area_under_curve = auc(rec, prec)
 
     # TODO: adattare altri scripts che usano questa funzione!!!!
-    return metrics#, area_under_curve
+    return metrics  # , area_under_curve
 
 
-def compute_f_score(prec,rec,beta=1):
+def compute_f_score(prec, rec, beta=1):
     if beta == 1:
-        f_score = 2*prec*rec/(prec+rec) if prec+rec != 0 else 0.
+        f_score = 2 * prec * rec / (prec + rec) if prec + rec != 0 else 0.0
     else:
-        f_score = (1+beta*beta)*(prec+rec)/(beta*beta*prec+rec) if prec+rec != 0 else 0.
+        f_score = (
+            (1 + beta * beta) * (prec + rec) / (beta * beta * prec + rec)
+            if prec + rec != 0
+            else 0.0
+        )
     return f_score
+
 
 ########################## Segmentation-based metrics ###########################
 
-'''
+"""
 Utils for computing metrics related to puffs and waves, e.g.:
 - Jaccard index
 - exclusion region for Jaccard index
-'''
+"""
 
 
-def compute_puff_wave_metrics(ys, preds, exclusion_radius,
-                              ignore_mask=None, sparks=False,
-                              results_only=False):
-    '''
+def compute_puff_wave_metrics(
+    ys, preds, exclusion_radius, ignore_mask=None, sparks=False, results_only=False
+):
+    """
     Compute some metrics given labels and predicted segmentation.
     ys :                annotated segmentation
     preds :             predicted segmentation
@@ -357,14 +382,14 @@ def compute_puff_wave_metrics(ys, preds, exclusion_radius,
     sparks :            if True, do not compute erosion on sparks for
                         exclusion_radius
     results_only:       if True, return number of tp, tn, fp, fn pixels
-    '''
+    """
 
     tp = np.logical_and(ys, preds)
     tn = np.logical_not(np.logical_or(ys, preds))
     fp = np.logical_and(preds, np.logical_not(tp))
     fn = np.logical_and(ys, np.logical_not(tp))
 
-    assert (np.sum(tp)+np.sum(tn)+np.sum(fp)+np.sum(fn) == ys.size)
+    assert np.sum(tp) + np.sum(tn) + np.sum(fp) + np.sum(fn) == ys.size
 
     # compute exclusion zone if required
     if exclusion_radius > 0:
@@ -372,10 +397,10 @@ def compute_puff_wave_metrics(ys, preds, exclusion_radius,
 
         if not sparks:
             eroded = binary_erosion(ys, iterations=exclusion_radius)
-            exclusion_mask = np.logical_not(np.logical_xor(eroded,dilated))
+            exclusion_mask = np.logical_not(np.logical_xor(eroded, dilated))
         else:
             # do not erode sparks
-            exclusion_mask = np.logical_not(np.logical_xor(ys,dilated))
+            exclusion_mask = np.logical_not(np.logical_xor(ys, dilated))
 
         tp = np.logical_and(tp, exclusion_mask)
         tn = np.logical_and(tn, exclusion_mask)
@@ -387,8 +412,7 @@ def compute_puff_wave_metrics(ys, preds, exclusion_radius,
 
         if exclusion_radius > 0:
             # compute dilation for ignore mask (erosion not necessary)
-            ignore_mask = binary_dilation(ignore_mask,
-                                          iterations=exclusion_radius)
+            ignore_mask = binary_dilation(ignore_mask, iterations=exclusion_radius)
 
         compute_mask = np.logical_not(ignore_mask)
 
@@ -406,47 +430,45 @@ def compute_puff_wave_metrics(ys, preds, exclusion_radius,
     if results_only:
         return n_tp, n_tn, n_fp, n_fn
 
-    iou = n_tp/(n_tp+n_fn+n_fp) if (n_tp+n_fn+n_fp) != 0 else 1.0
-    prec = n_tp/(n_tp+n_fp) if (n_tp+n_fp) != 0 else 1.0
-    rec = n_tp/(n_tp+n_fn) if (n_tp+n_fn) != 0 else 1.0
-    accuracy = (n_tp+n_tn)/(n_tp+n_tn+n_fp+n_fn)
+    iou = n_tp / (n_tp + n_fn + n_fp) if (n_tp + n_fn + n_fp) != 0 else 1.0
+    prec = n_tp / (n_tp + n_fp) if (n_tp + n_fp) != 0 else 1.0
+    rec = n_tp / (n_tp + n_fn) if (n_tp + n_fn) != 0 else 1.0
+    accuracy = (n_tp + n_tn) / (n_tp + n_tn + n_fp + n_fn)
 
-    return {"iou": iou,
-            "prec": prec,
-            "rec": rec,
-            "accuracy": accuracy}
+    return {"iou": iou, "prec": prec, "rec": rec, "accuracy": accuracy}
+
 
 def compute_average_puff_wave_metrics(metrics):
-    '''
+    """
     compute average of puff+wave metrics over all movies
     metrics: dict whose indices are movie names and each entry contains the
              metrics {'accuracy', 'iou', 'prec', 'rec'}
     return a dict indexed by {'accuracy', 'iou', 'prec', 'rec'}
-    '''
+    """
     # reverse dict
     metrics_dict = defaultdict(lambda: defaultdict(dict))
     for movie_name, movie_metrics in metrics.items():
         for metric_name, val in movie_metrics.items():
             metrics_dict[metric_name][movie_name] = val
 
-    res = {metric_name: sum(res.values())/len(res)
-            for metric_name, res in metrics_dict.items()}
+    res = {
+        metric_name: sum(res.values()) / len(res)
+        for metric_name, res in metrics_dict.items()
+    }
 
     return res
-
-
 
 
 ############################### Unused functions ###############################
 
 
-#def in_bounds(points, shape):
+# def in_bounds(points, shape):
 #
 #    return np.logical_and.reduce([(coords_i >= 0) & (coords_i < shape_i)
 #                                for coords_i, shape_i in zip(points.T, shape)])
 
 
-#def inverse_argwhere(coords, shape, dtype):
+# def inverse_argwhere(coords, shape, dtype):
 #    """
 #    Creates an array with given shape and dtype such that
 #
@@ -462,7 +484,7 @@ def compute_average_puff_wave_metrics(metrics):
 #    return res
 
 
-#def reduce_metrics_thresholds(results):
+# def reduce_metrics_thresholds(results):
 #    '''
 #    apply metrics reduction to results corresponding to different thresholds
 #
@@ -503,7 +525,7 @@ def compute_average_puff_wave_metrics(metrics):
 ################# fcts from save_results_to_json.py (old file) #################
 
 # compute pixel-based results, for given binary predictions
-#def get_binary_preds_pixel_based_results(binary_preds, ys, ignore_mask,
+# def get_binary_preds_pixel_based_results(binary_preds, ys, ignore_mask,
 #                                         min_radius, exclusion_radius,
 #                                         sparks=False):
 #    '''
@@ -547,7 +569,7 @@ def compute_average_puff_wave_metrics(metrics):
 
 
 # compute pixel-based results, using a detection threshold
-#def get_class_pixel_based_results(raw_preds, ys, ignore_mask,
+# def get_class_pixel_based_results(raw_preds, ys, ignore_mask,
 #                                  t_detection, min_radius, exclusion_radius,
 #                                  sparks=False):
 #    '''
@@ -580,7 +602,7 @@ def compute_average_puff_wave_metrics(metrics):
 
 
 # compute spark peaks results, for given binary prediction
-#def get_binary_preds_spark_peaks_results(binary_preds, coords_true, movie,
+# def get_binary_preds_spark_peaks_results(binary_preds, coords_true, movie,
 #                                         ignore_mask, ignore_frames,
 #                                         min_radius_sparks):
 #    '''
@@ -637,7 +659,7 @@ def compute_average_puff_wave_metrics(metrics):
 
 
 # compute spark peaks results, using a detection threshold
-#def get_spark_peaks_results(raw_preds, coords_true, movie, ignore_mask,
+# def get_spark_peaks_results(raw_preds, coords_true, movie, ignore_mask,
 #                            ignore_frames, t_detection, min_radius_sparks):
 #        '''
 #        For given raw preds, annotated sparks locations and given params,
@@ -671,7 +693,7 @@ def compute_average_puff_wave_metrics(metrics):
 
 
 # compute average over movies of pixel-based results
-#def get_sum_results(per_movie_results, pixel_based=True):
+# def get_sum_results(per_movie_results, pixel_based=True):
 #    '''
 #    Given a dict containing the results for all video wrt to all parameters
 #    (detection threshold/argmax; min radius; (exclusion radius)) return a dict

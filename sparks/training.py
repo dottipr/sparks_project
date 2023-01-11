@@ -365,8 +365,7 @@ if __name__ == "__main__":
                                    w=params['w'])
 
     # directory where predicted class movies are saved
-    preds_output_dir = os.path.join(output_relative_path,
-                                    params['run_name'],
+    preds_output_dir = os.path.join(output_path,
                                     'predictions')
     os.makedirs(preds_output_dir, exist_ok=True)
 
