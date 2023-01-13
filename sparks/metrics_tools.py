@@ -11,16 +11,16 @@ from bisect import bisect_left
 from collections import defaultdict, namedtuple
 
 import numpy as np
-from scipy import optimize, spatial
-from scipy.ndimage.morphology import binary_dilation, binary_erosion
-from sklearn.metrics import auc
-
 from data_processing_tools import (
+    class_to_nb,
     empty_marginal_frames,
     process_spark_prediction,
     simple_nonmaxima_suppression,
     sparks_connectivity_mask,
 )
+from scipy import optimize, spatial
+from scipy.ndimage.morphology import binary_dilation, binary_erosion
+from sklearn.metrics import auc
 
 ################################ Global params #################################
 
@@ -64,6 +64,26 @@ def diff(l1, l2):
 
 
 ############################### Generic metrics ################################
+
+
+# from UNet outputs and labels, get dict of metrics for a single video
+def get_metrics(ys_classes, ys_instances, preds_classes, preds_instances):
+    r"""
+    Compute metrics from raw predictions and annotations (with instances).
+    Segmentation-based metrics are (for each class and binary for background vs.
+    events):
+    - intersection over union (IoU)
+    - precision
+    - recall
+    Instance-based metrics are:
+    - precision
+    - recall
+    - print "confusion matrix"
+
+    ys_classes: array with values in {0,1,2,3,4} of segmented events
+    ys_instances:
+    """
+    pass
 
 
 def compute_iou(ys_roi, preds_roi, ignore_mask=None, debug=False):
@@ -361,7 +381,7 @@ def compute_f_score(prec, rec, beta=1):
     return f_score
 
 
-########################## Segmentation-based metrics ###########################
+########################## Segmentation-based metrics ##########################
 
 """
 Utils for computing metrics related to puffs and waves, e.g.:
@@ -457,6 +477,183 @@ def compute_average_puff_wave_metrics(metrics):
     }
 
     return res
+
+
+########################### Instances-based metrics ############################
+
+
+def get_score_matrix(ys_instances, preds_instances, ignore_mask=None, score="iomin"):
+    r"""
+    Compute pair-wise scores between annotated event instances (ys_segmentation)
+    and predicted event instances (preds_instances).
+
+    ys_instances, preds_instances:  dicts indexed my ca release event types
+                                    each entry is a int array
+    ignore_mask:                    binary mask, ROIs ignored during training
+    score:                          scoring method (IoMin or IoU)
+
+    return an array of shape n_ys_events x n_preds_events
+    """
+
+    assert score in ["iomin", "iou"], "score type must be 'iomin' or 'iou'."
+
+    # get calcium release event types from dict keys
+    ca_release_events = ys_instances.keys()
+
+    # get number of annotated and predicted events
+    n_ys_events = max(
+        [np.max(ys_instances[event_type]) for event_type in ca_release_events]
+    )
+
+    n_preds_events = max(
+        [np.max(preds_instances[event_type]) for event_type in ca_release_events]
+    )
+
+    # create empty score matrix for IoU or IoMin
+    scores = np.zeros((n_ys_events, n_preds_events))
+
+    # compute matrices with all separated events summed
+    ys_all_events = sum(ys_instances.values())
+    preds_all_events = sum(preds_instances.values())
+
+    # compute pairwise IoMin scores
+    for pred_id in range(1, n_preds_events + 1):
+        preds_roi = preds_all_events == pred_id
+        # check that the predicted ROI is not empty
+        # assert preds_roi.any(), f"the predicted ROI n.{pred_id} is empty!"
+
+        # check if predicted ROI intersect at least one annotated event
+        if np.count_nonzero(np.logical_and(ys_all_events, preds_roi)) != 0:
+
+            for ys_id in range(1, n_ys_events + 1):
+                ys_roi = ys_all_events == ys_id
+                # check that the annotated ROI is not empty
+                # assert ys_roi.any(), f"the annotated ROI n.{ys_roi} is empty!"
+
+                # check if predicted and annotated ROIs intersect
+                if np.count_nonzero(np.logical_and(ys_roi, preds_roi)) != 0:
+
+                    # compute scores
+                    if score == "iomin":
+                        scores[ys_id - 1, pred_id - 1] = compute_inter_min(
+                            ys_roi=ys_roi, preds_roi=preds_roi, ignore_mask=ignore_mask
+                        )
+                    elif score == "iou":
+                        scores[ys_id - 1, pred_id - 1] = compute_iou(
+                            ys_roi=ys_roi, preds_roi=preds_roi, ignore_mask=ignore_mask
+                        )
+
+    # assertions take ~45s to be computed...
+
+    return scores
+
+
+def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
+    r"""
+    Get confusion matrix, list of y events matched with each predicted event,
+    list of ignored predicted events, and y events that aren't matched with any
+    predicted events (false positive) starting from annotated and predicted
+    event instances, pair-wise scores and a threshold.
+
+    ys_instances, preds_instances:  dicts indexed my ca release event types
+                                    each entry is a int array
+    scores:                         array of shape n_ys_events x n_preds_events
+    t:                              min threshold to consider two events a match
+    ignore_mask:                    binary mask, ROIs ignored during training
+    """
+
+    # ID used for pred instances that are matched with an ignored event
+    matched_ignore_id = 9999
+
+    # get calcium release event types from dict keys
+    ca_release_events = ys_instances.keys()
+
+    # dict indexed by predicted event indices, s.t. each entry is the
+    # list of annotated event ids that match the predicted event
+    matched_events = {}
+
+    # confusion matrix cols and rows indices: {background, sparks, puffs, waves}
+    confusion_matrix = np.zeros((4, 4))
+
+    # count number of predicted events that are ignored
+    ignored_preds = 0
+
+    # get indices of unmatched y events
+    unmatched_events = set()
+
+    for pred_class in ca_release_events:
+        pred_class_id = class_to_nb[pred_class]
+        # get ids of pred events in given class
+        pred_ids = list(np.unique(preds_instances[pred_class]))
+        pred_ids.remove(0)
+
+        # get ids of y events in same class
+        y_ids = set(np.unique(ys_instances[pred_class]))
+        y_ids.remove(0)
+
+        # get name of different classes
+        other_classes = ca_release_events[:]
+        other_classes.remove(pred_class)
+
+        for pred_id in pred_ids:
+            # get set of y_ids that are matched with pred_id (score > t):
+            matched_events[pred_id] = np.where(scores[:, pred_id - 1] >= t)[0] + 1
+            matched_events[pred_id] = set(matched_events[pred_id])
+
+            # if at least one matched event is in same class, increase confusion matrix
+            if matched_events[pred_id] & y_ids:
+                confusion_matrix[pred_class_id, pred_class_id] += 1
+
+            # else, if no y event is matched with this pred, check if it is ignored
+            elif not matched_events[pred_id]:
+
+                pred_roi = preds_instances[pred_class] == pred_id
+                pred_roi_size = np.count_nonzero(pred_roi)
+
+                ignored_roi = np.logical_and(pred_roi, ignore_mask)
+                ignored_roi_size = np.count_nonzero(ignored_roi)
+
+                overlap = ignored_roi_size / pred_roi_size
+
+                # if the overlap is not large enough, count pred as FP
+                if overlap < t:
+                    confusion_matrix[0, pred_class_id] += 1
+                # otherwise, mark pred as ignored event
+                else:
+                    matched_events[pred_id] = {matched_ignore_id}
+                    ignored_preds += 1
+
+            # otherwise, try to match pred_id with the other classes
+            else:
+                for y_class in other_classes:
+                    y_class_id = class_to_nb(y_class)
+                    # get ids of y events in given class
+                    y_other_ids = set(np.unique(ys_instances[y_class]))
+                    y_other_ids.remove(0)
+
+                    if matched_events[pred_id] & y_other_ids:
+                        # if at least one matched event is in different class, increase confusion matrix
+                        confusion_matrix[y_class_id, pred_class_id] += 1
+
+    # get false negative (i.e., labelled but not detected) events
+    # get list of all matched events
+    y_matched_ids = set().union(*matched_events.values())
+
+    for y_class in ca_release_events:
+        y_class_id = class_to_nb(y_class)
+        # get ids of annotated events in given class
+        y_ids = set(np.unique(ys_instances[y_class]))
+        y_ids.remove(0)
+
+        # get annotated events that are not matched with a pred
+        y_unmatched_ids = y_ids.difference(y_matched_ids)
+        n_unmatched = len(y_unmatched_ids)
+
+        # update confusion matrix and list of unmatched events
+        confusion_matrix[y_class_id, 0] += n_unmatched
+        unmatched_events = unmatched_events.union(y_unmatched_ids)
+
+    return confusion_matrix, matched_events, ignored_preds, unmatched_events
 
 
 ############################### Unused functions ###############################

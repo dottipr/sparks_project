@@ -270,6 +270,24 @@ def get_new_mask_raw_sparks(
 ########################### General masks processing ###########################
 
 
+def class_to_nb(event_type):
+    r"""
+    Given an ca release event type (sparks, puffs, waves or ignore)
+    return corresponding int used in annotation masks.
+    """
+
+    assert event_type in [
+        "sparks",
+        "puffs",
+        "waves",
+        "ignore",
+    ], "event_type must be in ['sparks', 'puffs', 'waves', 'ignore']."
+
+    class_to_nb_dict = {"sparks": 1, "puffs": 3, "waves": 2, "ignore": 4}
+
+    return class_to_nb_dict[event_type]
+
+
 def sparks_connectivity_mask(min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T):
     """
     Compute the mask that defines the minimal distance between two spark peaks.
@@ -609,18 +627,16 @@ def get_event_instances_class(
     class: 'sparks', 'puffs', 'waves', 'ignore') of classified event instances.
 
     event_instances is an array with int values
-    class_labels in an array with values in {0,1,2,3,4}
+    class_labels is an array with values in {0,1,2,3,4}
     if shift_ids == True, events in different classes have different IDs
     if to_tensor == True, return dict of torch tensors, instead of numpy arrays
     """
-    class_to_nb = {"sparks": 1, "puffs": 3, "waves": 2, "ignore": 4}
-
     temp_events = {}
     shift_id = 0
 
-    for event_type in class_to_nb.keys():
+    for event_type in ["sparks", "puffs", "waves", "ignore"]:
         # get binary annotated mask of current event type
-        class_mask = class_labels == class_to_nb[event_type]
+        class_mask = class_labels == class_to_nb(event_type)
 
         # get separated events belonging to this class
         event_mask = np.where(class_mask, event_instances, 0)

@@ -266,6 +266,7 @@ def write_videos_on_disk(
     xs : input video used by network
     ys: segmentation video used in loss function
     preds : all u-net preds [bg preds, sparks preds, puffs preds, waves preds]
+            preds should already be normalized between 0 and 1
     """
     out_name_root = training_name + "_" + video_name + "_"
 
@@ -274,15 +275,9 @@ def write_videos_on_disk(
     if not isinstance(ys, type(None)):
         imageio.volwrite(os.path.join(path, out_name_root + "ys.tif"), np.uint8(ys))
     if not isinstance(preds, type(None)):
-        imageio.volwrite(
-            os.path.join(path, out_name_root + "sparks.tif"), np.exp(preds[1])
-        )
-        imageio.volwrite(
-            os.path.join(path, out_name_root + "waves.tif"), np.exp(preds[2])
-        )
-        imageio.volwrite(
-            os.path.join(path, out_name_root + "puffs.tif"), np.exp(preds[3])
-        )
+        imageio.volwrite(os.path.join(path, out_name_root + "sparks.tif"), preds[1])
+        imageio.volwrite(os.path.join(path, out_name_root + "waves.tif"), preds[2])
+        imageio.volwrite(os.path.join(path, out_name_root + "puffs.tif"), preds[3])
 
 
 def write_colored_class_videos_on_disk(
