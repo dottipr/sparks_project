@@ -10,22 +10,27 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import wandb
+from data_processing_tools import (
+    class_to_nb,
+    empty_marginal_frames,
+    empty_marginal_frames_from_coords,
+    get_argmax_segmented_output,
+    get_event_instances_class,
+    get_processed_result,
+    simple_nonmaxima_suppression,
+    sparks_connectivity_mask,
+)
+from in_out_tools import write_colored_sparks_on_disk, write_videos_on_disk
+from metrics_tools import (
+    compute_f_score,
+    compute_iou,
+    compute_puff_wave_metrics,
+    correspondences_precision_recall,
+    get_confusion_matrix,
+    get_score_matrix,
+)
 from scipy import ndimage as ndi
 from torch import nn
-
-from sparks.data_processing_tools import (class_to_nb, empty_marginal_frames,
-                                          empty_marginal_frames_from_coords,
-                                          get_argmax_segmented_output,
-                                          get_event_instances_class,
-                                          get_processed_result,
-                                          simple_nonmaxima_suppression,
-                                          sparks_connectivity_mask)
-from sparks.in_out_tools import (write_colored_sparks_on_disk,
-                                 write_videos_on_disk)
-from sparks.metrics_tools import (compute_f_score, compute_iou,
-                                  compute_puff_wave_metrics,
-                                  correspondences_precision_recall,
-                                  get_confusion_matrix, get_score_matrix)
 
 logger = logging.getLogger(__name__)
 
@@ -359,6 +364,7 @@ def test_function(
                         that are interesting to see during training)
 
     """
+    start = time.time()
     network.eval()
 
     # initialize dicts that will contain the results, indexed by movie names
@@ -410,10 +416,13 @@ def test_function(
     ys_concat = []
     preds_concat = []
 
+    logger.debug(f"Time to load set up test function: {time.time() - start:.2f} s")
+
     for test_dataset in testing_datasets:
 
         ########################## run sample in UNet ##########################
 
+        start = time.time()
         # get video name
         video_name = test_dataset.video_name
 
@@ -444,8 +453,13 @@ def test_function(
             path=output_dir,
         )
 
+        logger.debug(
+            f"Time to run sample {video_name} in UNet: {time.time() - start:.2f} s"
+        )
+
         ####################### re-organise annotations ########################
 
+        start = time.time()
         # ys_instances is a dict with classified event instances, for each class
         ys_instances = get_event_instances_class(
             event_instances=test_dataset.events, class_labels=ys, shift_ids=True
@@ -494,7 +508,11 @@ def test_function(
             empty_marginal_frames(video=temp_preds, n_frames=ignore_frames)
         )
 
+        logger.debug(f"Time to process predictions: {time.time() - start:.2f} s")
+
         ############### compute pairwise scores (based on IoMin) ###############
+
+        start = time.time()
 
         iomin_scores = get_score_matrix(
             ys_instances=ys_instances,
@@ -503,7 +521,11 @@ def test_function(
             score="iomin",
         )
 
+        logger.debug(f"Time to compute pairwise scores: {time.time() - start:.2f} s")
+
         ######################### get confusion matrix #########################
+
+        start = time.time()
 
         confusion_matrix_res = get_confusion_matrix(
             ys_instances=ys_instances,
@@ -526,7 +548,11 @@ def test_function(
         # get false negative (i.e., labelled but not detected) events
         unmatched_events[video_name] = confusion_matrix_res[3]
 
+        logger.debug(f"Time to compute confusion matrix: {time.time() - start:.2f} s")
+
     ############################## reduce metrics ##############################
+
+    start = time.time()
 
     metrics = {}
 
@@ -586,6 +612,8 @@ def test_function(
 
     if wandb_log:
         wandb.log(metrics)
+
+    logger.debug(f"Time to reduce metrics: {time.time() - start:.2f} s")
 
     return metrics
 
