@@ -186,13 +186,12 @@ class SparkDataset(Dataset):
                                         data_folder=self.base_path,
                                         ids=sample_ids,
                                         mask_names="event_label"
-                                        ).values())
-                self.events = [torch.from_numpy(mask)
-                                    for mask in self.events] # int8
+                                        ).values())[0]
+                self.events = torch.from_numpy(self.events) # int8
 
                 logger.info("Computing spark peaks...")
                 spark_mask = np.where(self.annotations[0]==1,
-                                      self.events[0], 0)
+                                      self.events, 0)
                 self.coords_true = detect_spark_peaks(movie=self.data[0],
                                                       spark_mask=spark_mask,
                                                       sigma=2,

@@ -9,6 +9,7 @@ the end of the script (such as ..., )
 """
 from bisect import bisect_left
 from collections import defaultdict, namedtuple
+import logging
 
 import numpy as np
 from data_processing_tools import (
@@ -21,6 +22,8 @@ from data_processing_tools import (
 from scipy import optimize, spatial
 from scipy.ndimage.morphology import binary_dilation, binary_erosion
 from sklearn.metrics import auc
+
+logger = logging.getLogger(__name__)
 
 ################################ Global params #################################
 
@@ -108,7 +111,7 @@ def compute_iou(ys_roi, preds_roi, ignore_mask=None, debug=False):
     else:
         iou = 1.0
         if debug:
-            print("Warning: both annotations and preds are empty")
+            logger.warning("Warning: both annotations and preds are empty")
     return iou
 
 
@@ -498,7 +501,7 @@ def get_score_matrix(ys_instances, preds_instances, ignore_mask=None, score="iom
     assert score in ["iomin", "iou"], "score type must be 'iomin' or 'iou'."
 
     # get calcium release event types from dict keys
-    ca_release_events = ys_instances.keys()
+    ca_release_events = preds_instances.keys()
 
     # get number of annotated and predicted events
     n_ys_events = max(
@@ -582,7 +585,7 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
     unmatched_events = set()
 
     for pred_class in ca_release_events:
-        pred_class_id = class_to_nb[pred_class]
+        pred_class_id = class_to_nb(pred_class)
         # get ids of pred events in given class
         pred_ids = list(np.unique(preds_instances[pred_class]))
         pred_ids.remove(0)

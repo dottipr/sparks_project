@@ -394,12 +394,12 @@ if __name__ == "__main__":
             device=device,
             criterion=criterion,
             testing_datasets=testing_datasets,
-            logger=logger,
             ignore_frames=params['ignore_frames_loss'],
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=params['run_name'],
             output_dir=preds_output_dir,
-            training_mode=True
+            training_mode=True,
+            debug=c.getboolean("general", "debug_mode", fallback=False)
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "test_every", fallback=1000),
@@ -411,13 +411,13 @@ if __name__ == "__main__":
     if params['load_epoch'] != 0:
         trainer.load(params['load_epoch'])
 
-    if c.getboolean("general", "training"): # Run training procedure on data
+    if c.getboolean("general", "training", fallback=False): # Run training procedure on data
         logger.info("Validate network before training")
         trainer.run_validation()
         logger.info("Starting training")
         trainer.train(params['train_epochs'],
                       print_every=c.getint("training", "print_every", fallback=100))
 
-    if c.getboolean("general", "testing"): # Run training procedure on data
+    if c.getboolean("general", "testing", fallback=False): # Run training procedure on data
         logger.info("Starting final validation")
         trainer.run_validation()

@@ -13,16 +13,16 @@ import wandb
 from scipy import ndimage as ndi
 from torch import nn
 
-from sparks.data_processing_tools import (class_to_nb, empty_marginal_frames,
+from data_processing_tools import (class_to_nb, empty_marginal_frames,
                                           empty_marginal_frames_from_coords,
                                           get_argmax_segmented_output,
                                           get_event_instances_class,
                                           get_processed_result,
                                           simple_nonmaxima_suppression,
                                           sparks_connectivity_mask)
-from sparks.in_out_tools import (write_colored_sparks_on_disk,
+from in_out_tools import (write_colored_sparks_on_disk,
                                  write_videos_on_disk)
-from sparks.metrics_tools import (compute_f_score, compute_iou,
+from metrics_tools import (compute_f_score, compute_iou,
                                   compute_puff_wave_metrics,
                                   correspondences_precision_recall,
                                   get_confusion_matrix, get_score_matrix)
@@ -334,11 +334,11 @@ def test_function(
     criterion,
     ignore_frames,
     testing_datasets,
-    # logger,
     wandb_log,
     training_name,
     output_dir,
-    # training_mode=True, TODO: update code to use this (if true compute few metrics)
+    training_mode=True, # TODO: update code to use this (if true compute few metrics)
+    debug=False
 ):
     r"""
     Validate UNet during training.
@@ -350,15 +350,19 @@ def test_function(
     device:             current device
     criterion:          loss function to be computed on the validation set
     testing_datasets:   list of SparkDataset instances
-    #logger:             logger to output results in the terminal
     ignore_frames:      frames ignored by the loss function
     wandb_log:          logger to store results on wandb
     training_name:      training name used to save predictions on disk
     output_dir:         directory where the predicted movies are saved
     training_mode:      if True, compute a smaller set of metrics (only the ones
-                        that are interesting to see during training)
+                        that are interesting to see during training) and do not 
+                        correct for missing spark peaks
 
     """
+
+    if debug:
+        logger.debug("Testing function: setting up general parameters")
+
     network.eval()
 
     # initialize dicts that will contain the results, indexed by movie names
@@ -414,6 +418,9 @@ def test_function(
 
         ########################## run sample in UNet ##########################
 
+        if debug:
+            logger.debug("Testing function: running sample in UNet")
+
         # get video name
         video_name = test_dataset.video_name
 
@@ -446,6 +453,9 @@ def test_function(
 
         ####################### re-organise annotations ########################
 
+        if debug:
+            logger.debug("Testing function: re-organising annotations")
+
         # ys_instances is a dict with classified event instances, for each class
         ys_instances = get_event_instances_class(
             event_instances=test_dataset.events, class_labels=ys, shift_ids=True
@@ -464,6 +474,9 @@ def test_function(
 
         ######################### get processed output #########################
 
+        if debug:
+            logger.debug("Testing function: getting processed output (segmentation and instances)")
+
         # get predicted segmentation and event instances
         preds_instances, preds_segmentation, sparks_loc = get_processed_result(
             sparks=preds[0],
@@ -478,6 +491,8 @@ def test_function(
             puff_min_t=puff_min_t,
             spark_min_t=spark_min_t,
             spark_min_width=spark_min_width,
+            training_mode=training_mode,
+            debug=debug
         )
 
         ##################### stack ys and segmented preds #####################
@@ -496,6 +511,9 @@ def test_function(
 
         ############### compute pairwise scores (based on IoMin) ###############
 
+        if debug:
+            logger.debug("Testing function: computing pairwise scores")
+
         iomin_scores = get_score_matrix(
             ys_instances=ys_instances,
             preds_instances=preds_instances,
@@ -504,6 +522,9 @@ def test_function(
         )
 
         ######################### get confusion matrix #########################
+
+        if debug:
+            logger.debug("Testing function: getting confusion matrix")
 
         confusion_matrix_res = get_confusion_matrix(
             ys_instances=ys_instances,
@@ -527,6 +548,9 @@ def test_function(
         unmatched_events[video_name] = confusion_matrix_res[3]
 
     ############################## reduce metrics ##############################
+
+    if debug:
+        logger.debug("Testing function: reducing metrics")
 
     metrics = {}
 
@@ -566,9 +590,6 @@ def test_function(
 
     # concatenate ignore masks
     ignore_concat = ys_concat == 4
-
-    # compute IoU for each class
-    classes_iou = {}
 
     for event_type in ca_release_events:
         class_id = class_to_nb(event_type)

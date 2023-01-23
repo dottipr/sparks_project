@@ -155,7 +155,7 @@ def load_predictions_ids(training_name, epoch, metrics_folder, ids):
     if "temporal_reduction" in training_name:
         # need to use annotations from another training
         # TODO: implement a solution ....
-        print(
+        logger.warning(
             """!!! method is using temporal reduction, processed annotations
                      have a different shape !!!"""
         )
@@ -190,7 +190,7 @@ def load_predictions_ids(training_name, epoch, metrics_folder, ids):
 
         if "temporal_reduction" in training_name:
             # repeat each frame 4 times
-            print("training using temporal reduction, extending predictions...")
+            logger.info("training using temporal reduction, extending predictions...")
             s_preds = np.asarray(imageio.volread(s))
             p_preds = np.asarray(imageio.volread(p))
             w_preds = np.asarray(imageio.volread(w))
@@ -343,7 +343,7 @@ def write_spark_locations_on_disk(
         min_radius=min_r_sparks,
     )
 
-    print(f"Writing sparks locations to .csv file in file {filename}")
+    logger.info(f"Writing sparks locations to .csv file in file {filename}")
     create_csv(filename, sparks_list)
 
 

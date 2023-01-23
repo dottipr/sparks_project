@@ -5,6 +5,7 @@ Script with tools for data visualisation (e.g. plots and Napari)
 '''
 
 import itertools
+import logging
 import math
 
 import numpy as np
@@ -24,6 +25,7 @@ from scipy import ndimage as ndi
 #df_values = df[(df[col_name]==value) & ...]
 # pd.pivot_table(df_values, values=...,columns=[col_names], index=[...])
 
+logger = logging.getLogger(__name__)
 
 ################################ Global params #################################
 

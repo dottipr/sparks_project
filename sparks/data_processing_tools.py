@@ -9,6 +9,7 @@ REMARKS
 the end of the script (such as compute_filtered_butter, )
 """
 
+import logging
 import math
 
 import cc3d
@@ -22,6 +23,8 @@ from skimage import morphology
 from skimage.draw import ellipsoid
 from skimage.filters import threshold_otsu
 from skimage.segmentation import watershed
+
+logger = logging.getLogger(__name__)
 
 ################################ Global params #################################
 
@@ -163,7 +166,7 @@ def get_new_mask(
             sigma=sigma,
         )
 
-        print("\t\tNum of sparks:", len(sparks_loc))
+        logger.debug(f"Num of sparks: {len(sparks_loc)}")
         # print(sparks_loc)
 
         if return_loc:
@@ -433,7 +436,7 @@ def get_argmax_segmentation_otsu(preds, get_classes=True, debug=False):
     sum_preds = 1 - preds["background"]  # everything but the background
     t_otsu = threshold_otsu(sum_preds)
     if debug:
-        print("\tEvents detection threshold:", t_otsu)
+        logger.debug(f"Events detection threshold: {t_otsu:.3f}")
 
     # get binary mask of valid predictions
     binary_sum_preds = sum_preds > t_otsu
@@ -457,8 +460,16 @@ def get_separated_events(
     connectivity_mask,
     return_sparks_loc=False,
     debug=False,
+    training_mode=False
 ):
     """
+    Given the segmented output, separate each class into event instances.
+
+    Return a dict with keys 'sparks', 'puffs' and 'waves' where each entry is an
+    array with labelled events (from 1 to n_events).
+
+    Using watershed separation algorithm to separate spark events.
+
     movie:              input movie
     sigma:              sigma valued used for nonmaxima suppression and
                         watershed separation of sparks
@@ -466,13 +477,10 @@ def get_separated_events(
                         'waves')
     connectivity:       int, define how puffs and waves are separated
     connectivity_mask:  3d matrix, define how sparks are separated
-
-    Given the segmented output, separate each class into event instances.
-
-    Return a dict with keys 'sparks', 'puffs' and 'waves' where each entry is an
-    array with labelled events (from 1 to n_events).
-
-    Using watershed separation algorithm to separate spark events.
+    return_sparks_loc:  bool, if True, return spark peaks locations together with 
+                        separated events dict
+    debug:              bool, if True, print intermediate results
+    training_mode:      bool, if True, separate events using a simpler algorithm
     """
 
     # separate CCs in puff and wave classes
@@ -495,7 +503,7 @@ def get_separated_events(
     )
 
     if debug:
-        print(f"\tNumber of sparks detected by nonmaxima suppression: {len(loc)}")
+        logger.debug(f"Number of sparks detected by nonmaxima suppression: {len(loc)}")
 
     # compute smooth version of input video
     smooth_xs = ndi.gaussian_filter(movie, sigma=sigma)
@@ -511,67 +519,72 @@ def get_separated_events(
         compactness=1,
     )
 
-    # check if all connected components have been labelled
-    all_ccs_labelled = np.all(
-        split_event_mask.astype(bool) == argmax_preds["sparks"].astype(bool)
-    )
-
-    if not all_ccs_labelled:
-        if debug:
-            print("\tNot all sparks were labelled, computing missing events...")
-            print("\tNumber of sparks before correction:", np.max(split_event_mask))
-
-        # get number of labelled events
-        n_split_events = np.max(split_event_mask)
-
-        # if not all CCs have been labelled, obtain unlabelled CCs and split them
-        missing_sparks = np.logical_xor(
-            split_event_mask.astype(bool), argmax_preds["sparks"].astype(bool)
-        )
-
-        # separate unlabelled CCs and label them
-        labelled_missing_sparks = cc3d.connected_components(
-            missing_sparks, connectivity=connectivity, return_N=False
-        )
-
-        # increase labels by number of sparks already present
-        labelled_missing_sparks = np.where(
-            labelled_missing_sparks, labelled_missing_sparks + n_split_events, 0
-        )
-
-        # merge sparks with peaks and sparks without them
-        split_event_mask += labelled_missing_sparks
-
-        # get peak location of missing sparks and add it to peaks lists
-        missing_sparks_ids = list(np.unique(labelled_missing_sparks))
-        missing_sparks_ids.remove(0)
-        for spark_id in missing_sparks_ids:
-            spark_roi_xs = np.where(labelled_missing_sparks == spark_id, smooth_xs, 0)
-
-            peak_loc = np.unravel_index(spark_roi_xs.argmax(), spark_roi_xs.shape)
-
-            loc.append(list(peak_loc))
-
-        # assert that now all CCs have been labelled
+    if not training_mode:
+        # labelling sparks with peaks in all connected components only if not training
+        # otherwise, it is not very important
+        
+        # check if all connected components have been labelled
         all_ccs_labelled = np.all(
             split_event_mask.astype(bool) == argmax_preds["sparks"].astype(bool)
         )
 
-        if debug:
-            print("\tNumber of sparks after correction:", np.max(split_event_mask))
+        if not all_ccs_labelled:
+            if debug:
+                logger.debug("Not all sparks were labelled, computing missing events...")
+                logger.debug(f"Number of sparks before correction: {np.max(split_event_mask)}")
 
-    assert all_ccs_labelled, "Some sparks CCs haven't been labelled!"
+            # get number of labelled events
+            n_split_events = np.max(split_event_mask)
 
-    # check that event IDs are ordered and consecutive
-    assert len(np.unique(split_event_mask)) - 1 == np.max(
-        split_event_mask
-    ), f"spark IDs are not consecutive: {np.unique(split_event_mask)}"
-    assert len(np.unique(ccs_class_preds["puffs"])) - 1 == np.max(
-        ccs_class_preds["puffs"]
-    ), f"puff IDs are not consecutive: {np.unique(ccs_class_preds['puffs'])}"
-    assert len(np.unique(ccs_class_preds["waves"])) - 1 == np.max(
-        ccs_class_preds["waves"]
-    ), f"wave IDs are not consecutive: {np.unique(ccs_class_preds['waves'])}"
+            # if not all CCs have been labelled, obtain unlabelled CCs and split them
+            missing_sparks = np.logical_xor(
+                split_event_mask.astype(bool), argmax_preds["sparks"].astype(bool)
+            )
+
+            # separate unlabelled CCs and label them
+            labelled_missing_sparks = cc3d.connected_components(
+                missing_sparks, connectivity=connectivity, return_N=False
+            )
+
+            # increase labels by number of sparks already present
+            labelled_missing_sparks = np.where(
+                labelled_missing_sparks, labelled_missing_sparks + n_split_events, 0
+            )
+
+            # merge sparks with peaks and sparks without them
+            split_event_mask += labelled_missing_sparks
+
+            # get peak location of missing sparks and add it to peaks lists
+            missing_sparks_ids = list(np.unique(labelled_missing_sparks))
+            missing_sparks_ids.remove(0)
+            for spark_id in missing_sparks_ids:
+                spark_roi_xs = np.where(labelled_missing_sparks == spark_id, smooth_xs, 0)
+
+                peak_loc = np.unravel_index(spark_roi_xs.argmax(), spark_roi_xs.shape)
+
+                loc.append(list(peak_loc))
+
+            # assert that now all CCs have been labelled
+            all_ccs_labelled = np.all(
+                split_event_mask.astype(bool) == argmax_preds["sparks"].astype(bool)
+            )
+
+            if debug:
+                logger.debug(f"Number of sparks after correction: {np.max(split_event_mask)}")
+
+        assert all_ccs_labelled, "Some sparks CCs haven't been labelled!"
+
+    if debug:
+        # check that event IDs are ordered and consecutive
+        assert len(np.unique(split_event_mask)) - 1 == np.max(
+            split_event_mask
+        ), f"spark IDs are not consecutive: {np.unique(split_event_mask)}"
+        assert len(np.unique(ccs_class_preds["puffs"])) - 1 == np.max(
+            ccs_class_preds["puffs"]
+        ), f"puff IDs are not consecutive: {np.unique(ccs_class_preds['puffs'])}"
+        assert len(np.unique(ccs_class_preds["waves"])) - 1 == np.max(
+            ccs_class_preds["waves"]
+        ), f"wave IDs are not consecutive: {np.unique(ccs_class_preds['waves'])}"
 
     separated_events = {
         "sparks": split_event_mask,
@@ -674,11 +687,11 @@ def merge_labels(labelled_mask, max_gap):
 
         # if some labels have merged, re-label mask accordingly
         if n_merged_labels < len(np.unique(labelled_mask)) - 1:
-            # print("Merging events since their gap distance is below", max_gap)
-            # print("Labels before merging:", np.unique(labelled_mask))
+            # logger.debug(f"Merging events since their gap distance is below {max_gap}")
+            # logger.debug(f"Labels before merging: {np.unique(labelled_mask)}")
 
             merged_labelled_mask = np.where(labelled_mask, merged_labels, 0)
-            # print("Labels after merging:", np.unique(merged_labelled_mask))
+            # logger.debug(f"Labels after merging: {np.unique(merged_labelled_mask)}")
             return merged_labelled_mask
         else:
             return labelled_mask
@@ -719,7 +732,7 @@ def remove_small_events(
             elif class_type == "waves":
                 event_width = slices[2].stop - slices[2].start
             if event_width < min_width:
-                # print(f"Removing event labelled with {idx} (too small)")
+                # logger.debug(f"Removing event labelled with {idx} (too small)")
                 class_instances = np.where(event_roi, 0, class_instances)
 
         if class_type in ["sparks", "puffs"]:
@@ -728,7 +741,7 @@ def remove_small_events(
             # if event is too short, remove it from predictions
             event_t = slices[0].stop - slices[0].start
             if event_t < min_t:
-                # print(f"Removing event labelled with {idx} (too short)")
+                # logger.debug(f"Removing event labelled with {idx} (too short)")
                 class_instances = np.where(event_roi, 0, class_instances)
 
     return class_instances
@@ -747,12 +760,14 @@ def get_processed_result(
     puff_min_t,
     spark_min_t,
     spark_min_width,
+    training_mode=False,
+    debug=False
 ):
     """
     Starting from raw UNet outputs of a given video, compute
     - segmented predictions
     - instances of events in predictions
-    removing artifacts (e.g., small objects)
+    removing artifacts (e.g., small objects) if not in training mode
 
     sparks, puffs, waves: raw UNet outputs (values between 0 and 1)
     xs: original movie
@@ -784,57 +799,60 @@ def get_processed_result(
         connectivity=connectivity,
         connectivity_mask=conn_mask,
         return_sparks_loc=True,
-        debug=True,
+        debug=debug,
+        training_mode=training_mode
     )
 
-    ### Remove artifacts
-    ## Waves
-    preds_instances["waves"] = remove_small_events(
-        class_instances=preds_instances["waves"],
-        class_type="waves",
-        min_width=wave_min_width,
-        max_gap=max_gap,
-    )
-
-    # update segmented predicted mask accordingly
-    preds_segmentation["wave"] = preds_instances["waves"].astype(bool)
-
-    ## Puffs
-    preds_instances["puffs"] = remove_small_events(
-        class_instances=preds_instances["puffs"],
-        class_type="puffs",
-        min_t=puff_min_t,
-        max_gap=max_gap,
-    )
-
-    # update segmented predicted mask accordingly
-    preds_segmentation["puffs"] = preds_instances["puffs"].astype(bool)
-
-    ## Sparks
-    preds_instances["sparks"] = remove_small_events(
-        class_instances=preds_instances["sparks"],
-        class_type="sparks",
-        min_t=spark_min_t,
-        min_width=spark_min_width,
-    )
-
-    # update segmented predicted mask accordingly
-    preds_segmentation["sparks"] = preds_instances["sparks"].astype(bool)
-
-    # remove spark peak locations of sparks that have been removed
-    corrected_loc = []
-    for t, y, x in sparks_loc:
-        if preds_instances["sparks"][t, y, x] != 0:
-            corrected_loc.append([t, y, x])
-    sparks_loc = corrected_loc
-
-    ### Renumber preds, so that each event has a unique ID
-    shift_id = 0
-    for event_type in ["sparks", "puffs", "waves"]:
-        preds_instances[event_type] = renumber_labelled_mask(
-            labelled_mask=preds_instances[event_type], shift_id=shift_id
+    if not training_mode:
+        # Remove small events and merge events that belong together only if not training
+        ### Remove artifacts
+        ## Waves
+        preds_instances["waves"] = remove_small_events(
+            class_instances=preds_instances["waves"],
+            class_type="waves",
+            min_width=wave_min_width,
+            max_gap=max_gap,
         )
-        shift_id = max(shift_id, np.max(preds_instances[event_type]))
+
+        # update segmented predicted mask accordingly
+        preds_segmentation["wave"] = preds_instances["waves"].astype(bool)
+
+        ## Puffs
+        preds_instances["puffs"] = remove_small_events(
+            class_instances=preds_instances["puffs"],
+            class_type="puffs",
+            min_t=puff_min_t,
+            max_gap=max_gap,
+        )
+
+        # update segmented predicted mask accordingly
+        preds_segmentation["puffs"] = preds_instances["puffs"].astype(bool)
+
+        ## Sparks
+        preds_instances["sparks"] = remove_small_events(
+            class_instances=preds_instances["sparks"],
+            class_type="sparks",
+            min_t=spark_min_t,
+            min_width=spark_min_width,
+        )
+
+        # update segmented predicted mask accordingly
+        preds_segmentation["sparks"] = preds_instances["sparks"].astype(bool)
+
+        # remove spark peak locations of sparks that have been removed
+        corrected_loc = []
+        for t, y, x in sparks_loc:
+            if preds_instances["sparks"][t, y, x] != 0:
+                corrected_loc.append([t, y, x])
+        sparks_loc = corrected_loc
+
+        ### Renumber preds, so that each event has a unique ID
+        shift_id = 0
+        for event_type in ["sparks", "puffs", "waves"]:
+            preds_instances[event_type] = renumber_labelled_mask(
+                labelled_mask=preds_instances[event_type], shift_id=shift_id
+            )
+            shift_id = max(shift_id, np.max(preds_instances[event_type]))
 
     return preds_instances, preds_segmentation, sparks_loc
 
