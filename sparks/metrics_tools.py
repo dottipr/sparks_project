@@ -10,6 +10,8 @@ the end of the script (such as ..., )
 from bisect import bisect_left
 from collections import defaultdict, namedtuple
 import logging
+import time
+import matplotlib.pyplot as plt
 
 import numpy as np
 from data_processing_tools import (
@@ -19,7 +21,7 @@ from data_processing_tools import (
     simple_nonmaxima_suppression,
     sparks_connectivity_mask,
 )
-from scipy import optimize, spatial
+from scipy import optimize, spatial, sparse
 from scipy.ndimage.morphology import binary_dilation, binary_erosion
 from sklearn.metrics import auc
 
@@ -36,7 +38,6 @@ MIN_DIST_XY = round(1.8 / PIXEL_SIZE)  # min distance in space between sparks
 TIME_FRAME = 6.8  # 1 frame = 6.8 ms
 global MIN_DIST_T
 MIN_DIST_T = round(20 / TIME_FRAME)  # min distance in time between sparks
-
 
 ################################ Generic utils #################################
 
@@ -70,23 +71,69 @@ def diff(l1, l2):
 
 
 # from UNet outputs and labels, get dict of metrics for a single video
-def get_metrics(ys_classes, ys_instances, preds_classes, preds_instances):
+def get_metrics_from_cm(results_cm, nb_events_per_class):
     r"""
-    Compute metrics from raw predictions and annotations (with instances).
-    Segmentation-based metrics are (for each class and binary for background vs.
-    events):
-    - intersection over union (IoU)
-    - precision
-    - recall
-    Instance-based metrics are:
-    - precision
-    - recall
-    - print "confusion matrix"
+    Compute instance-based metrics from confusion matrix and number of annotated 
+    events per class.
 
-    ys_classes: array with values in {0,1,2,3,4} of segmented events
-    ys_instances:
+    Instance-based metrics are:
+    - confusion matrix
+    - precision per class
+    - recall per class
+    - % correctly classified events per class
+    - % detected events per class
+
+    Parameters
+    ----------
+    results_cm :            4x4 confusion matrix summarizing results
+                            columns represent predicted classes [background, sparks, waves, puffs]
+                            rows represent annotated classes [background, sparks, waves, puffs]
+    nb_events_per_class :   list of number of annotated events per class [sparks, waves, puffs]
     """
-    pass
+    ca_release_events = ["sparks", "waves", "puffs"]
+
+    # compute metrics
+    metrics = {}
+
+    metrics["events_confusion_matrix"] = results_cm
+
+    for event_type in ca_release_events:
+        event_nb = class_to_nb(event_type)
+
+        # precision
+        if np.sum(results_cm[:, event_nb]) > 0:
+            metrics[event_type + "_precision"] = results_cm[
+                event_nb, event_nb
+            ] / np.sum(results_cm[:, event_nb])
+        else:
+            metrics[event_type + "_precision"] = 0
+
+        # recall
+        if nb_events_per_class[event_nb] > 0:
+            metrics[event_type + "_recall"] = (
+                results_cm[event_nb, event_nb] / nb_events_per_class[event_nb]
+            )
+        else:
+            metrics[event_type + "_recall"] = 0
+
+        # % correctly classified events
+        if np.sum(results_cm[1:3, event_nb]) > 0:
+            metrics[event_type + "_correctly_classified"] = (
+                results_cm[event_nb, event_nb] /
+                np.sum(results_cm[1:3, event_nb]) > 0
+            )
+        else:
+            metrics[event_type + "_correctly_classified"] = 0
+
+        # % detected events
+        if nb_events_per_class[event_nb] > 0:
+            metrics[event_type + "_detected"] = (
+                results_cm[event_nb, event_nb] / nb_events_per_class[event_nb]
+            )
+        else:
+            metrics[event_type + "_detected"] = 0
+
+    return metrics
 
 
 def compute_iou(ys_roi, preds_roi, ignore_mask=None, debug=False):
@@ -140,8 +187,47 @@ def compute_inter_min(ys_roi, preds_roi, ignore_mask=None):
     return iomin
 
 
-################################ Sparks metrics ################################
+def compute_iomin_one_hot(y_vector, preds_array):
+    """
+    Compute intersection over minimum score for given single annotated event and all predicted events.
+    y_vector :          flatted, one-hot encoded annotated event csr_array (shape = 1 x movie shape)
+    preds_array :       flattened, one-hot encoded predicted events csr_array (shape = #preds x movie shape)
+                        !!! intersect predicted events with negation of ignore maks before passing them here !!!
 
+    Returns: list of iomin scores for each predicted event
+    """
+
+    # check that y_vector is not empty
+    assert y_vector.count_nonzero != 0, "y_vector is empty"
+
+    # compute intersection of csr_array y_vector with each row of csr_array preds_array
+    intersection = y_vector.multiply(preds_array)
+
+    if intersection.count_nonzero() == 0:
+        return np.zeros(preds_array.shape[0])
+
+    else:
+        # compute non-zero elements for each row (=predicted events) of intersection
+        intersection_area = intersection.getnnz(axis=1).astype(np.float16)
+
+        # get denominator for iomin using non-zero elements of y_vector and preds_array
+        denominator = np.minimum(preds_array.getnnz(axis=1), y_vector.getnnz()).astype(
+            np.float16
+        )
+
+        # compute iomin by dividing intersection by denominator
+        # if denominator is 0, set iomin to 0
+        scores = np.divide(
+            intersection_area,
+            denominator,
+            out=np.zeros_like(denominator, dtype=np.float16),
+            where=denominator != 0,
+        )
+
+        return scores
+
+
+################################ Sparks metrics ################################
 """
 Utils for computing metrics related to sparks, e.g.
 - compute correspondences between annotations and preds
@@ -385,7 +471,6 @@ def compute_f_score(prec, rec, beta=1):
 
 
 ########################## Segmentation-based metrics ##########################
-
 """
 Utils for computing metrics related to puffs and waves, e.g.:
 - Jaccard index
@@ -435,7 +520,8 @@ def compute_puff_wave_metrics(
 
         if exclusion_radius > 0:
             # compute dilation for ignore mask (erosion not necessary)
-            ignore_mask = binary_dilation(ignore_mask, iterations=exclusion_radius)
+            ignore_mask = binary_dilation(
+                ignore_mask, iterations=exclusion_radius)
 
         compute_mask = np.logical_not(ignore_mask)
 
@@ -485,6 +571,28 @@ def compute_average_puff_wave_metrics(metrics):
 ########################### Instances-based metrics ############################
 
 
+def _get_sparse_binary_encoded_mask(mask):
+    """
+    mask is an array with labelled event instances
+    return a sparse matrix with one-hot encoding of the events mask
+    (each row corresponds to a different event)
+    """
+    # flatten mask
+    v = mask.flatten()
+
+    # get one-hot encoding of events as sparse matrix
+    rows = v
+    cols = np.arange(v.size)
+    data = np.ones(v.size, dtype=bool)
+    sparse_v = sparse.csr_array(
+        (data, (rows, cols)), shape=(v.max() + 1, v.size), dtype=bool
+    )
+
+    # remove background "event"
+    sparse_v = sparse_v[1:]
+    return sparse_v
+
+
 def get_score_matrix(ys_instances, preds_instances, ignore_mask=None, score="iomin"):
     r"""
     Compute pair-wise scores between annotated event instances (ys_segmentation)
@@ -500,51 +608,72 @@ def get_score_matrix(ys_instances, preds_instances, ignore_mask=None, score="iom
 
     assert score in ["iomin", "iou"], "score type must be 'iomin' or 'iou'."
 
-    # get calcium release event types from dict keys
-    ca_release_events = preds_instances.keys()
-
-    # get number of annotated and predicted events
-    n_ys_events = max(
-        [np.max(ys_instances[event_type]) for event_type in ca_release_events]
-    )
-
-    n_preds_events = max(
-        [np.max(preds_instances[event_type]) for event_type in ca_release_events]
-    )
-
-    # create empty score matrix for IoU or IoMin
-    scores = np.zeros((n_ys_events, n_preds_events))
-
     # compute matrices with all separated events summed
     ys_all_events = sum(ys_instances.values())
     preds_all_events = sum(preds_instances.values())
 
-    # compute pairwise IoMin scores
-    for pred_id in range(1, n_preds_events + 1):
-        preds_roi = preds_all_events == pred_id
-        # check that the predicted ROI is not empty
-        # assert preds_roi.any(), f"the predicted ROI n.{pred_id} is empty!"
+    if score == "iomin":
+        # intersect predicted events with negation of ignore mask
+        if ignore_mask is not None:
+            preds_all_events = np.logical_and(
+                preds_all_events, np.logical_not(ignore_mask)
+            )
 
-        # check if predicted ROI intersect at least one annotated event
-        if np.count_nonzero(np.logical_and(ys_all_events, preds_roi)) != 0:
+        # convert to one-hot encoding and transpose matrices
+        ys_all_events = _get_sparse_binary_encoded_mask(ys_all_events)
+        preds_all_events = _get_sparse_binary_encoded_mask(preds_all_events)
 
-            for ys_id in range(1, n_ys_events + 1):
-                ys_roi = ys_all_events == ys_id
-                # check that the annotated ROI is not empty
-                # assert ys_roi.any(), f"the annotated ROI n.{ys_roi} is empty!"
+        # compute pairwise scores
+        scores = []
+        for y_vector in ys_all_events:
+            y_scores = compute_iomin_one_hot(
+                y_vector=y_vector, preds_array=preds_all_events
+            )
+            scores.append(y_scores)
 
-                # check if predicted and annotated ROIs intersect
-                if np.count_nonzero(np.logical_and(ys_roi, preds_roi)) != 0:
+        scores = np.array(scores)
 
-                    # compute scores
-                    if score == "iomin":
-                        scores[ys_id - 1, pred_id - 1] = compute_inter_min(
-                            ys_roi=ys_roi, preds_roi=preds_roi, ignore_mask=ignore_mask
-                        )
-                    elif score == "iou":
-                        scores[ys_id - 1, pred_id - 1] = compute_iou(
-                            ys_roi=ys_roi, preds_roi=preds_roi, ignore_mask=ignore_mask
-                        )
+    elif score == "iou":
+        # get number of annotated and predicted events
+        n_ys_events = ys_all_events.max()
+        n_preds_events = preds_all_events.max()
+
+        # create empty score matrix for IoU or IoMin
+        scores = np.zeros((n_ys_events, n_preds_events))
+
+        # intersect predicted events with negation of ignore mask
+        if ignore_mask is not None:
+            preds_all_events = np.logical_and(
+                preds_all_events, np.logical_not(ignore_mask)
+            )
+
+        # compute pairwise scores
+        for pred_id in range(1, n_preds_events + 1):
+            preds_roi = preds_all_events == pred_id
+            # check that the predicted ROI is not empty
+            # assert preds_roi.any(), f"the predicted ROI n.{pred_id} is empty!"
+
+            # check if predicted ROI intersect at least one annotated event
+            if np.count_nonzero(np.logical_and(ys_all_events, preds_roi)) != 0:
+
+                for ys_id in range(1, n_ys_events + 1):
+                    ys_roi = ys_all_events == ys_id
+                    # check that the annotated ROI is not empty
+                    # assert ys_roi.any(), f"the annotated ROI n.{ys_roi} is empty!"
+
+                    # check if predicted and annotated ROIs intersect
+                    if np.count_nonzero(np.logical_and(ys_roi, preds_roi)) != 0:
+
+                        # compute scores
+                        if score == "iomin":
+                            scores[ys_id - 1, pred_id - 1] = compute_inter_min(
+                                ys_roi=ys_roi, preds_roi=preds_roi
+                            )
+                            # logger.debug(f"score computation between y_id={ys_id} and pred_id={pred_id} took {time.time() - start:.2f}s")
+                        elif score == "iou":
+                            scores[ys_id - 1, pred_id - 1] = compute_iou(
+                                ys_roi=ys_roi, preds_roi=preds_roi
+                            )
 
     # assertions take ~45s to be computed...
 
@@ -569,7 +698,7 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
     matched_ignore_id = 9999
 
     # get calcium release event types from dict keys
-    ca_release_events = ys_instances.keys()
+    ca_release_events = ["sparks", "puffs", "waves"]
 
     # dict indexed by predicted event indices, s.t. each entry is the
     # list of annotated event ids that match the predicted event
@@ -600,7 +729,8 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
 
         for pred_id in pred_ids:
             # get set of y_ids that are matched with pred_id (score > t):
-            matched_events[pred_id] = np.where(scores[:, pred_id - 1] >= t)[0] + 1
+            matched_events[pred_id] = np.where(
+                scores[:, pred_id - 1] >= t)[0] + 1
             matched_events[pred_id] = set(matched_events[pred_id])
 
             # if at least one matched event is in same class, increase confusion matrix
@@ -661,12 +791,10 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
 
 ############################### Unused functions ###############################
 
-
 # def in_bounds(points, shape):
 #
 #    return np.logical_and.reduce([(coords_i >= 0) & (coords_i < shape_i)
 #                                for coords_i, shape_i in zip(points.T, shape)])
-
 
 # def inverse_argwhere(coords, shape, dtype):
 #    """
@@ -682,7 +810,6 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
 #    intcoords = intcoords[in_bounds(intcoords, shape)]
 #    res[intcoords[:, 0], intcoords[:, 1], intcoords[:, 2]] = 1
 #    return res
-
 
 # def reduce_metrics_thresholds(results):
 #    '''
@@ -720,7 +847,6 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
 #
 #    # TODO: adattare altri scripts che usano questa funzione!!!!
 #    return reduced_metrics, prec, rec, f1_score#, area_under_curve
-
 
 ################# fcts from save_results_to_json.py (old file) #################
 
@@ -767,7 +893,6 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
 #
 #    return results_dict
 
-
 # compute pixel-based results, using a detection threshold
 # def get_class_pixel_based_results(raw_preds, ys, ignore_mask,
 #                                  t_detection, min_radius, exclusion_radius,
@@ -799,7 +924,6 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
 #                                                               sparks)
 #
 #    return results_dict
-
 
 # compute spark peaks results, for given binary prediction
 # def get_binary_preds_spark_peaks_results(binary_preds, coords_true, movie,
@@ -857,7 +981,6 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
 #
 #    return results_dict
 
-
 # compute spark peaks results, using a detection threshold
 # def get_spark_peaks_results(raw_preds, coords_true, movie, ignore_mask,
 #                            ignore_frames, t_detection, min_radius_sparks):
@@ -890,7 +1013,6 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
 #                                                                  min_radius_sparks)
 #
 #        return result_dict
-
 
 # compute average over movies of pixel-based results
 # def get_sum_results(per_movie_results, pixel_based=True):

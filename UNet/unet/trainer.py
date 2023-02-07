@@ -45,8 +45,10 @@ def _write_results(summary_writer, prefix, results, niter):
             summary_writer.add_scalars(tag, v, niter)
         elif isinstance(v, str):
             summary_writer.add_text(tag, v, niter)
-        elif isinstance(v, np.ndarray) and v.ndim in [2, 3]:
+        elif isinstance(v, np.ndarray) and v.ndim == 3:
             summary_writer.add_image(tag, v, niter)
+        elif isinstance(v, np.ndarray) and v.ndim == 2:
+            summary_writer.add_image(tag, v, niter, dataformats='HW')
         elif not hasattr(v, '__iter__'):
             summary_writer.add_scalar(tag, v, niter)
         else:

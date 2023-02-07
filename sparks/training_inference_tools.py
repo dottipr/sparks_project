@@ -5,6 +5,7 @@ Functions that are used during the training of the neural network
 import logging
 import math
 import time
+from collections import Counter
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -31,6 +32,9 @@ from metrics_tools import (
 )
 from scipy import ndimage as ndi
 from torch import nn
+from sklearn.metrics import confusion_matrix as sk_confusion_matrix
+
+from metrics_tools import get_metrics_from_cm
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +346,8 @@ def test_function(
     wandb_log,
     training_name,
     output_dir,
-    training_mode=True, # TODO: update code to use this (if true compute few metrics)
+    # TODO: update code to use this (if true compute few metrics)
+    training_mode=True,
     debug=False
 ):
     r"""
@@ -360,14 +365,10 @@ def test_function(
     training_name:      training name used to save predictions on disk
     output_dir:         directory where the predicted movies are saved
     training_mode:      if True, compute a smaller set of metrics (only the ones
-                        that are interesting to see during training) and do not 
+                        that are interesting to see during training) and do not
                         correct for missing spark peaks
 
     """
-    start = time.time()
-
-    if debug:
-        logger.debug("Testing function: setting up general parameters")
 
     network.eval()
 
@@ -390,7 +391,7 @@ def test_function(
     min_dist_xy = testing_datasets[0].min_dist_xy
     min_dist_t = testing_datasets[0].min_dist_t
     radius = math.ceil(min_dist_xy / 2)
-    y, x = np.ogrid[-radius : radius + 1, -radius : radius + 1]
+    y, x = np.ogrid[-radius: radius + 1, -radius: radius + 1]
     disk = x**2 + y**2 <= radius**2
     conn_mask = np.stack([disk] * (min_dist_t), axis=0)
 
@@ -420,7 +421,8 @@ def test_function(
     ys_concat = []
     preds_concat = []
 
-    logger.debug(f"Time to load set up test function: {time.time() - start:.2f} s")
+    # define dict to count number of annotated events per class
+    n_ys_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
 
     for test_dataset in testing_datasets:
 
@@ -475,24 +477,33 @@ def test_function(
             event_instances=test_dataset.events, class_labels=ys, shift_ids=True
         )
 
+        # remove ignored events entry from ys_instances
+        ys_instances.pop("ignore", None)
+
         # get annotations as a dictionary
-        ys_classes = {
-            "sparks": np.where(ys == 1, 1, 0),
-            "puffs": np.where(ys == 3, 1, 0),
-            "waves": np.where(ys == 2, 1, 0),
-        }
+        # ys_classes = {
+        #     "sparks": np.where(ys == 1, 1, 0),
+        #     "puffs": np.where(ys == 3, 1, 0),
+        #     "waves": np.where(ys == 2, 1, 0),
+        # }
 
         # get pixels labelled with 4
         # TODO: togliere ignored frames ??????????????????????????????
         ignore_mask = np.where(ys == 4, 1, 0)
 
+        # get number of annotated events per class
+        n_ys_per_class = dict(Counter(n_ys_per_class)
+                              + Counter({ca_event: (len(np.unique(ys_instances[ca_event]))-1)
+                                         for ca_event in ca_release_events}))
+
         ######################### get processed output #########################
 
         if debug:
-            logger.debug("Testing function: getting processed output (segmentation and instances)")
+            logger.debug(
+                "Testing function: getting processed output (segmentation and instances)")
 
         # get predicted segmentation and event instances
-        preds_instances, preds_segmentation, sparks_loc = get_processed_result(
+        preds_instances, preds_segmentation, _ = get_processed_result(
             sparks=preds[0],
             puffs=preds[2],
             waves=preds[1],
@@ -512,7 +523,8 @@ def test_function(
         ##################### stack ys and segmented preds #####################
 
         # stack annotations and remove marginal frames
-        ys_concat.append(empty_marginal_frames(video=ys, n_frames=ignore_frames))
+        ys_concat.append(empty_marginal_frames(
+            video=ys, n_frames=ignore_frames))
 
         # stack preds and remove marginal frames
         temp_preds = np.zeros_like(ys)
@@ -523,16 +535,25 @@ def test_function(
             empty_marginal_frames(video=temp_preds, n_frames=ignore_frames)
         )
 
-        logger.debug(f"Time to process predictions: {time.time() - start:.2f} s")
+        logger.debug(
+            f"Time to process predictions: {time.time() - start:.2f} s")
 
         ############### compute pairwise scores (based on IoMin) ###############
 
         start = time.time()
 
-        start = time.time()
-
         if debug:
-            logger.debug("Testing function: computing pairwise scores")
+            n_ys_events = max(
+                [np.max(ys_instances[event_type])
+                 for event_type in ca_release_events]
+            )
+
+            n_preds_events = max(
+                [np.max(preds_instances[event_type])
+                 for event_type in ca_release_events]
+            )
+            logger.debug(
+                f"Testing function: computing pairwise scores between {n_ys_events} annotated events and {n_preds_events} predicted events")
 
         iomin_scores = get_score_matrix(
             ys_instances=ys_instances,
@@ -541,11 +562,10 @@ def test_function(
             score="iomin",
         )
 
-        logger.debug(f"Time to compute pairwise scores: {time.time() - start:.2f} s")
+        logger.debug(
+            f"Time to compute pairwise scores: {time.time() - start:.2f} s")
 
         ######################### get confusion matrix #########################
-
-        start = time.time()
 
         start = time.time()
 
@@ -573,11 +593,10 @@ def test_function(
         # get false negative (i.e., labelled but not detected) events
         unmatched_events[video_name] = confusion_matrix_res[3]
 
-        logger.debug(f"Time to compute confusion matrix: {time.time() - start:.2f} s")
+        logger.debug(
+            f"Time to compute confusion matrix: {time.time() - start:.2f} s")
 
     ############################## reduce metrics ##############################
-
-    start = time.time()
 
     start = time.time()
 
@@ -588,7 +607,7 @@ def test_function(
 
     # Compute average validation loss
     metrics["validation_loss"] = sum_loss / len(testing_datasets)
-    # logger.info(f"\tvalidation loss: {loss:.4g}")
+    logger.info(f"\tvalidation loss: {loss:.4g}")
 
     ##################### compute instances-based metrics ######################
 
@@ -601,7 +620,19 @@ def test_function(
     """
 
     # get confusion matrix of all summed events
-    metrics["events confusion matrix"] = sum(confusion_matrix.values())
+    metrics["events_confusion_matrix"] = sum(confusion_matrix.values())
+
+    # get number of annotated events as a list
+    nb_events_per_class = [n_ys_per_class[ca_event]
+                           for ca_event in ca_release_events]
+
+    logger.debug(f"--->>> nb_events_per_class: {nb_events_per_class}")
+
+    # get other metrics (precision, recall, % correctly classified, % detected)
+    metrics_all = get_metrics_from_cm(results_cm=metrics["events_confusion_matrix"],
+                                      nb_events_per_class=nb_events_per_class)
+
+    logger.debug(f"metrics_all: {metrics_all}")
 
     #################### compute segmentation-based metrics ####################
 
@@ -628,12 +659,12 @@ def test_function(
         class_preds = preds_concat == class_id
         class_ys = ys_concat == class_id
 
-        metrics[event_type + "segmentation IoU"] = compute_iou(
+        metrics[event_type + "_segmentation_IoU"] = compute_iou(
             ys_roi=class_ys, preds_roi=class_preds, ignore_mask=ignore_concat
         )
 
     # compute confusion matrix
-    metrics["segmentation confusion matrix"] = confusion_matrix(
+    metrics["segmentation_confusion_matrix"] = sk_confusion_matrix(
         y_true=ys_concat.flatten(), y_pred=preds_concat.flatten(), labels=[0, 1, 2, 3]
     )
 
@@ -641,6 +672,10 @@ def test_function(
         wandb.log(metrics)
 
     logger.debug(f"Time to reduce metrics: {time.time() - start:.2f} s")
+
+    logger.debug("Metrics:")
+    for metric_name, metric_value in metrics.items():
+        logger.debug(f"\t{metric_name}: {metric_value}")
 
     return metrics
 
