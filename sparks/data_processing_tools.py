@@ -231,24 +231,30 @@ def get_new_mask_raw_sparks(
     ignore_mask_sparks = None
     if 1 in mask:
         sparks_mask = np.where(mask == 1, 1, 0)
-        dilated_mask = ndi.binary_dilation(sparks_mask, iterations=radius_ignore_sparks)
-        eroded_mask = ndi.binary_erosion(sparks_mask, iterations=radius_ignore_sparks)
+        dilated_mask = ndi.binary_dilation(
+            sparks_mask, iterations=radius_ignore_sparks)
+        eroded_mask = ndi.binary_erosion(
+            sparks_mask, iterations=radius_ignore_sparks)
         ignore_mask_sparks = np.logical_xor(dilated_mask, eroded_mask)
         # imageio.volwrite("TEST_IGNORE_MASK_SPARKS.tif", np.uint8(ignore_mask_sparks))
 
     ignore_mask_waves = None
     if 2 in mask:
         waves_mask = np.where(mask == 2, 1, 0)
-        dilated_mask = ndi.binary_dilation(waves_mask, iterations=radius_ignore_waves)
-        eroded_mask = ndi.binary_erosion(waves_mask, iterations=radius_ignore_waves)
+        dilated_mask = ndi.binary_dilation(
+            waves_mask, iterations=radius_ignore_waves)
+        eroded_mask = ndi.binary_erosion(
+            waves_mask, iterations=radius_ignore_waves)
         ignore_mask_waves = np.logical_xor(dilated_mask, eroded_mask)
         # imageio.volwrite("TEST_IGNORE_MASK_WAVES.tif", np.uint8(ignore_mask_waves))
 
     ignore_mask_puffs = None
     if 3 in mask:
         puffs_mask = np.where(mask == 3, 1, 0)
-        dilated_mask = ndi.binary_dilation(puffs_mask, iterations=radius_ignore_puffs)
-        eroded_mask = ndi.binary_erosion(puffs_mask, iterations=radius_ignore_puffs)
+        dilated_mask = ndi.binary_dilation(
+            puffs_mask, iterations=radius_ignore_puffs)
+        eroded_mask = ndi.binary_erosion(
+            puffs_mask, iterations=radius_ignore_puffs)
         ignore_mask_puffs = np.logical_xor(dilated_mask, eroded_mask)
         # imageio.volwrite("TEST_IGNORE_MASK_PUFFS.tif", np.uint8(ignore_mask_puffs))
 
@@ -297,7 +303,7 @@ def sparks_connectivity_mask(min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T):
     """
     # compute sparks connectivity mask
     radius = math.ceil(min_dist_xy / 2)
-    y, x = np.ogrid[-radius : radius + 1, -radius : radius + 1]
+    y, x = np.ogrid[-radius: radius + 1, -radius: radius + 1]
     disk = x**2 + y**2 <= radius**2
     connectivity_mask = np.stack([disk] * (min_dist_t), axis=0)
 
@@ -310,7 +316,8 @@ def empty_marginal_frames(video, n_frames):
     """
     if n_frames > 0:
         new_video = video[n_frames:-n_frames]
-        new_video = np.pad(new_video, ((n_frames,), (0,), (0,)), mode="constant")
+        new_video = np.pad(
+            new_video, ((n_frames,), (0,), (0,)), mode="constant")
     else:
         new_video = video
 
@@ -503,7 +510,8 @@ def get_separated_events(
     )
 
     if debug:
-        logger.debug(f"Number of sparks detected by nonmaxima suppression: {len(loc)}")
+        logger.debug(
+            f"Number of sparks detected by nonmaxima suppression: {len(loc)}")
 
     # compute smooth version of input video
     smooth_xs = ndi.gaussian_filter(movie, sigma=sigma)
@@ -522,23 +530,27 @@ def get_separated_events(
     if not training_mode:
         # labelling sparks with peaks in all connected components only if not training
         # otherwise, it is not very important
-        
+
         # check if all connected components have been labelled
         all_ccs_labelled = np.all(
-            split_event_mask.astype(bool) == argmax_preds["sparks"].astype(bool)
+            split_event_mask.astype(
+                bool) == argmax_preds["sparks"].astype(bool)
         )
 
         if not all_ccs_labelled:
             if debug:
-                logger.debug("Not all sparks were labelled, computing missing events...")
-                logger.debug(f"Number of sparks before correction: {np.max(split_event_mask)}")
+                logger.debug(
+                    "Not all sparks were labelled, computing missing events...")
+                logger.debug(
+                    f"Number of sparks before correction: {np.max(split_event_mask)}")
 
             # get number of labelled events
             n_split_events = np.max(split_event_mask)
 
             # if not all CCs have been labelled, obtain unlabelled CCs and split them
             missing_sparks = np.logical_xor(
-                split_event_mask.astype(bool), argmax_preds["sparks"].astype(bool)
+                split_event_mask.astype(
+                    bool), argmax_preds["sparks"].astype(bool)
             )
 
             # separate unlabelled CCs and label them
@@ -558,19 +570,23 @@ def get_separated_events(
             missing_sparks_ids = list(np.unique(labelled_missing_sparks))
             missing_sparks_ids.remove(0)
             for spark_id in missing_sparks_ids:
-                spark_roi_xs = np.where(labelled_missing_sparks == spark_id, smooth_xs, 0)
+                spark_roi_xs = np.where(
+                    labelled_missing_sparks == spark_id, smooth_xs, 0)
 
-                peak_loc = np.unravel_index(spark_roi_xs.argmax(), spark_roi_xs.shape)
+                peak_loc = np.unravel_index(
+                    spark_roi_xs.argmax(), spark_roi_xs.shape)
 
                 loc.append(list(peak_loc))
 
             # assert that now all CCs have been labelled
             all_ccs_labelled = np.all(
-                split_event_mask.astype(bool) == argmax_preds["sparks"].astype(bool)
+                split_event_mask.astype(
+                    bool) == argmax_preds["sparks"].astype(bool)
             )
 
             if debug:
-                logger.debug(f"Number of sparks after correction: {np.max(split_event_mask)}")
+                logger.debug(
+                    f"Number of sparks after correction: {np.max(split_event_mask)}")
 
         assert all_ccs_labelled, "Some sparks CCs haven't been labelled!"
 
@@ -703,7 +719,6 @@ def merge_labels(labelled_mask, max_gap):
 def remove_small_events(
     class_instances, class_type, min_t=None, min_width=None, max_gap=None
 ):
-
     r"""
     Remove small predicted events and merge events belonging together.
     """
@@ -711,7 +726,8 @@ def remove_small_events(
     if class_type in ["puffs", "waves"]:
         # merge events that belong together
         assert max_gap is not None, "Provide 'max_gap' with puffs and waves."
-        class_instances = merge_labels(labelled_mask=class_instances, max_gap=max_gap)
+        class_instances = merge_labels(
+            labelled_mask=class_instances, max_gap=max_gap)
 
     # remove small events
     events_ids = list(np.unique(class_instances))
@@ -727,7 +743,8 @@ def remove_small_events(
             # if event is too small, remove it from predictions
             if class_type == "sparks":
                 event_width = min(
-                    slices[1].stop - slices[1].start, slices[2].stop - slices[2].start
+                    slices[1].stop - slices[1].start, slices[2].stop -
+                    slices[2].start
                 )
             elif class_type == "waves":
                 event_width = slices[2].stop - slices[2].start
@@ -783,7 +800,7 @@ def get_processed_result(
         "background": 1 - sparks - puffs - waves,
     }
 
-    #### Get argmax segmentation
+    # Get argmax segmentation
     # Using Otsu threshold on summed predictions
     # preds_segmentation is a dict with binary mask for each class
     # _ has values in {0,1,2,3}
@@ -791,7 +808,7 @@ def get_processed_result(
         preds=preds, get_classes=True, debug=True
     )
 
-    #### Separate events in predictions
+    # Separate events in predictions
     preds_instances, sparks_loc = get_separated_events(
         argmax_preds=preds_segmentation,
         movie=xs,
@@ -805,8 +822,8 @@ def get_processed_result(
 
     if not training_mode:
         # Remove small events and merge events that belong together only if not training
-        ### Remove artifacts
-        ## Waves
+        # Remove artifacts
+        # Waves
         preds_instances["waves"] = remove_small_events(
             class_instances=preds_instances["waves"],
             class_type="waves",
@@ -815,9 +832,9 @@ def get_processed_result(
         )
 
         # update segmented predicted mask accordingly
-        preds_segmentation["wave"] = preds_instances["waves"].astype(bool)
+        preds_segmentation["waves"] = preds_instances["waves"].astype(bool)
 
-        ## Puffs
+        # Puffs
         preds_instances["puffs"] = remove_small_events(
             class_instances=preds_instances["puffs"],
             class_type="puffs",
@@ -828,7 +845,7 @@ def get_processed_result(
         # update segmented predicted mask accordingly
         preds_segmentation["puffs"] = preds_instances["puffs"].astype(bool)
 
-        ## Sparks
+        # Sparks
         preds_instances["sparks"] = remove_small_events(
             class_instances=preds_instances["sparks"],
             class_type="sparks",
@@ -846,7 +863,7 @@ def get_processed_result(
                 corrected_loc.append([t, y, x])
         sparks_loc = corrected_loc
 
-        ### Renumber preds, so that each event has a unique ID
+        # Renumber preds, so that each event has a unique ID
         shift_id = 0
         for event_type in ["sparks", "puffs", "waves"]:
             preds_instances[event_type] = renumber_labelled_mask(
@@ -856,6 +873,19 @@ def get_processed_result(
 
     return preds_instances, preds_segmentation, sparks_loc
 
+
+def dict_to_int_mask(preds_dict):
+    """
+    Convert a dict of binary masks representing a class of calcium release events
+    to a single mask with values in {0,1,2,3,4}.
+
+    preds_dict: dict with binary masks for each class sparks, puffs, waves, ignore
+    """
+    int_mask = np.zeros_like(list(preds_dict.values())[0], dtype=int)
+    for event_type in preds_dict.keys():
+        int_mask = np.where(
+            preds_dict[event_type], class_to_nb(event_type), int_mask)
+    return int_mask
 
 ########################### Sparks' masks processing ###########################
 
@@ -883,7 +913,8 @@ def detect_single_roi_peak(movie, roi_mask, max_filter_size=10):
     # find locations (y,x) of peaks
     argmaxima = np.logical_and(prod == dilated, prod != 0)
     argwhere = np.argwhere(argmaxima)
-    assert len(argwhere == 1), f"found more than one spark peak in ROI: {argwhere}"
+    assert len(
+        argwhere == 1), f"found more than one spark peak in ROI: {argwhere}"
 
     # find slice t corresponding to max location
     y, x = argwhere[0]
