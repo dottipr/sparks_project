@@ -7,7 +7,6 @@ import math
 import time
 from collections import Counter
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import wandb
@@ -321,7 +320,7 @@ def run_samples_in_model(network, device, datasets, ignore_frames):
             device=device,
         )
 
-        # if dataset has video_name attribute, save results as dictionaries
+        # if dataset has video_name attribute, store results as dictionaries
         if hasattr(test_dataset, "video_name"):
             xs_all_videos[test_dataset.video_name] = xs
             ys_all_videos[test_dataset.video_name] = ys
@@ -346,7 +345,6 @@ def test_function(
     wandb_log,
     training_name,
     output_dir,
-    # TODO: update code to use this (if true compute few metrics)
     training_mode=True,
     debug=False
 ):
@@ -364,19 +362,16 @@ def test_function(
     wandb_log:          logger to store results on wandb
     training_name:      training name used to save predictions on disk
     output_dir:         directory where the predicted movies are saved
-    training_mode:      if True, compute a smaller set of metrics (only the ones
-                        that are interesting to see during training) and do not
-                        correct for missing spark peaks
-
+    training_mode:      bool, if True, separate events using a simpler algorithm
     """
 
     network.eval()
 
     # initialize dicts that will contain the results, indexed by movie names
     confusion_matrix = {}
-    matched_events = {}
-    ignored_preds = {}
-    unmatched_events = {}
+    #matched_events = {}
+    #ignored_preds = {}
+    fn_events = {}
 
     # initialize class attributes that are shared by all datasets
 
@@ -421,19 +416,28 @@ def test_function(
     ys_concat = []
     preds_concat = []
 
-    # define dict to count number of annotated events per class
+    # define dicts to count number of annotated and pred events per class
     n_ys_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    #n_preds_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
+
+    # define dict to count number of false negatives per class
+    n_fn_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
 
     for test_dataset in testing_datasets:
+
+        # if debug:
+        #     # count number of annotated and pred event in each video
+        #     n_ys_temp = {'sparks': 0, 'puffs': 0, 'waves': 0}
+        #     n_preds_temp = {'sparks': 0, 'puffs': 0, 'waves': 0}
 
         ########################## run sample in UNet ##########################
 
         start = time.time()
-        if debug:
-            logger.debug("Testing function: running sample in UNet")
 
         # get video name
         video_name = test_dataset.video_name
+
+        logger.debug(f"Testing function: running sample {video_name} in UNet")
 
         # run sample in UNet
         xs, ys, preds, loss = get_preds(
@@ -444,7 +448,8 @@ def test_function(
             criterion=criterion,
             detect_nan=False,
         )
-        # preds is a list [sparks, waves, puffs]
+        #logger.debug("Preds shape: {}".format(preds.shape))
+        # preds is a list [background, sparks, waves, puffs]
 
         # sum up losses of each sample
         sum_loss += loss
@@ -469,8 +474,7 @@ def test_function(
         ####################### re-organise annotations ########################
 
         start = time.time()
-        if debug:
-            logger.debug("Testing function: re-organising annotations")
+        logger.debug("Testing function: re-organising annotations")
 
         # ys_instances is a dict with classified event instances, for each class
         ys_instances = get_event_instances_class(
@@ -492,21 +496,27 @@ def test_function(
         ignore_mask = np.where(ys == 4, 1, 0)
 
         # get number of annotated events per class
-        n_ys_per_class = dict(Counter(n_ys_per_class)
-                              + Counter({ca_event: (len(np.unique(ys_instances[ca_event]))-1)
-                                         for ca_event in ca_release_events}))
+        for ca_event in ca_release_events:
+            n_ys_per_class[ca_event] += (
+                len(np.unique(ys_instances[ca_event]))-1)
+
+            # if debug:
+            #    n_ys_temp[ca_event] += (len(np.unique(ys_instances[ca_event]))-1)
+
+        logger.debug(
+            f"Time to re-organise annotations: {time.time() - start:.2f} s"
+        )
 
         ######################### get processed output #########################
 
-        if debug:
-            logger.debug(
-                "Testing function: getting processed output (segmentation and instances)")
+        logger.debug(
+            "Testing function: getting processed output (segmentation and instances)")
 
         # get predicted segmentation and event instances
         preds_instances, preds_segmentation, _ = get_processed_result(
-            sparks=preds[0],
-            puffs=preds[2],
-            waves=preds[1],
+            sparks=preds[1],
+            puffs=preds[3],
+            waves=preds[2],
             xs=xs,
             conn_mask=conn_mask,
             connectivity=connectivity,
@@ -519,6 +529,20 @@ def test_function(
             training_mode=training_mode,
             debug=debug
         )
+
+        # get number of predicted events per class
+        # for ca_event in ca_release_events:
+        #     # n_preds_per_class[ca_event] += (
+        #     #    len(np.unique(preds_instances[ca_event]))-1)
+
+        #     if debug:
+        #         n_preds_temp[ca_event] += (
+        #             len(np.unique(preds_instances[ca_event]))-1)
+
+        # logger.debug(
+        #     f"Number of predicted events in video {video_name}:\n{n_preds_temp}")
+        # logger.debug(
+        #     f"Number of annotated events in video {video_name}:\n{n_ys_temp}")
 
         ##################### stack ys and segmented preds #####################
 
@@ -569,8 +593,7 @@ def test_function(
 
         start = time.time()
 
-        if debug:
-            logger.debug("Testing function: getting confusion matrix")
+        logger.debug("Testing function: getting confusion matrix")
 
         confusion_matrix_res = get_confusion_matrix(
             ys_instances=ys_instances,
@@ -585,13 +608,22 @@ def test_function(
 
         # dict indexed by predicted event indices, s.t. each entry is the
         # list of annotated event ids that match the predicted event
-        matched_events[video_name] = confusion_matrix_res[1]
+        #matched_events[video_name] = confusion_matrix_res[1]
 
-        # count number of predicted events that are ignored
-        ignored_preds[video_name] = confusion_matrix_res[2]
+        # count number of predicted events that are ignored per class
+        #ignored_preds[video_name] = confusion_matrix_res[2]
 
-        # get false negative (i.e., labelled but not detected) events
-        unmatched_events[video_name] = confusion_matrix_res[3]
+        # get false negative (i.e., labelled but not detected in the corrected class)
+        fn_events = confusion_matrix_res[3]
+        for event_type in ca_release_events:
+            n_fn_per_class[event_type] += len(fn_events[event_type])
+
+        # get undetected events(i.e., labelled and not detected in any class)
+        # undetected_events = confusion_matrix_res[4]
+
+        logger.debug(
+            f"Confusion matrix for video {video_name}:\n{confusion_matrix[video_name]}"
+        )
 
         logger.debug(
             f"Time to compute confusion matrix: {time.time() - start:.2f} s")
@@ -600,14 +632,13 @@ def test_function(
 
     start = time.time()
 
-    if debug:
-        logger.debug("Testing function: reducing metrics")
+    logger.debug("Testing function: reducing metrics")
 
     metrics = {}
 
     # Compute average validation loss
     metrics["validation_loss"] = sum_loss / len(testing_datasets)
-    logger.info(f"\tvalidation loss: {loss:.4g}")
+    #logger.info(f"\tvalidation loss: {loss:.4g}")
 
     ##################### compute instances-based metrics ######################
 
@@ -622,17 +653,12 @@ def test_function(
     # get confusion matrix of all summed events
     metrics["events_confusion_matrix"] = sum(confusion_matrix.values())
 
-    # get number of annotated events as a list
-    nb_events_per_class = [n_ys_per_class[ca_event]
-                           for ca_event in ca_release_events]
-
-    logger.debug(f"--->>> nb_events_per_class: {nb_events_per_class}")
-
     # get other metrics (precision, recall, % correctly classified, % detected)
     metrics_all = get_metrics_from_cm(results_cm=metrics["events_confusion_matrix"],
-                                      nb_events_per_class=nb_events_per_class)
+                                      nb_events_per_class=n_ys_per_class,
+                                      nb_fn_per_class=n_fn_per_class)
 
-    logger.debug(f"metrics_all: {metrics_all}")
+    metrics.update(metrics_all)
 
     #################### compute segmentation-based metrics ####################
 
@@ -659,9 +685,15 @@ def test_function(
         class_preds = preds_concat == class_id
         class_ys = ys_concat == class_id
 
-        metrics[event_type + "_segmentation_IoU"] = compute_iou(
+        metrics["segmentation/" + event_type + "_IoU"] = compute_iou(
             ys_roi=class_ys, preds_roi=class_preds, ignore_mask=ignore_concat
         )
+
+    # get average IoU across all classes
+    metrics["segmentation/average_IoU"] = np.mean(
+        [metrics["segmentation/" + event_type + "_IoU"]
+         for event_type in ca_release_events]
+    )
 
     # compute confusion matrix
     metrics["segmentation_confusion_matrix"] = sk_confusion_matrix(
@@ -669,324 +701,13 @@ def test_function(
     )
 
     if wandb_log:
-        wandb.log(metrics)
+        wandb.log({m: val for m, val in metrics.items()
+                  if 'confusion_matrix' not in m})
 
     logger.debug(f"Time to reduce metrics: {time.time() - start:.2f} s")
 
-    logger.debug("Metrics:")
+    logger.info("Metrics:")
     for metric_name, metric_value in metrics.items():
-        logger.debug(f"\t{metric_name}: {metric_value}")
+        logger.info(f"\t{metric_name}: {metric_value}")
 
     return metrics
-
-
-# def test_function_OLD(
-#     network,
-#     device,
-#     criterion,
-#     ignore_frames,
-#     testing_datasets,
-#     logger,
-#     wandb_log,
-#     training_name,
-#     output_dir,
-#     training_mode=True,
-# ):
-#     """
-#     Validate UNet during training.
-#     Output segmentation is computed using argmax values (to avoid using
-#     thresholds).
-#     Not using minimal radius to remove small events (yet).
-
-#     network:            the model being trained
-#     device:             current device
-#     criterion:          loss function to be computed on the validation set
-#     testing_datasets:   list of SparkDataset instances
-#     logger:             logger to output results in the terminal
-#     ignore_frames:      frames ignored by the loss function
-#     wandb_log:          logger to store results on wandb
-#     training_name:      training name used to save predictions on disk
-#     output_dir:         directory where the predicted movies are saved
-#     training_mode:      if True, compute a smaller set of metrics (only the ones
-#                         that are interesting to see during training)
-
-#     """
-#     network.eval()
-
-#     pixel_based_results = {}  # store metrics for each video
-#     pixel_based_results["sparks"] = {}  # movie name x {tp, tn, fp, fn}
-#     pixel_based_results["puffs"] = {}  # movie name x {tp, tn, fp, fn}
-#     pixel_based_results["waves"] = {}  # movie name x {tp, tn, fp, fn}
-
-#     spark_peaks_results = {}  # store metrics for each video
-#     spark_peaks_results["sparks"] = {}  # movie name x {tp, tp_fp, tp_fn}
-
-#     # initialize class attributes that are shared by all datasets
-#     sparks_type = testing_datasets[0].sparks_type
-#     temporal_reduction = testing_datasets[0].temporal_reduction
-#     if temporal_reduction:
-#         num_channels = testing_datasets[0].num_channels
-
-#     min_dist_xy = testing_datasets[0].min_dist_xy
-#     min_dist_t = testing_datasets[0].min_dist_t
-
-#     for test_dataset in testing_datasets:
-#         # run sample in UNet
-#         xs, ys, preds, loss = get_preds(
-#             network=network,
-#             test_dataset=test_dataset,
-#             compute_loss=True,
-#             device=device,
-#             criterion=criterion,
-#             detect_nan=False,
-#         )
-#         # preds is a list [sparks, waves, puffs]
-
-#         # save preds as videos
-#         write_videos_on_disk(
-#             xs=xs,
-#             ys=ys,
-#             preds=preds,
-#             training_name=training_name,
-#             video_name=test_dataset.video_name,
-#             path=output_dir,
-#         )
-
-#         ################## compute metrics for current video ###################
-
-#         # get annotations as a dictionary
-#         ys_classes = {
-#             "sparks": np.where(ys == 1, 1, 0),
-#             "puffs": np.where(ys == 3, 1, 0),
-#             "waves": np.where(ys == 2, 1, 0),
-#         }
-
-#         # get pixels labelled with 4
-#         # TODO: togliere ignored frames ??????????????????????????????
-#         ignore_mask = np.where(ys == 4, 1, 0)
-
-#         # compute exp of predictions
-#         preds = np.exp(preds)
-
-#         # get segmented output using argmax (as a dict)
-#         argmax_preds = get_argmax_segmented_output(preds=preds, get_classes=True)[0]
-
-#         # get list of classes
-#         classes_list = argmax_preds.keys()
-
-#         for event_class in classes_list:
-
-#             ################## COMPUTE PIXEL-BASED RESULTS #####################
-
-#             class_preds = argmax_preds[event_class]
-#             class_ys = ys_classes[event_class]
-
-#             # can remove marginal frames, since considering pixel-based metrics
-#             class_preds = empty_marginal_frames(class_preds, ignore_frames)
-#             class_ys = empty_marginal_frames(class_ys, ignore_frames)
-
-#             tp, tn, fp, fn = compute_puff_wave_metrics(
-#                 ys=class_ys,
-#                 preds=class_preds,
-#                 exclusion_radius=0,
-#                 ignore_mask=ignore_mask,
-#                 sparks=(event_class == "sparks"),
-#                 results_only=True,
-#             )
-#             # dict with keys 'iou', 'prec', 'rec' and accuracy
-
-#             pixel_based_results[event_class][test_dataset.video_name] = {
-#                 "tp": tp,
-#                 "tn": tn,
-#                 "fp": fp,
-#                 "fn": fn,
-#             }
-
-#             ################### COMPUTE SPARK PEAKS RESULTS ####################
-
-#             if event_class == "sparks":
-#                 # get sparks preds
-#                 class_preds = argmax_preds[event_class]
-
-#                 # get predicted peaks locations
-#                 connectivity_mask = sparks_connectivity_mask(min_dist_xy, min_dist_t)
-#                 coords_pred = simple_nonmaxima_suppression(
-#                     img=xs,
-#                     maxima_mask=class_preds,
-#                     min_dist=connectivity_mask,
-#                     return_mask=False,
-#                     threshold=0,
-#                     sigma=2,
-#                 )  # TODO: maybe need to change sigma!!!!!
-
-#                 # remove events ignored by loss function in preds
-#                 if ignore_frames > 0:
-#                     mask_duration = ys.shape[0]
-#                     coords_pred = empty_marginal_frames_from_coords(
-#                         coords=coords_pred,
-#                         n_frames=ignore_frames,
-#                         duration=mask_duration,
-#                     )
-#                     coords_true = empty_marginal_frames_from_coords(
-#                         coords=test_dataset.coords_true,
-#                         n_frames=ignore_frames,
-#                         duration=mask_duration,
-#                     )
-
-#                 # get results as a dict {tp, tp_fp, tp_fn}
-#                 res = correspondences_precision_recall(
-#                     coords_real=coords_true,
-#                     coords_pred=coords_pred,
-#                     match_distance_xy=min_dist_xy,
-#                     match_distance_t=min_dist_t,
-#                     return_pairs_coords=True,
-#                     return_nb_results=True,
-#                 )
-
-#                 (
-#                     nb_results,
-#                     paired_real,
-#                     paired_pred,
-#                     false_positives,
-#                     false_negatives,
-#                 ) = res
-
-#                 spark_peaks_results[event_class][test_dataset.video_name] = nb_results
-
-#                 # write videos with colored sparks on disk
-#                 write_colored_sparks_on_disk(
-#                     training_name=training_name,
-#                     video_name=test_dataset.video_name,
-#                     paired_real=paired_real,
-#                     paired_pred=paired_pred,
-#                     false_positives=false_positives,
-#                     false_negatives=false_negatives,
-#                     path=output_dir,
-#                     xs=xs,
-#                 )
-
-#     ############################## reduce metrics ##############################
-#     metrics = {}
-
-#     # Compute average validation loss
-#     loss /= len(testing_datasets)
-
-#     metrics["validation_loss"] = loss
-#     # logger.info(f"\tvalidation loss: {loss:.4g}")
-
-#     for event_class in classes_list:
-
-#         #################### COMPUTE PIXEL-BASED RESULTS #######################
-#         """
-#         Metrics that can be computed (raw sparks, puffs, waves):
-#         - Jaccard index (IoU)
-#         - Dice score
-#         - Precision & recall
-#         - F-score (e.g. beta = 0.5,1,2)
-#         - Accuracy (biased since background is predominant)
-#         - Matthews correlation coefficient (MCC)
-#         """
-
-#         # compute average of all results
-#         res = {}  # tp, tn, fp, fn
-#         for movie_name, movie_res in pixel_based_results[event_class].items():
-#             for r, val in movie_res.items():
-#                 if r in res:
-#                     res[r] += val / len(testing_datasets)
-#                 else:
-#                     res[r] = val / len(testing_datasets)
-
-#         # during training, compute only iou, prec & rec for puffs & waves, and
-#         # compute only prec & rec for sparks
-#         if not training_mode:
-#             dice = (
-#                 res["tp"] / (2 * res["tp"] + res["fn"] + res["fp"])
-#                 if (res["tp"] + res["fn"] + res["fp"]) != 0
-#                 else 1.0
-#             )
-#             accuracy = (res["tp"] + res["tn"]) / (
-#                 res["tp"] + res["tn"] + res["fp"] + res["fn"]
-#             )
-#             mcc = (
-#                 (res["tp"] * res["tn"] - res["fp"] * res["fn"])
-#                 / np.sqrt(
-#                     (res["tp"] + res["fp"])
-#                     * (res["tp"] + res["fn"])
-#                     * (res["tn"] + res["fp"])
-#                     * (res["tn"] + res["fn"])
-#                 )
-#                 if (res["tp"] + res["fp"])
-#                 * (res["tp"] + res["fn"])
-#                 * (res["tn"] + res["fp"])
-#                 * (res["tn"] + res["fn"])
-#                 != 0
-#                 else 0.0
-#             )
-#             metrics[event_class + "/dice"] = dice
-#             metrics[event_class + "/accuracy"] = accuracy
-#             metrics[event_class + "/mcc"] = mcc
-
-#             if event_class == "sparks":
-#                 iou = (
-#                     res["tp"] / (res["tp"] + res["fn"] + res["fp"])
-#                     if (res["tp"] + res["fn"] + res["fp"]) != 0
-#                     else 1.0
-#                 )
-#                 metrics[event_class + "/iou"] = iou
-
-#         if event_class != "sparks":
-#             iou = (
-#                 res["tp"] / (res["tp"] + res["fn"] + res["fp"])
-#                 if (res["tp"] + res["fn"] + res["fp"]) != 0
-#                 else 1.0
-#             )
-#             metrics[event_class + "/iou"] = iou
-
-#         prec = (
-#             res["tp"] / (res["tp"] + res["fp"]) if (res["tp"] + res["fp"]) != 0 else 1.0
-#         )
-#         rec = (
-#             res["tp"] / (res["tp"] + res["fn"]) if (res["tp"] + res["fn"]) != 0 else 1.0
-#         )
-#         metrics[event_class + "/pixel_prec"] = prec
-#         metrics[event_class + "/pixel_rec"] = rec
-
-#         ################### COMPUTE SPARK PEAKS RESULTS ####################
-
-#         """
-#         Metrics that can be computed (spark peaks):
-#         - Precision & recall
-#         - F-score (e.g. beta = 0.5,1,2)
-#         (- Matthews correlation coefficient (MCC))???
-#         """
-
-#         if event_class == "sparks":
-
-#             # compute average of all results
-#             res = {}  # tp, tp_fn, tp_fp
-#             for movie_name, movie_res in spark_peaks_results[event_class].items():
-#                 for r, val in movie_res.items():
-#                     if r in res:
-#                         res[r] += val / len(testing_datasets)
-#                     else:
-#                         res[r] = val / len(testing_datasets)
-
-#             prec = res["tp"] / res["tp_fp"] if res["tp_fp"] != 0 else 1.0
-#             rec = res["tp"] / res["tp_fn"] if res["tp_fn"] != 0 else 1.0
-
-#             metrics[event_class + "/precision"] = prec
-#             metrics[event_class + "/recall"] = rec
-
-#             # during training compute only f_1 score for spark peaks
-#             betas = [0.5, 1, 2] if not training_mode else [1]
-#             for beta in betas:
-#                 f_score = compute_f_score(prec, rec, beta)
-#                 metrics[event_class + f"/f{beta}_score"] = f_score
-
-#     for metric, val in metrics.items():
-#         logger.info(f"\t{metric}: {val:.4g}")
-
-#     if wandb_log:
-#         wandb.log(metrics)
-
-#     return metrics

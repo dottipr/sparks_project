@@ -34,10 +34,10 @@ if __name__ == "__main__":
     ############################# fixed parameters #############################
 
     # General params
-    verbosity = 3
+    verbosity = 2
     logfile = None  # change this when publishing finished project on github
-    wandb_project_name = "sparks"
-    output_relative_path = "runs/"  # directory where output, saved params and
+    wandb_project_name = "sparks2"  # use new wandb project name with new test_function
+    output_relative_path = "runs"  # directory where output, saved params and
     # testing results are saved
 
     # Dataset parameters
@@ -68,10 +68,12 @@ if __name__ == "__main__":
     params = {}
 
     # training params
-    params["run_name"] = c.get("training", "run_name", fallback="TEST")  # Run name
+    params["run_name"] = c.get(
+        "training", "run_name", fallback="TEST")  # Run name
     params["load_run_name"] = c.get("training", "load_run_name", fallback=None)
     params["load_epoch"] = c.getint("training", "load_epoch", fallback=0)
-    params["train_epochs"] = c.getint("training", "train_epochs", fallback=5000)
+    params["train_epochs"] = c.getint(
+        "training", "train_epochs", fallback=5000)
     params["criterion"] = c.get("training", "criterion", fallback="nll_loss")
     params["lr_start"] = c.getfloat("training", "lr_start", fallback=1e-4)
     params["ignore_frames_loss"] = c.getint("training", "ignore_frames_loss")
@@ -88,12 +90,14 @@ if __name__ == "__main__":
     params["num_workers"] = c.getint("dataset", "num_workers", fallback=1)
     params["data_duration"] = c.getint("dataset", "data_duration")
     params["data_step"] = c.getint("dataset", "data_step")
-    params["data_smoothing"] = c.get("dataset", "data_smoothing", fallback="2d")
+    params["data_smoothing"] = c.get(
+        "dataset", "data_smoothing", fallback="2d")
     params["norm_video"] = c.get("dataset", "norm_video", fallback="chunk")
     params["remove_background"] = c.get(
         "dataset", "remove_background", fallback="average"
     )
-    params["only_sparks"] = c.getboolean("dataset", "only_sparks", fallback=False)
+    params["only_sparks"] = c.getboolean(
+        "dataset", "only_sparks", fallback=False)
     params["noise_data_augmentation"] = c.getboolean(
         "dataset", "noise_data_augmentation", fallback=False
     )
@@ -105,7 +109,8 @@ if __name__ == "__main__":
         "network", "nn_architecture", fallback="pablos_unet"
     )
     params["unet_steps"] = c.getint("network", "unet_steps")
-    params["first_layer_channels"] = c.getint("network", "first_layer_channels")
+    params["first_layer_channels"] = c.getint(
+        "network", "first_layer_channels")
     params["num_channels"] = c.getint("network", "num_channels", fallback=1)
     params["dilation"] = c.getboolean("network", "dilation", fallback=1)
     params["border_mode"] = c.get("network", "border_mode")
@@ -132,6 +137,9 @@ if __name__ == "__main__":
     }
     log_level = level_map[verbosity]
     log_handlers = (logging.StreamHandler(sys.stdout),)
+
+    debug_mode = (verbosity == 3) or c.getboolean(
+        "general", "debug_mode", fallback=False)
 
     # use this when project is finished:
     # if logfile:
@@ -224,7 +232,8 @@ if __name__ == "__main__":
             "44",
             "46",
         ]
-        test_sample_ids = ["05", "10", "15", "20", "25", "32", "34", "40", "45"]
+        test_sample_ids = ["05", "10", "15",
+                           "20", "25", "32", "34", "40", "45"]
     elif params["dataset_size"] == "minimal":
         train_sample_ids = ["01"]
         test_sample_ids = ["34"]
@@ -244,7 +253,8 @@ if __name__ == "__main__":
 
     # set if temporal reduction is used
     if params["temporal_reduction"]:
-        logger.info(f"Using temporal reduction with {params['num_channels']} channels")
+        logger.info(
+            f"Using temporal reduction with {params['num_channels']} channels")
 
     # normalize whole videos or chunks individually
     if params["norm_video"] == "chunk":
@@ -370,7 +380,8 @@ if __name__ == "__main__":
             attention=params["attention"],  # magari da testare con 'True' ??
             # full_norm=False,  # Uncomment to restore old sparse normalization scheme
             dim=ndims,
-            conv_mode=params["border_mode"],  # 'valid' ha dei vantaggi a quanto pare...
+            # 'valid' ha dei vantaggi a quanto pare...
+            conv_mode=params["border_mode"],
         )
 
     if device != "cpu":
@@ -392,7 +403,8 @@ if __name__ == "__main__":
     output_path = os.path.join(output_relative_path, params["run_name"])
     logger.info(f"Output directory: {output_path}")
 
-    summary_writer = SummaryWriter(os.path.join(output_path, "summary"), purge_step=0)
+    summary_writer = SummaryWriter(os.path.join(
+        output_path, "summary"), purge_step=0)
 
     if params["load_run_name"] != None:
         load_path = os.path.join(output_relative_path, params["load_run_name"])
@@ -468,7 +480,7 @@ if __name__ == "__main__":
             training_name=params["run_name"],
             output_dir=preds_output_dir,
             training_mode=True,
-            debug=c.getboolean("general", "debug_mode", fallback=False),
+            debug=debug_mode,
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "test_every", fallback=1000),
@@ -489,6 +501,6 @@ if __name__ == "__main__":
             print_every=c.getint("training", "print_every", fallback=100),
         )
 
-    if c.getboolean("general", "testing", fallback=False):  # Run training procedure on data
+    if c.getboolean("general", "testing", fallback=False):  # Run final validation
         logger.info("Starting final validation")
         trainer.run_validation()

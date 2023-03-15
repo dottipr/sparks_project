@@ -11,6 +11,8 @@ the end of the script (such as compute_filtered_butter, )
 
 import logging
 import math
+import os
+import time
 
 import cc3d
 import imageio
@@ -484,7 +486,7 @@ def get_separated_events(
                         'waves')
     connectivity:       int, define how puffs and waves are separated
     connectivity_mask:  3d matrix, define how sparks are separated
-    return_sparks_loc:  bool, if True, return spark peaks locations together with 
+    return_sparks_loc:  bool, if True, return spark peaks locations together with
                         separated events dict
     debug:              bool, if True, print intermediate results
     training_mode:      bool, if True, separate events using a simpler algorithm
@@ -509,9 +511,8 @@ def get_separated_events(
         sigma=sigma,
     )
 
-    if debug:
-        logger.debug(
-            f"Number of sparks detected by nonmaxima suppression: {len(loc)}")
+    logger.debug(
+        f"Number of sparks detected by nonmaxima suppression: {len(loc)}")
 
     # compute smooth version of input video
     smooth_xs = ndi.gaussian_filter(movie, sigma=sigma)
@@ -792,6 +793,7 @@ def get_processed_result(
     connectivity: integer defining how puffs and waves are connected
     max_gap: number of consecutive empty frames in an event (puffs and waves)
     sigma: sigma valued used for xs smoothing in spark peaks detection
+    training_mode: bool, if True, separate events using a simpler algorithm
     """
     preds = {
         "sparks": sparks,
@@ -805,7 +807,7 @@ def get_processed_result(
     # preds_segmentation is a dict with binary mask for each class
     # _ has values in {0,1,2,3}
     preds_segmentation, _ = get_argmax_segmentation_otsu(
-        preds=preds, get_classes=True, debug=True
+        preds=preds, get_classes=True, debug=debug
     )
 
     # Separate events in predictions
@@ -820,56 +822,58 @@ def get_processed_result(
         training_mode=training_mode
     )
 
-    if not training_mode:
-        # Remove small events and merge events that belong together only if not training
-        # Remove artifacts
-        # Waves
-        preds_instances["waves"] = remove_small_events(
-            class_instances=preds_instances["waves"],
-            class_type="waves",
-            min_width=wave_min_width,
-            max_gap=max_gap,
+    start = time.time()
+    # Remove small events and merge events that belong together
+    # Waves
+    preds_instances["waves"] = remove_small_events(
+        class_instances=preds_instances["waves"],
+        class_type="waves",
+        min_width=wave_min_width,
+        max_gap=max_gap,
+    )
+
+    # update segmented predicted mask accordingly
+    preds_segmentation["waves"] = preds_instances["waves"].astype(bool)
+
+    # Puffs
+    preds_instances["puffs"] = remove_small_events(
+        class_instances=preds_instances["puffs"],
+        class_type="puffs",
+        min_t=puff_min_t,
+        max_gap=max_gap,
+    )
+
+    # update segmented predicted mask accordingly
+    preds_segmentation["puffs"] = preds_instances["puffs"].astype(bool)
+
+    # Sparks
+    preds_instances["sparks"] = remove_small_events(
+        class_instances=preds_instances["sparks"],
+        class_type="sparks",
+        min_t=spark_min_t,
+        min_width=spark_min_width,
+    )
+
+    # update segmented predicted mask accordingly
+    preds_segmentation["sparks"] = preds_instances["sparks"].astype(bool)
+
+    # remove spark peak locations of sparks that have been removed
+    corrected_loc = []
+    for t, y, x in sparks_loc:
+        if preds_instances["sparks"][t, y, x] != 0:
+            corrected_loc.append([t, y, x])
+    sparks_loc = corrected_loc
+
+    # Renumber preds, so that each event has a unique ID
+    shift_id = 0
+    for event_type in ["sparks", "puffs", "waves"]:
+        preds_instances[event_type] = renumber_labelled_mask(
+            labelled_mask=preds_instances[event_type], shift_id=shift_id
         )
+        shift_id = max(shift_id, np.max(preds_instances[event_type]))
 
-        # update segmented predicted mask accordingly
-        preds_segmentation["waves"] = preds_instances["waves"].astype(bool)
-
-        # Puffs
-        preds_instances["puffs"] = remove_small_events(
-            class_instances=preds_instances["puffs"],
-            class_type="puffs",
-            min_t=puff_min_t,
-            max_gap=max_gap,
-        )
-
-        # update segmented predicted mask accordingly
-        preds_segmentation["puffs"] = preds_instances["puffs"].astype(bool)
-
-        # Sparks
-        preds_instances["sparks"] = remove_small_events(
-            class_instances=preds_instances["sparks"],
-            class_type="sparks",
-            min_t=spark_min_t,
-            min_width=spark_min_width,
-        )
-
-        # update segmented predicted mask accordingly
-        preds_segmentation["sparks"] = preds_instances["sparks"].astype(bool)
-
-        # remove spark peak locations of sparks that have been removed
-        corrected_loc = []
-        for t, y, x in sparks_loc:
-            if preds_instances["sparks"][t, y, x] != 0:
-                corrected_loc.append([t, y, x])
-        sparks_loc = corrected_loc
-
-        # Renumber preds, so that each event has a unique ID
-        shift_id = 0
-        for event_type in ["sparks", "puffs", "waves"]:
-            preds_instances[event_type] = renumber_labelled_mask(
-                labelled_mask=preds_instances[event_type], shift_id=shift_id
-            )
-            shift_id = max(shift_id, np.max(preds_instances[event_type]))
+    logger.debug(
+        f"Time for removing small events: {time.time() - start:.2f} s")
 
     return preds_instances, preds_segmentation, sparks_loc
 
@@ -1136,112 +1140,113 @@ def simple_nonmaxima_suppression(
 ############################### Unused functions ###############################
 
 
-# def compute_filtered_butter(movie_array,
-#                            min_prominence=2,
-#                            band_stop_width=2,
-#                            min_freq=7,
-#                            filter_order=4,
-#                            Fs=150,
-#                            debug=False):
-#    '''
-#    Apply Butterworth filter to input movie.
-#
-#    movie_array: input movie to be filtered
-#    min_prominence: minimal prominence of filtered peaks in frequency domain
-#    band_stop_width: width of the filtered band for each peak
-#    min_freq: minimal frequence that can be filtered (???)
-#    filter_order: order of Butterworth filter
-#    Fs: sampling frequency [Hz]
-#
-#    output: filtered version of input movie
-#    '''
-#
-#    # sampling period [s]
-#    T = 1/Fs
-#    # signal's length [s]
-#    L = movie_array.shape[0]
-#    # time vector
-#    t = np.arange(L)/ Fs
-#
-#    # movie's signal average along time (time profile of image series)
-#    movie_average = np.mean(movie_array, axis=(1,2))
-#
-#    # get noise frequencies
-#    # compute Fourier transform
-#    fft = fftpack.fft(movie_average)
-#    # compute two-sided spectrum
-#    P2 = np.abs(fft/L)
-#    # compute single-sided spectrum
-#    P1 = P2[:(L//2)]
-#    P1[1:-1] = 2*P1[1:-1]
-#
-#    freqs = fftpack.fftfreq(L) * Fs
-#    f = freqs[:L//2]
-#
-#    # detrend single-sided spectrum
-#    #P1_decomposed = seasonal_decompose(P1, model='additive', period=1) # don't know period
-#    #P1_detrend = signal.detrend(P1) # WRONG??
-#
-#    # set spectrum corresponding to frequencies lower than min freq to zero
-#    P1_cut = np.copy(P1)
-#    P1_cut[:min_freq] = 0
-#
-#    # find peaks in spectrum
-#    peaks = signal.find_peaks(P1)[0] # coords in P1 of peaks
-#    #peaks = signal.find_peaks(P1_detrend)[0] # need first to detrend data properly
-#    peaks_cut = peaks[peaks >= min_freq] # coords in P1_cut of peaks
-#
-#    # compute peaks prominence
-#    prominences = signal.peak_prominences(P1_cut, peaks_cut)[0]
-#
-#    # keep only peaks with prominence large enough
-#    prominent_peaks = peaks_cut[prominences > min_prominence]
-#
-#    # regions to filter
-#    bands_low = prominent_peaks-band_stop_width
-#    bands_high = prominent_peaks+band_stop_width
-#    bands_indices = np.transpose([bands_low,bands_high])
-#
-#    bands_freq = f[bands_indices]
-#
-#    # make sure that nothing is outside interval (0,max(f))
-#    if bands_freq.size > 0:
-#        bands_freq[:,0][bands_freq[:,0] < 0] = 0
-#        bands_freq[:,1][bands_freq[:,1] > max(f)] = max(f) - np.mean(np.diff(f))/1000
-#
-#    # create butterworth filter
-#    filter_type = 'bandstop'
-#    filtered = np.copy(movie_array)
-#
-#    for i, band in enumerate(bands_freq):
-#        Wn = band / max(f)
-#
-#        sos = signal.butter(N=filter_order,
-#                            Wn=Wn,
-#                            btype=filter_type,
-#                            output='sos')
-#
-#        filtered = signal.sosfiltfilt(sos, filtered, axis=0)
-#
-#    if debug:
-#        # filtered movie's signal average along time (time profile of image series)
-#        filtered_movie_average = np.mean(filtered, axis=(1,2))
-#
-#        # get frequencies of filtered movie
-#        # compute Fourier transform
-#        filtered_fft = fftpack.fft(filtered_movie_average)
-#        # compute two-sided spectrum
-#        filtered_P2 = np.abs(filtered_fft/L)
-#        # compute single-sided spectrum
-#        filtered_P1 = filtered_P2[:(L//2)]
-#        filtered_P1[1:-1] = 2*filtered_P1[1:-1]
-#
-#        # detrend single-sided spectrum
-#        #filtered_P1_detrend = signal.detrend(filtered_P1) # WRONG??
-#
-#        return filtered, movie_average, filtered_movie_average, Fs, f, P1, filtered_P1
-#
-#    return filtered
+def compute_filtered_butter(movie_array,
+                            min_prominence=2,
+                            band_stop_width=2,
+                            min_freq=7,
+                            filter_order=4,
+                            Fs=150,
+                            debug=False):
+    '''
+    Apply Butterworth filter to input movie.
+
+    movie_array: input movie to be filtered
+    min_prominence: minimal prominence of filtered peaks in frequency domain
+    band_stop_width: width of the filtered band for each peak
+    min_freq: minimal frequence that can be filtered (???)
+    filter_order: order of Butterworth filter
+    Fs: sampling frequency [Hz]
+
+    output: filtered version of input movie
+    '''
+
+    # sampling period [s]
+    T = 1/Fs
+    # signal's length [s]
+    L = movie_array.shape[0]
+    # time vector
+    t = np.arange(L) / Fs
+
+    # movie's signal average along time (time profile of image series)
+    movie_average = np.mean(movie_array, axis=(1, 2))
+
+    # get noise frequencies
+    # compute Fourier transform
+    fft = fftpack.fft(movie_average)
+    # compute two-sided spectrum
+    P2 = np.abs(fft/L)
+    # compute single-sided spectrum
+    P1 = P2[:(L//2)]
+    P1[1:-1] = 2*P1[1:-1]
+
+    freqs = fftpack.fftfreq(L) * Fs
+    f = freqs[:L//2]
+
+    # detrend single-sided spectrum
+    # P1_decomposed = seasonal_decompose(P1, model='additive', period=1) # don't know period
+    # P1_detrend = signal.detrend(P1) # WRONG??
+
+    # set spectrum corresponding to frequencies lower than min freq to zero
+    P1_cut = np.copy(P1)
+    P1_cut[:min_freq] = 0
+
+    # find peaks in spectrum
+    peaks = signal.find_peaks(P1)[0]  # coords in P1 of peaks
+    # peaks = signal.find_peaks(P1_detrend)[0] # need first to detrend data properly
+    peaks_cut = peaks[peaks >= min_freq]  # coords in P1_cut of peaks
+
+    # compute peaks prominence
+    prominences = signal.peak_prominences(P1_cut, peaks_cut)[0]
+
+    # keep only peaks with prominence large enough
+    prominent_peaks = peaks_cut[prominences > min_prominence]
+
+    # regions to filter
+    bands_low = prominent_peaks-band_stop_width
+    bands_high = prominent_peaks+band_stop_width
+    bands_indices = np.transpose([bands_low, bands_high])
+
+    bands_freq = f[bands_indices]
+
+    # make sure that nothing is outside interval (0,max(f))
+    if bands_freq.size > 0:
+        bands_freq[:, 0][bands_freq[:, 0] < 0] = 0
+        bands_freq[:, 1][bands_freq[:, 1] > max(f)] = max(
+            f) - np.mean(np.diff(f))/1000
+
+    # create butterworth filter
+    filter_type = 'bandstop'
+    filtered = np.copy(movie_array)
+
+    for i, band in enumerate(bands_freq):
+        Wn = band / max(f)
+
+        sos = signal.butter(N=filter_order,
+                            Wn=Wn,
+                            btype=filter_type,
+                            output='sos')
+
+        filtered = signal.sosfiltfilt(sos, filtered, axis=0)
+
+    if debug:
+        # filtered movie's signal average along time (time profile of image series)
+        filtered_movie_average = np.mean(filtered, axis=(1, 2))
+
+        # get frequencies of filtered movie
+        # compute Fourier transform
+        filtered_fft = fftpack.fft(filtered_movie_average)
+        # compute two-sided spectrum
+        filtered_P2 = np.abs(filtered_fft/L)
+        # compute single-sided spectrum
+        filtered_P1 = filtered_P2[:(L//2)]
+        filtered_P1[1:-1] = 2*filtered_P1[1:-1]
+
+        # detrend single-sided spectrum
+        # filtered_P1_detrend = signal.detrend(filtered_P1) # WRONG??
+
+        return filtered, movie_average, filtered_movie_average, Fs, f, P1, filtered_P1
+
+    return filtered
 
 
 # OLD VERSION: keeping this only to remember used techniques

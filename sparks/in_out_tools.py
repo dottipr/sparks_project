@@ -21,7 +21,7 @@ from visualization_tools import (
     add_colored_paired_sparks_to_video,
 )
 
-### REMARK
+# REMARK
 # Come salvare files .json
 # with open(filename,"w") as f:
 #    json.dump(dict_or_data,f)
@@ -93,7 +93,8 @@ def load_annotations_ids(data_folder, ids, mask_names="video_mask"):
 
     for f in ys_filenames:
         video_id = os.path.split(f)[1][:2]
-        ys_all_trainings[video_id] = np.asarray(imageio.volread(f)).astype("int")
+        ys_all_trainings[video_id] = np.asarray(
+            imageio.volread(f)).astype("int")
 
     return ys_all_trainings
 
@@ -123,7 +124,8 @@ def load_rgb_annotations_ids(data_folder, ids, mask_names="separated_events"):
         rgb_video = np.asarray(imageio.volread(f)).astype("int")
 
         mask_video = (
-            255 * 255 * rgb_video[..., 0] + 255 * rgb_video[..., 1] + rgb_video[..., 2]
+            255 * 255 * rgb_video[..., 0] + 255 *
+            rgb_video[..., 1] + rgb_video[..., 2]
         )
 
         mask_video[mask_video == white_int] = 0
@@ -150,7 +152,8 @@ def load_predictions_ids(training_name, epoch, metrics_folder, ids):
     """
 
     # Import .tif files as numpy array
-    base_name = os.path.join(metrics_folder, training_name + "_" + str(epoch) + "_")
+    base_name = os.path.join(
+        metrics_folder, training_name + "_" + str(epoch) + "_")
 
     if "temporal_reduction" in training_name:
         # need to use annotations from another training
@@ -161,7 +164,8 @@ def load_predictions_ids(training_name, epoch, metrics_folder, ids):
         )
 
     # get predictions and annotations filenames
-    ys_filenames = sorted([base_name + sample_id + "_ys.tif" for sample_id in ids])
+    ys_filenames = sorted(
+        [base_name + sample_id + "_ys.tif" for sample_id in ids])
     sparks_filenames = sorted(
         [base_name + sample_id + "_sparks.tif" for sample_id in ids]
     )
@@ -190,7 +194,8 @@ def load_predictions_ids(training_name, epoch, metrics_folder, ids):
 
         if "temporal_reduction" in training_name:
             # repeat each frame 4 times
-            logger.info("training using temporal reduction, extending predictions...")
+            logger.info(
+                "training using temporal reduction, extending predictions...")
             s_preds = np.asarray(imageio.volread(s))
             p_preds = np.asarray(imageio.volread(p))
             w_preds = np.asarray(imageio.volread(w))
@@ -270,14 +275,21 @@ def write_videos_on_disk(
     """
     out_name_root = training_name + "_" + video_name + "_"
 
+    logger.debug(f"Writing videos on directory {os.path.abspath(path)} ..")
+
     if not isinstance(xs, type(None)):
-        imageio.volwrite(os.path.join(path, out_name_root + "xs.tif"), xs)
+        imageio.volwrite(os.path.join(
+            path, out_name_root + "xs.tif"), xs)
     if not isinstance(ys, type(None)):
-        imageio.volwrite(os.path.join(path, out_name_root + "ys.tif"), np.uint8(ys))
+        imageio.volwrite(os.path.join(
+            path, out_name_root + "ys.tif"), np.uint8(ys))
     if not isinstance(preds, type(None)):
-        imageio.volwrite(os.path.join(path, out_name_root + "sparks.tif"), preds[1])
-        imageio.volwrite(os.path.join(path, out_name_root + "waves.tif"), preds[2])
-        imageio.volwrite(os.path.join(path, out_name_root + "puffs.tif"), preds[3])
+        imageio.volwrite(os.path.join(
+            path, out_name_root + "sparks.tif"), preds[1])
+        imageio.volwrite(os.path.join(
+            path, out_name_root + "waves.tif"), preds[2])
+        imageio.volwrite(os.path.join(
+            path, out_name_root + "puffs.tif"), preds[3])
 
 
 def write_colored_class_videos_on_disk(
@@ -325,7 +337,8 @@ def create_csv(filename, positions):
         #    filewriter.writerow([positions[n,0], positions[n,1], positions[n,2]])
         for loc in positions:
             filewriter.writerow([loc[0], loc[2], loc[1]])
-            logger.info(f"Location {[loc[0], loc[2], loc[1]]} written to .csv file")
+            logger.info(
+                f"Location {[loc[0], loc[2], loc[1]]} written to .csv file")
 
 
 ################## tools for writing sparks locations on disk ##################
@@ -422,7 +435,8 @@ def write_colored_sparks_on_disk(
 
     # save video on disk
     imageio.volwrite(
-        os.path.join(path, f"{out_name_root}_colored_sparks.tif"), annotated_video
+        os.path.join(
+            path, f"{out_name_root}_colored_sparks.tif"), annotated_video
     )
 
     # write sparks locations to file
@@ -474,7 +488,8 @@ def pair_and_write_sparks_on_video(
     )
 
     # Write sparks locations to file
-    coords_file_path = os.path.join(out_path, f"{movie_id}_sparks_location.txt")
+    coords_file_path = os.path.join(
+        out_path, f"{movie_id}_sparks_location.txt")
     write_paired_sparks_on_disk(
         paired_true=paired_true,
         paired_preds=paired_preds,

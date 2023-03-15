@@ -71,9 +71,11 @@ def diff(l1, l2):
 
 
 # from UNet outputs and labels, get dict of metrics for a single video
-def get_metrics_from_cm(results_cm, nb_events_per_class):
+def get_metrics_from_cm(results_cm,
+                        nb_events_per_class,
+                        nb_fn_per_class):
     r"""
-    Compute instance-based metrics from confusion matrix and number of annotated 
+    Compute instance-based metrics from confusion matrix and number of annotated
     events per class.
 
     Instance-based metrics are:
@@ -88,50 +90,58 @@ def get_metrics_from_cm(results_cm, nb_events_per_class):
     results_cm :            4x4 confusion matrix summarizing results
                             columns represent predicted classes [background, sparks, waves, puffs]
                             rows represent annotated classes [background, sparks, waves, puffs]
-    nb_events_per_class :   list of number of annotated events per class [sparks, waves, puffs]
+    nb_events_per_class :   dict of number of annotated events per class [sparks, waves, puffs]
+    nb_fn_per_class :       dict of number of false negatives per class [sparks, waves, puffs]
     """
-    ca_release_events = ["sparks", "waves", "puffs"]
+    ca_release_events = ["sparks", "puffs", "waves"]
 
     # compute metrics
     metrics = {}
 
-    metrics["events_confusion_matrix"] = results_cm
-
     for event_type in ca_release_events:
-        event_nb = class_to_nb(event_type)
+        class_id = class_to_nb(event_type)
 
         # precision
-        if np.sum(results_cm[:, event_nb]) > 0:
-            metrics[event_type + "_precision"] = results_cm[
-                event_nb, event_nb
-            ] / np.sum(results_cm[:, event_nb])
+        if np.sum(results_cm[:, class_id]) > 0:
+            metrics[event_type + "/precision"] = (
+                results_cm[class_id, class_id] /
+                np.sum(results_cm[:, class_id])
+            )
         else:
-            metrics[event_type + "_precision"] = 0
+            metrics[event_type + "/precision"] = 0
 
         # recall
-        if nb_events_per_class[event_nb] > 0:
-            metrics[event_type + "_recall"] = (
-                results_cm[event_nb, event_nb] / nb_events_per_class[event_nb]
+        if nb_events_per_class[event_type] > 0:
+            metrics[event_type + "/recall"] = (
+                1 - (nb_fn_per_class[event_type] /
+                     nb_events_per_class[event_type])
             )
         else:
-            metrics[event_type + "_recall"] = 0
+            metrics[event_type + "/recall"] = 0
 
         # % correctly classified events
-        if np.sum(results_cm[1:3, event_nb]) > 0:
-            metrics[event_type + "_correctly_classified"] = (
-                results_cm[event_nb, event_nb] /
-                np.sum(results_cm[1:3, event_nb]) > 0
+        if np.sum(results_cm[1:, class_id]) > 0:
+            metrics[event_type + "/correctly_classified"] = (
+                results_cm[class_id, class_id] /
+                np.sum(results_cm[1:, class_id])
             )
         else:
-            metrics[event_type + "_correctly_classified"] = 0
+            metrics[event_type + "/correctly_classified"] = 0
 
         # % detected events
-        if nb_events_per_class[event_nb] > 0:
-            metrics[event_type + "_detected"] = (
-                results_cm[event_nb, event_nb] / nb_events_per_class[event_nb]
+        if nb_events_per_class[event_type] > 0:
+            metrics[event_type + "/detected"] = (
+                1 - (results_cm[class_id, 0]/nb_events_per_class[event_type])
             )
         else:
-            metrics[event_type + "_detected"] = 0
+            metrics[event_type + "/detected"] = 0
+
+    # compute average over classes for each metric
+    for m in ["precision", "recall", "correctly_classified", "detected"]:
+        metrics["average/" + m] = np.mean(
+            [metrics[event_type + "/" + m]
+                for event_type in ca_release_events]
+        )
 
     return metrics
 
@@ -189,10 +199,14 @@ def compute_inter_min(ys_roi, preds_roi, ignore_mask=None):
 
 def compute_iomin_one_hot(y_vector, preds_array):
     """
-    Compute intersection over minimum score for given single annotated event and all predicted events.
-    y_vector :          flatted, one-hot encoded annotated event csr_array (shape = 1 x movie shape)
-    preds_array :       flattened, one-hot encoded predicted events csr_array (shape = #preds x movie shape)
-                        !!! intersect predicted events with negation of ignore maks before passing them here !!!
+    Compute intersection over minimum score for given single annotated event
+    and all predicted events.
+    y_vector :          flattened, one-hot encoded annotated event csr_array
+                        (shape = 1 x movie shape)
+    preds_array :       flattened, one-hot encoded predicted events csr_array
+                        (shape = #preds x movie shape)
+                        !!! intersect predicted events with negation of ignore
+                        maks before passing them here !!!
 
     Returns: list of iomin scores for each predicted event
     """
@@ -208,12 +222,11 @@ def compute_iomin_one_hot(y_vector, preds_array):
 
     else:
         # compute non-zero elements for each row (=predicted events) of intersection
-        intersection_area = intersection.getnnz(axis=1).astype(np.float16)
+        intersection_area = intersection.getnnz(axis=1).astype(float)
 
         # get denominator for iomin using non-zero elements of y_vector and preds_array
-        denominator = np.minimum(preds_array.getnnz(axis=1), y_vector.getnnz()).astype(
-            np.float16
-        )
+        denominator = np.minimum(preds_array.getnnz(axis=1),
+                                 y_vector.getnnz()).astype(float)
 
         # compute iomin by dividing intersection by denominator
         # if denominator is 0, set iomin to 0
@@ -221,7 +234,7 @@ def compute_iomin_one_hot(y_vector, preds_array):
             intersection_area,
             denominator,
             out=np.zeros_like(denominator, dtype=np.float16),
-            where=denominator != 0,
+            where=(denominator > 0),
         )
 
         return scores
@@ -598,8 +611,8 @@ def get_score_matrix(ys_instances, preds_instances, ignore_mask=None, score="iom
     Compute pair-wise scores between annotated event instances (ys_segmentation)
     and predicted event instances (preds_instances).
 
-    ys_instances, preds_instances:  dicts indexed my ca release event types
-                                    each entry is a int array
+    ys_instances, preds_instances:  dicts indexed by ca release event types
+                                    each entry is an int array
     ignore_mask:                    binary mask, ROIs ignored during training
     score:                          scoring method (IoMin or IoU)
 
@@ -633,47 +646,48 @@ def get_score_matrix(ys_instances, preds_instances, ignore_mask=None, score="iom
 
         scores = np.array(scores)
 
-    elif score == "iou":
-        # get number of annotated and predicted events
-        n_ys_events = ys_all_events.max()
-        n_preds_events = preds_all_events.max()
+    # TODO (if necessary)
+    # elif score == "iou":
+    #     # get number of annotated and predicted events
+    #     n_ys_events = ys_all_events.max()
+    #     n_preds_events = preds_all_events.max()
 
-        # create empty score matrix for IoU or IoMin
-        scores = np.zeros((n_ys_events, n_preds_events))
+    #     # create empty score matrix for IoU or IoMin
+    #     scores = np.zeros((n_ys_events, n_preds_events))
 
-        # intersect predicted events with negation of ignore mask
-        if ignore_mask is not None:
-            preds_all_events = np.logical_and(
-                preds_all_events, np.logical_not(ignore_mask)
-            )
+    #     # intersect predicted events with negation of ignore mask
+    #     if ignore_mask is not None:
+    #         preds_all_events = np.logical_and(
+    #             preds_all_events, np.logical_not(ignore_mask)
+    #         )
 
-        # compute pairwise scores
-        for pred_id in range(1, n_preds_events + 1):
-            preds_roi = preds_all_events == pred_id
-            # check that the predicted ROI is not empty
-            # assert preds_roi.any(), f"the predicted ROI n.{pred_id} is empty!"
+    #     # compute pairwise scores
+    #     for pred_id in range(1, n_preds_events + 1):
+    #         preds_roi = preds_all_events == pred_id
+    #         # check that the predicted ROI is not empty
+    #         # assert preds_roi.any(), f"the predicted ROI n.{pred_id} is empty!"
 
-            # check if predicted ROI intersect at least one annotated event
-            if np.count_nonzero(np.logical_and(ys_all_events, preds_roi)) != 0:
+    #         # check if predicted ROI intersect at least one annotated event
+    #         if np.count_nonzero(np.logical_and(ys_all_events, preds_roi)) != 0:
 
-                for ys_id in range(1, n_ys_events + 1):
-                    ys_roi = ys_all_events == ys_id
-                    # check that the annotated ROI is not empty
-                    # assert ys_roi.any(), f"the annotated ROI n.{ys_roi} is empty!"
+    #             for ys_id in range(1, n_ys_events + 1):
+    #                 ys_roi = ys_all_events == ys_id
+    #                 # check that the annotated ROI is not empty
+    #                 # assert ys_roi.any(), f"the annotated ROI n.{ys_roi} is empty!"
 
-                    # check if predicted and annotated ROIs intersect
-                    if np.count_nonzero(np.logical_and(ys_roi, preds_roi)) != 0:
+    #                 # check if predicted and annotated ROIs intersect
+    #                 if np.count_nonzero(np.logical_and(ys_roi, preds_roi)) != 0:
 
-                        # compute scores
-                        if score == "iomin":
-                            scores[ys_id - 1, pred_id - 1] = compute_inter_min(
-                                ys_roi=ys_roi, preds_roi=preds_roi
-                            )
-                            # logger.debug(f"score computation between y_id={ys_id} and pred_id={pred_id} took {time.time() - start:.2f}s")
-                        elif score == "iou":
-                            scores[ys_id - 1, pred_id - 1] = compute_iou(
-                                ys_roi=ys_roi, preds_roi=preds_roi
-                            )
+    #                     # compute scores
+    #                     if score == "iomin":
+    #                         scores[ys_id - 1, pred_id - 1] = compute_inter_min(
+    #                             ys_roi=ys_roi, preds_roi=preds_roi
+    #                         )
+    #                         # logger.debug(f"score computation between y_id={ys_id} and pred_id={pred_id} took {time.time() - start:.2f}s")
+    #                     elif score == "iou":
+    #                         scores[ys_id - 1, pred_id - 1] = compute_iou(
+    #                             ys_roi=ys_roi, preds_roi=preds_roi
+    #                         )
 
     # assertions take ~45s to be computed...
 
@@ -708,10 +722,18 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
     confusion_matrix = np.zeros((4, 4))
 
     # count number of predicted events that are ignored
-    ignored_preds = 0
+    ignored_preds = {pred_class: 0 for pred_class in ca_release_events}
 
-    # get indices of unmatched y events
-    unmatched_events = set()
+    # init false negative (labelled but not detected in corrected class) and
+    # undetected events (labelled but not detected in any class) as all ys
+    fn_events = {}
+    undetected_events = {}
+    for y_class in ca_release_events:
+        y_class_ids = list(np.unique(ys_instances[y_class]))
+        y_class_ids.remove(0)
+
+        fn_events[y_class] = set(y_class_ids)
+        undetected_events[y_class] = set(y_class_ids)
 
     for pred_class in ca_release_events:
         pred_class_id = class_to_nb(pred_class)
@@ -733,9 +755,12 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
                 scores[:, pred_id - 1] >= t)[0] + 1
             matched_events[pred_id] = set(matched_events[pred_id])
 
-            # if at least one matched event is in same class, increase confusion matrix
+            # if at least one matched event is in same class:
+            # increase confusion matrix and remove matched events from fp and undetected
             if matched_events[pred_id] & y_ids:
                 confusion_matrix[pred_class_id, pred_class_id] += 1
+                fn_events[pred_class] -= matched_events[pred_id]
+                undetected_events[pred_class] -= matched_events[pred_id]
 
             # else, if no y event is matched with this pred, check if it is ignored
             elif not matched_events[pred_id]:
@@ -754,7 +779,7 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
                 # otherwise, mark pred as ignored event
                 else:
                     matched_events[pred_id] = {matched_ignore_id}
-                    ignored_preds += 1
+                    ignored_preds[pred_class] += 1
 
             # otherwise, try to match pred_id with the other classes
             else:
@@ -767,26 +792,30 @@ def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
                     if matched_events[pred_id] & y_other_ids:
                         # if at least one matched event is in different class, increase confusion matrix
                         confusion_matrix[y_class_id, pred_class_id] += 1
+                        # and remove matched ys events from undetected
+                        undetected_events[y_class] -= matched_events[pred_id]
 
     # get false negative (i.e., labelled but not detected) events
     # get list of all matched events
-    y_matched_ids = set().union(*matched_events.values())
+    # y_matched_ids = set().union(*matched_events.values())
 
+    # compute false negative for confusion matrix
     for y_class in ca_release_events:
         y_class_id = class_to_nb(y_class)
-        # get ids of annotated events in given class
-        y_ids = set(np.unique(ys_instances[y_class]))
-        y_ids.remove(0)
 
-        # get annotated events that are not matched with a pred
-        y_unmatched_ids = y_ids.difference(y_matched_ids)
-        n_unmatched = len(y_unmatched_ids)
+        confusion_matrix[y_class_id, 0] = len(undetected_events[y_class])
+        # # get ids of annotated events in given class
+        # y_ids = set(np.unique(ys_instances[y_class]))
+        # y_ids.remove(0)
 
-        # update confusion matrix and list of unmatched events
-        confusion_matrix[y_class_id, 0] += n_unmatched
-        unmatched_events = unmatched_events.union(y_unmatched_ids)
+        # # get annotated events that are not matched with a pred
+        # y_unmatched_ids = y_ids.difference(y_matched_ids)
+        # n_unmatched = len(y_unmatched_ids)
 
-    return confusion_matrix, matched_events, ignored_preds, unmatched_events
+        # # update confusion matrix
+        # confusion_matrix[y_class_id, 0] += n_unmatched
+
+    return confusion_matrix, matched_events, ignored_preds, fn_events, undetected_events
 
 
 ############################### Unused functions ###############################
