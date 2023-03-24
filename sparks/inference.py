@@ -32,9 +32,9 @@ BASEDIR = os.path.dirname(os.path.realpath(__file__))
 
 ################################ Set parameters ################################
 
-training_name = "TEMP_new_annotated_peaks_physio"
+training_name = "TEMP_new_annotated_peaks_physio_2"
 config_file = "config_temp_new_annotated_peaks_physio.ini"
-use_train_data = False
+use_train_data = True
 
 
 ########################### Configure output folder ############################
@@ -44,7 +44,8 @@ os.makedirs(output_folder, exist_ok=True)
 
 # subdirectory of output_folder where predictions are saved
 # change this to save results for same model with different inference approaches
-output_name = training_name + "_step=2"
+#output_name = training_name + "_step=2"
+output_name = training_name
 
 save_folder = os.path.join(output_folder, output_name)
 os.makedirs(save_folder, exist_ok=True)
@@ -97,9 +98,11 @@ load_epoch = c.getint("testing", "load_epoch")
 batch_size = c.getint("testing", "batch_size", fallback="1")
 ignore_frames = c.getint("training", "ignore_frames_loss")
 
-temporal_reduction = c.getboolean("network", "temporal_reduction", fallback=False)
+temporal_reduction = c.getboolean(
+    "network", "temporal_reduction", fallback=False)
 num_channels = (
-    c.getint("network", "num_channels", fallback=1) if temporal_reduction else 1
+    c.getint("network", "num_channels",
+             fallback=1) if temporal_reduction else 1
 )
 
 ### Configure dataset/inference method ###
@@ -190,7 +193,8 @@ network = nn.DataParallel(network).to(device)
 models_relative_path = "runs/"
 model_path = os.path.join(models_relative_path, training_name)
 # logger.info(f"Saved model path: {model_path}")
-summary_writer = SummaryWriter(os.path.join(model_path, "summary"), purge_step=0)
+summary_writer = SummaryWriter(
+    os.path.join(model_path, "summary"), purge_step=0)
 
 trainer = unet.TrainingManager(
     # training items
@@ -200,7 +204,8 @@ trainer = unet.TrainingManager(
     summary_writer=summary_writer,
 )
 
-logger.info(f"Loading trained model '{training_name}' at epoch {load_epoch}...")
+logger.info(
+    f"Loading trained model '{training_name}' at epoch {load_epoch}...")
 trainer.load(load_epoch)
 # logger.info(f"Loaded trained model located in '{model_path}'")
 

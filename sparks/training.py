@@ -2,6 +2,7 @@ import argparse
 import configparser
 import logging
 import os
+import random
 import sys
 
 import numpy as np
@@ -22,20 +23,21 @@ from training_inference_tools import (
     test_function,
     training_step,
     weights_init,
+    myTrainingManager
 )
 
 import unet
 
-BASEDIR = os.path.dirname(os.path.realpath(__file__))
-logger = logging.getLogger(__name__)
-
 if __name__ == "__main__":
+
+    BASEDIR = os.path.dirname(os.path.realpath(__file__))
+    logger = logging.getLogger(__name__)
 
     ############################# fixed parameters #############################
 
     # General params
-    verbosity = 2
     logfile = None  # change this when publishing finished project on github
+    verbosity = 2
     wandb_project_name = "sparks2"  # use new wandb project name with new test_function
     output_relative_path = "runs"  # directory where output, saved params and
     # testing results are saved
@@ -44,6 +46,44 @@ if __name__ == "__main__":
     ignore_index = 4  # label ignored during training
     num_classes = 4  # i.e., BG, sparks, waves, puffs
     ndims = 3  # using 3D data
+
+    ############################# configure logger #############################
+
+    level_map = {
+        3: logging.DEBUG,
+        2: logging.INFO,
+        1: logging.WARNING,
+        0: logging.ERROR,
+    }
+    log_level = level_map[verbosity]
+    log_handlers = (logging.StreamHandler(sys.stdout),)
+
+    # use this when project is finished:
+    # if logfile:
+    #    if not os.path.isdir(os.path.basename(logfile)):
+    #        logger.info("Creating parent directory for logs")
+    #        os.mkdir(os.path.basename(logfile))
+    #
+    #    if os.path.isdir(logfile):
+    #        logfile_path = os.path.abspath(os.path.join(logfile, f"{__name__}.log"))
+    #    else:
+    #        logfile_path = os.path.abspath(logfile)
+    #
+    #    logger.info(f"Storing logs in {logfile_path}")
+    #    file_handler = logging.RotatingFileHandler(
+    #        filename=logfile_path,
+    #        maxBytes=(1024 * 1024 * 8),  # 8 MB
+    #        backupCount=4,
+    #    )
+    #    log_handlers += (file_handler, )
+
+    logging.basicConfig(
+        level=log_level,
+        format="[{asctime}] [{levelname:^8s}] [{name:^12s}] <{lineno:^4d}> -- {message:s}",
+        style="{",
+        datefmt="%H:%M:%S",
+        handlers=log_handlers,
+    )
 
     ############################# load config file #############################
 
@@ -127,54 +167,19 @@ if __name__ == "__main__":
         params["attention"] = c.getboolean("network", "attention")
         params["up_mode"] = c.get("network", "up_mode")
 
-    ############################# configure logger #############################
-
-    level_map = {
-        3: logging.DEBUG,
-        2: logging.INFO,
-        1: logging.WARNING,
-        0: logging.ERROR,
-    }
-    log_level = level_map[verbosity]
-    log_handlers = (logging.StreamHandler(sys.stdout),)
-
-    debug_mode = (verbosity == 3) or c.getboolean(
-        "general", "debug_mode", fallback=False)
-
-    # use this when project is finished:
-    # if logfile:
-    #    if not os.path.isdir(os.path.basename(logfile)):
-    #        logger.info("Creating parent directory for logs")
-    #        os.mkdir(os.path.basename(logfile))
-    #
-    #    if os.path.isdir(logfile):
-    #        logfile_path = os.path.abspath(os.path.join(logfile, f"{__name__}.log"))
-    #    else:
-    #        logfile_path = os.path.abspath(logfile)
-    #
-    #    logger.info(f"Storing logs in {logfile_path}")
-    #    file_handler = logging.RotatingFileHandler(
-    #        filename=logfile_path,
-    #        maxBytes=(1024 * 1024 * 8),  # 8 MB
-    #        backupCount=4,
-    #    )
-    #    log_handlers += (file_handler, )
-
-    logging.basicConfig(
-        level=log_level,
-        format="[{asctime}] [{levelname:^8s}] [{name:^12s}] <{lineno:^4d}> -- {message:s}",
-        style="{",
-        datefmt="%H:%M:%S",
-        handlers=log_handlers,
-    )
-
     ############################# configure wandb ##############################
 
-    if c.getboolean("general", "wandb_enable", fallback=False):
+    wandb_log = c.getboolean("general", "wandb_enable", fallback=False)
+    if wandb_log:
+        # only resume when loading a saved model
+        resume = "must" if params["load_epoch"] > 0 else None
+
         wandb.init(
             project=wandb_project_name,
-            name=params["run_name"],
+            # name=params["run_name"],
             notes=c.get("general", "wandb_notes", fallback=None),
+            id=params["run_name"],
+            resume=resume
         )
         logging.getLogger("wandb").setLevel(logging.DEBUG)
         # wandb.save(CONFIG_FILE)
@@ -183,14 +188,18 @@ if __name__ == "__main__":
 
     logger.info("Command parameters:")
     for k, v in params.items():
-        logger.info(f"{k:>18s}: {v}")
+        logger.info(f"{k:>24s}: {v}")
+        # load parameters to wandb
+        if wandb_log:
+            wandb.config[k] = v
+
         # TODO: AGGIUNGERE TUTTI I PARAMS NECESSARI DA PRINTARE
 
     ############################ init random seeds #############################
 
-    # torch.manual_seed(0)
-    # random.seed(0)
-    # np.random.seed(0)
+    torch.manual_seed(0)
+    random.seed(0)
+    np.random.seed(0)
 
     ############################ configure datasets ############################
 
@@ -388,7 +397,7 @@ if __name__ == "__main__":
         network = nn.DataParallel(network).to(device)
         torch.backends.cudnn.benchmark = True
 
-    if c.getboolean("general", "wandb_enable", fallback=False):
+    if wandb_log:
         wandb.watch(network)
 
     if params["initialize_weights"]:
@@ -451,7 +460,7 @@ if __name__ == "__main__":
     preds_output_dir = os.path.join(output_path, "predictions")
     os.makedirs(preds_output_dir, exist_ok=True)
 
-    trainer = unet.TrainingManager(
+    trainer = myTrainingManager(
         # training items
         training_step=lambda _: training_step(
             sampler,
@@ -461,7 +470,6 @@ if __name__ == "__main__":
             criterion,
             dataset_loader,
             ignore_frames=params["ignore_frames_loss"],
-            wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
         ),
         save_every=c.getint("training", "save_every", fallback=5000),
         # load_path=load_path,
@@ -476,7 +484,6 @@ if __name__ == "__main__":
             criterion=criterion,
             testing_datasets=testing_datasets,
             ignore_frames=params["ignore_frames_loss"],
-            wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=params["run_name"],
             output_dir=preds_output_dir,
             training_mode=True,
@@ -492,15 +499,24 @@ if __name__ == "__main__":
     if params["load_epoch"] != 0:
         trainer.load(params["load_epoch"])
 
+    # resume wandb run
+    # if wandb.run.resumed:
+    #     checkpoint = torch.load(wandb.restore(checkpoint_path))
+    #     network.load_state_dict(checkpoint['model_state_dict'])
+    #     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    #     epoch = checkpoint['epoch']
+    #     loss = checkpoint['loss']
+
     if c.getboolean("general", "training", fallback=False):  # Run training procedure on data
-        logger.info("Validate network before training")
-        trainer.run_validation()
+        # logger.info("Validate network before training")
+        # trainer.run_validation(wandb_log=wandb_log)
         logger.info("Starting training")
         trainer.train(
             params["train_epochs"],
             print_every=c.getint("training", "print_every", fallback=100),
+            wandb_log=wandb_log
         )
 
     if c.getboolean("general", "testing", fallback=False):  # Run final validation
         logger.info("Starting final validation")
-        trainer.run_validation()
+        trainer.run_validation(wandb_log=wandb_log)

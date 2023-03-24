@@ -62,7 +62,8 @@ class TrainingManager:
                  save_every=None,
                  save_path=None,
                  load_path=None,
-                 managed_objects=None, # List of tuples (object, filename_template, save_function, load_function)
+                 # List of tuples (object, filename_template, save_function, load_function)
+                 managed_objects=None,
                  test_function=None,
                  test_every=None,
                  plot_function=None,
@@ -120,7 +121,8 @@ class TrainingManager:
             self.load_path = self.save_path
 
         if self.load_path is None:
-            raise ValueError("`save_path` and `load_path` not set; cannot load a previous state")
+            raise ValueError(
+                "`save_path` and `load_path` not set; cannot load a previous state")
 
         for obj, filename_template, _, load_function in self.managed_objects:
             filename = filename_template.format(iter=niter)
@@ -141,7 +143,8 @@ class TrainingManager:
         test_output = self.test_function(self.iter)
 
         if "loss" in test_output:
-            logger.info("\tValidation loss: {:.4g}".format(test_output["loss"]))
+            logger.info("\tValidation loss: {:.4g}".format(
+                test_output["loss"]))
 
         _write_results(self.summary, "testing", test_output, self.iter)
 

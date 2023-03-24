@@ -16,6 +16,7 @@ https://github.com/kornia/kornia
 
 # add ignore index to focal loss implementation
 
+
 def one_hot(labels: torch.Tensor,
             num_classes: int,
             device: Optional[torch.device] = None,
@@ -136,28 +137,29 @@ def focal_loss(
             "input and target must be in the same device. Got: {} and {}" .format(
                 input.device, target.device))
 
-
     # create mask for ignore_index
     #print("IGNORE INDEX", ignore_index)
     ignore_mask = torch.where(target == ignore_index, 0, 1)
     #print("IGNORE MASK\n", ignore_mask, "\n", ignore_mask.shape)
-    target_copy = torch.clone(target).detach() # do not modify original target
-    temp_ignored_index = 0 # the corresponding pts will be ignored
+    target_copy = torch.clone(target).detach()  # do not modify original target
+    # convert target to torch.int64
+    target_copy = target_copy.to(torch.int64)
+    temp_ignored_index = 0  # the corresponding pts will be ignored
     target_copy[target_copy == ignore_index] = temp_ignored_index
     #print("TARGET COPY", target_copy)
     num_ignored = torch.count_nonzero(ignore_mask)
     #print("NUM IGNORED", num_ignored)
 
-
     if alpha == None:
         alpha_mask = 1.
     else:
         # create alpha mask that will multiply focal loss
-        assert len(alpha) == input.shape[1], "alpha does not contain a weight per class"
+        assert len(
+            alpha) == input.shape[1], "alpha does not contain a weight per class"
         alpha_mask = torch.zeros(target.shape)
         for idx, alpha_t in enumerate(alpha):
-            alpha_mask[target==idx] = alpha_t
-        #print(alpha_mask)
+            alpha_mask[target == idx] = alpha_t
+        # print(alpha_mask)
 
     alpha_mask = alpha_mask.to(target.device)
 
@@ -170,7 +172,6 @@ def focal_loss(
         target_copy, num_classes=input.shape[1],
         device=input.device, dtype=input.dtype)
     #print("TARGET ONE HOT", target_one_hot, target_one_hot.shape)
-
 
     # compute the actual focal loss
     weight = torch.pow(-input_soft + 1., gamma)
@@ -518,9 +519,10 @@ def lovasz_softmax_3d(probas, labels, classes='present', per_image=False, ignore
     """
     if per_image:
         loss = mean(lovasz_losses.lovasz_softmax_flat(*flatten_probas_3d(prob.unsqueeze(0), lab.unsqueeze(0), ignore), classes=classes)
-                          for prob, lab in zip(probas, labels))
+                    for prob, lab in zip(probas, labels))
     else:
-        loss = lovasz_losses.lovasz_softmax_flat(*flatten_probas_3d(probas, labels, ignore), classes=classes)
+        loss = lovasz_losses.lovasz_softmax_flat(
+            *flatten_probas_3d(probas, labels, ignore), classes=classes)
     return loss
 
 
@@ -533,7 +535,8 @@ def flatten_probas_3d(probas, labels, ignore=None):
         B, D, H, W = probas.size()
         probas = probas.view(B, 1, D, H, W)
     B, C, D, H, W = probas.size()
-    probas = probas.permute(0, 2, 3, 4, 1).contiguous().view(-1, C)  # B * D * H * W, C = P, C
+    probas = probas.permute(0, 2, 3, 4, 1).contiguous(
+    ).view(-1, C)  # B * D * H * W, C = P, C
     labels = labels.contiguous().view(-1)
     if ignore is None:
         return probas, labels
@@ -544,19 +547,19 @@ def flatten_probas_3d(probas, labels, ignore=None):
 
 
 class LovaszSoftmax3d(nn.Module):
-        """
-        Criterion that computes Lovasz-Softmax loss on 3-dimensional samples.
-        """
+    """
+    Criterion that computes Lovasz-Softmax loss on 3-dimensional samples.
+    """
 
-        def __init__(self, classes: str ='present', per_image=False, ignore=None):
-            super(LovaszSoftmax3d, self).__init__()
-            self.classes = classes
-            self.per_image = per_image
-            self.ignore = ignore
+    def __init__(self, classes: str = 'present', per_image=False, ignore=None):
+        super(LovaszSoftmax3d, self).__init__()
+        self.classes = classes
+        self.per_image = per_image
+        self.ignore = ignore
 
-        def forward(self, probas: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-            return lovasz_softmax_3d(
-                probas, labels, self.classes, self.per_image, self.ignore)
+    def forward(self, probas: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        return lovasz_softmax_3d(
+            probas, labels, self.classes, self.per_image, self.ignore)
 
 
 ################### FOCAL & LOVASZ-SOFTMAX LOSS COMBINATIONS ###################
@@ -572,9 +575,9 @@ class SumFocalLovasz(nn.Module):
     reduction:  focal_loss redution
     '''
 
-    def __init__(self, classes ='present', per_image = False, ignore = None,
-                 alpha = None, gamma = 2.0, reduction = 'none',
-                 eps = 1e-8, w = 0.5):
+    def __init__(self, classes='present', per_image=False, ignore=None,
+                 alpha=None, gamma=2.0, reduction='none',
+                 eps=1e-8, w=0.5):
 
         super(SumFocalLovasz, self).__init__()
         self.classes = classes
@@ -596,6 +599,7 @@ class SumFocalLovasz(nn.Module):
                                               ignore=self.ignore)
 
     def forward(self, probas: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        loss = self.w * self.focal_loss(probas, labels) + (1-self.w) * self.lovasz_softmax(probas, labels)
+        loss = self.w * self.focal_loss(probas, labels) + \
+            (1-self.w) * self.lovasz_softmax(probas, labels)
 
         return loss

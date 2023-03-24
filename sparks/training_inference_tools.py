@@ -5,7 +5,6 @@ Functions that are used during the training of the neural network
 import logging
 import math
 import time
-from collections import Counter
 
 import numpy as np
 import torch
@@ -13,19 +12,12 @@ import wandb
 from data_processing_tools import (
     class_to_nb,
     empty_marginal_frames,
-    empty_marginal_frames_from_coords,
-    get_argmax_segmented_output,
     get_event_instances_class,
-    get_processed_result,
-    simple_nonmaxima_suppression,
-    sparks_connectivity_mask,
+    get_processed_result
 )
-from in_out_tools import write_colored_sparks_on_disk, write_videos_on_disk
+from in_out_tools import write_videos_on_disk
 from metrics_tools import (
-    compute_f_score,
     compute_iou,
-    compute_puff_wave_metrics,
-    correspondences_precision_recall,
     get_confusion_matrix,
     get_score_matrix,
 )
@@ -34,13 +26,111 @@ from torch import nn
 from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 
 from metrics_tools import get_metrics_from_cm
+import unet
+from unet.trainer import _write_results
 
 logger = logging.getLogger(__name__)
 
 
+########################### custom training manager ############################
+
+
+class myTrainingManager(unet.TrainingManager):
+
+    def run_validation(self, wandb_log=False):
+
+        if self.test_function is None:
+            return
+
+        logger.info("Validating network at iteration {}...".format(self.iter))
+
+        test_output = self.test_function(self.iter)
+
+        if wandb_log:
+            wandb.log({m: val for m, val in test_output.items()
+                       if 'confusion_matrix' not in m})
+            wandb.log({'Step_val': self.iter})
+
+        logger.info("Metrics:")
+        for metric_name, metric_value in test_output.items():
+            if 'confusion_matrix' in metric_name:
+                with np.printoptions(precision=0, suppress=True):
+                    logger.info(f"\t{metric_name}:\n{metric_value:}")
+            else:
+                logger.info(f"\t{metric_name}: {metric_value:.4g}")
+
+        # if "loss" in test_output:
+        #     logger.info("\tValidation loss: {:.4g}".format(
+        #         test_output["loss"]))
+
+        _write_results(self.summary, "testing", test_output, self.iter)
+
+    def train(self, num_iters, print_every=0, maxtime=np.inf, wandb_log=False):
+
+        tic = time.process_time()
+        time_elapsed = 0
+
+        if wandb_log:
+            loss_sum = 0
+
+        for _ in range(num_iters):
+
+            step_output = self.training_step(self.iter)
+
+            if wandb_log:
+                loss_sum += step_output["loss"]
+
+            time_elapsed = time.process_time() - tic
+
+            # logger.info(info)
+            if print_every and self.iter % print_every == 0:
+                # Move loss value to cpu
+                step_output["loss"] = step_output["loss"].item()
+
+                # Register data
+                _write_results(self.summary, "training",
+                               step_output, self.iter)
+
+                # Check for nan
+                loss = step_output["loss"]
+                if np.any(np.isnan(loss)):
+                    logger.error("Last loss is nan! Training diverged!")
+                    break
+
+                # Log training loss
+                logger.info("Iteration {}...".format(self.iter))
+                logger.info("\tTraining loss: {:.4g}".format(loss))
+                logger.info("\tTime elapsed: {:.2f}s".format(time_elapsed))
+
+                # Log to wandb
+                if wandb_log:
+                    wandb.log({"U-Net training loss": loss_sum.item() / print_every,
+                               "Step_": self.iter})
+                    loss_sum = 0
+
+            self.iter += 1
+
+            # Validation
+            if self.test_every and self.iter % self.test_every == 0:
+                self.run_validation(wandb_log=wandb_log)
+
+            # Plot
+            if self.plot_function and self.plot_every and self.iter % self.plot_every == 0:
+                self.plot_function(self.iter, self.summary)
+
+            # Save model and solver
+            if self.save_every and self.iter % self.save_every == 0:
+                self.save()
+
+            if time_elapsed > maxtime:
+                logger.info("Maximum time reached!")
+                break
+
 ################################ training step #################################
 
 # Make one step of the training (update parameters and compute loss)
+
+
 def training_step(
     sampler,
     network,
@@ -49,7 +139,6 @@ def training_step(
     criterion,
     dataset_loader,
     ignore_frames,
-    wandb_log,
 ):
     # start = time.time()
 
@@ -76,13 +165,10 @@ def training_step(
     loss.backward()
     optimizer.step()
 
-    if wandb_log:
-        wandb.log({"U-Net training loss": loss.item()})
-
     # end = time.time()
     # print(f"Runtime for 1 training step: {end-start}")
 
-    return {"loss": loss.item()}
+    return {"loss": loss}
 
 
 # Iterator (?) over the dataset
@@ -342,7 +428,6 @@ def test_function(
     criterion,
     ignore_frames,
     testing_datasets,
-    wandb_log,
     training_name,
     output_dir,
     training_mode=True,
@@ -359,7 +444,6 @@ def test_function(
     criterion:          loss function to be computed on the validation set
     testing_datasets:   list of SparkDataset instances
     ignore_frames:      frames ignored by the loss function
-    wandb_log:          logger to store results on wandb
     training_name:      training name used to save predictions on disk
     output_dir:         directory where the predicted movies are saved
     training_mode:      bool, if True, separate events using a simpler algorithm
@@ -700,14 +784,6 @@ def test_function(
         y_true=ys_concat.flatten(), y_pred=preds_concat.flatten(), labels=[0, 1, 2, 3]
     )
 
-    if wandb_log:
-        wandb.log({m: val for m, val in metrics.items()
-                  if 'confusion_matrix' not in m})
-
     logger.debug(f"Time to reduce metrics: {time.time() - start:.2f} s")
-
-    logger.info("Metrics:")
-    for metric_name, metric_value in metrics.items():
-        logger.info(f"\t{metric_name}: {metric_value}")
 
     return metrics

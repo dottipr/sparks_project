@@ -30,16 +30,16 @@ Class label filenames are: XX_class_label.tif
 Event label filenames are: XX_event_label.tif
 '''
 
+
 class SparkDataset(Dataset):
 
     def __init__(self, base_path, sample_ids, testing,
-                 step = 4, duration = 16, smoothing = False,
-                 resampling = False, resampling_rate = 150,
-                 remove_background = 'average', temporal_reduction = False,
-                 num_channels = 1, normalize_video = 'chunk',
-                 only_sparks = False, sparks_type = 'peaks', ignore_index=4,
-                 ignore_frames = 0, gt_available = True, inference=None):
-
+                 step=4, duration=16, smoothing=False,
+                 resampling=False, resampling_rate=150,
+                 remove_background='average', temporal_reduction=False,
+                 num_channels=1, normalize_video='chunk',
+                 only_sparks=False, sparks_type='peaks', ignore_index=4,
+                 ignore_frames=0, gt_available=True, inference=None):
         r'''
         Dataset class for SR-calcium releases segmented dataset.
 
@@ -78,10 +78,11 @@ class SparkDataset(Dataset):
         self.base_path = base_path
 
         # physiological params (for spark peaks results)
-        self.pixel_size = 0.2 # 1 pixel = 0.2 um x 0.2 um
-        self.min_dist_xy = round(1.8 / self.pixel_size) # min distance in space
-        self.time_frame = 6.8 # 1 frame = 6.8 ms
-        self.min_dist_t = round(20 / self.time_frame) # min distance in time
+        self.pixel_size = 0.2  # 1 pixel = 0.2 um x 0.2 um
+        # min distance in space
+        self.min_dist_xy = round(1.8 / self.pixel_size)
+        self.time_frame = 6.8  # 1 frame = 6.8 ms
+        self.min_dist_t = round(20 / self.time_frame)  # min distance in time
 
         # dataset parameters
         self.testing = testing
@@ -98,20 +99,19 @@ class SparkDataset(Dataset):
         # applied to the movie
         if inference is not None:
             # check that dataset contains a single video
-            assert len(sample_ids)==1, \
-                   f"Dataset set to inference mode, but it contains "\
-                   f"{len(sample_ids)} samples: {sample_ids}."
+            assert len(sample_ids) == 1, \
+                f"Dataset set to inference mode, but it contains "\
+                f"{len(sample_ids)} samples: {sample_ids}."
 
             # check that inference mode is valid
             assert inference in ['overlap', 'average'], \
-                   "If testing, select one inference mode from "\
-                   "'overlap' and 'average'."
+                "If testing, select one inference mode from "\
+                "'overlap' and 'average'."
 
             self.video_name = sample_ids[0]
             self.pad = 0
             self.inference = inference
 
-        
         self.temporal_reduction = temporal_reduction
         if self.temporal_reduction:
             self.num_channels = num_channels
@@ -121,12 +121,12 @@ class SparkDataset(Dataset):
 
         # get video samples
         self.data = list(load_movies_ids(data_folder=self.base_path,
-                                    ids=sample_ids,
-                                    names_available=True,
-                                    movie_names="video"
-                                    ).values())
+                                         ids=sample_ids,
+                                         names_available=True,
+                                         movie_names="video"
+                                         ).values())
         self.data = [torch.from_numpy(movie.astype('int'))
-                     for movie in self.data] # int32
+                     for movie in self.data]  # int32
 
         if inference is not None:
             # need to keep track of movie duration, in case it is shorter than
@@ -135,24 +135,24 @@ class SparkDataset(Dataset):
 
         if self.testing:
             assert self.gt_available, \
-                   "If testing, ground truth must be available."
-            assert len(sample_ids)==1, \
-                   f"Dataset set to testing mode, but it contains "\
-                   f"{len(sample_ids)} samples: {sample_ids}."
+                "If testing, ground truth must be available."
+            assert len(sample_ids) == 1, \
+                f"Dataset set to testing mode, but it contains "\
+                f"{len(sample_ids)} samples: {sample_ids}."
 
         # get annotation masks, if ground truth is available
         if self.gt_available:
             # preprocess annotations if necessary
             assert self.sparks_type in ['peaks', 'small', 'raw'], \
-                   "Sparks type should be 'peaks', 'small' or 'raw'."
+                "Sparks type should be 'peaks', 'small' or 'raw'."
 
             if self.sparks_type == 'raw':
                 # get class label masks
                 self.annotations = list(load_annotations_ids(
-                                            data_folder=self.base_path,
-                                            ids=sample_ids,
-                                            mask_names="class_label"
-                                            ).values())
+                    data_folder=self.base_path,
+                    ids=sample_ids,
+                    mask_names="class_label"
+                ).values())
                 # no preprocessing
 
             elif self.sparks_type == 'peaks':
@@ -164,13 +164,13 @@ class SparkDataset(Dataset):
                 # with undefined label (4)
 
                 self.annotations = list(load_annotations_ids(
-                                            data_folder=self.base_path,
-                                            ids=sample_ids,
-                                            mask_names="class_label_small_sparks"
-                                            ).values())
+                    data_folder=self.base_path,
+                    ids=sample_ids,
+                    mask_names="class_label_small_sparks"
+                ).values())
 
             self.annotations = [torch.from_numpy(mask)
-                                for mask in self.annotations] # int8
+                                for mask in self.annotations]  # int8
 
             # if testing, load the event label masks too (for peaks detection)
             # and compute the location of the spark peaks
@@ -183,53 +183,54 @@ class SparkDataset(Dataset):
                 # if testing, the dataset contain a single video
 
                 self.events = list(load_annotations_ids(
-                                        data_folder=self.base_path,
-                                        ids=sample_ids,
-                                        mask_names="event_label"
-                                        ).values())[0]
-                self.events = torch.from_numpy(self.events) # int8
+                    data_folder=self.base_path,
+                    ids=sample_ids,
+                    mask_names="event_label"
+                ).values())[0]
+                self.events = torch.from_numpy(self.events)  # int8
 
-                logger.info("Computing spark peaks...")
-                spark_mask = np.where(self.annotations[0]==1,
+                logger.debug("Computing spark peaks...")
+                spark_mask = np.where(self.annotations[0] == 1,
                                       self.events, 0)
                 self.coords_true = detect_spark_peaks(movie=self.data[0],
                                                       spark_mask=spark_mask,
                                                       sigma=2,
                                                       max_filter_size=10)
-                logger.info(f"Sample {self.video_name} contains {len(self.coords_true)} sparks.")
+                logger.debug(
+                    f"Sample {self.video_name} contains {len(self.coords_true)} sparks.")
 
         # preprocess videos if necessary
         if self.remove_background == 'average':
-            self.data = [self.remove_avg_background(video) for video in self.data]
+            self.data = [self.remove_avg_background(
+                video) for video in self.data]
 
         if smoothing == '2d':
-            _smooth_filter = torch.tensor(([1/16,1/16,1/16],
-                                           [1/16,1/2,1/16],
-                                           [1/16,1/16,1/16]))
+            _smooth_filter = torch.tensor(([1/16, 1/16, 1/16],
+                                           [1/16, 1/2, 1/16],
+                                           [1/16, 1/16, 1/16]))
             self.data = [torch.from_numpy([convolve2d(frame, _smooth_filter,
-                                            mode = 'same', boundary = 'symm')
-                                            for frame in video])
-                                            for video in self.data]
+                                                      mode='same', boundary='symm')
+                                           for frame in video])
+                         for video in self.data]
         if smoothing == '3d':
-            _smooth_filter = 1/52*torch.ones((3,3,3))
-            _smooth_filter[1,1,1] = 1/2
-            self.data = [convolve(video, _smooth_filter) for video in self.data]
+            _smooth_filter = 1/52*torch.ones((3, 3, 3))
+            _smooth_filter[1, 1, 1] = 1/2
+            self.data = [convolve(video, _smooth_filter)
+                         for video in self.data]
 
         if resampling:
             self.fps = [self.get_fps(file) for file in self.files]
             self.data = [self.video_spline_interpolation(video, video_path,
                                                          resampling_rate)
-                            for video,video_path in zip(self.data,self.files)]
+                         for video, video_path in zip(self.data, self.files)]
 
         if self.normalize_video == 'movie':
             self.data = [(video - video.min()) / (video.max() - video.min())
                          for video in self.data]
         elif self.normalize_video == 'abs_max':
-            absolute_max = np.iinfo(np.uint16).max # 65535
+            absolute_max = np.iinfo(np.uint16).max  # 65535
             self.data = [(video-video.min())/(absolute_max-video.min())
                          for video in self.data]
-
-
 
         # pad movies shorter than chunk duration with zeros before beginning and
         # after end
@@ -249,7 +250,6 @@ class SparkDataset(Dataset):
         # compute chunks indices
         self.lengths, self.tot_blocks, self.preceding_blocks = self.compute_chunks_indices()
 
-
         # if using temporal reduction, shorten the annotations duration
         if self.temporal_reduction and self.gt_available:
             self.annotations = [self.shrink_mask(mask)
@@ -260,19 +260,19 @@ class SparkDataset(Dataset):
         # if training with sparks only, set puffs and waves to 0
         if self.only_sparks and self.gt_available:
             logger.info("Removing puff and wave annotations in training set")
-            self.annotations = [torch.where(torch.logical_or(mask==1, mask==4),
-                                         mask, 0) for mask in self.annotations]
+            self.annotations = [torch.where(torch.logical_or(mask == 1, mask == 4),
+                                            mask, 0) for mask in self.annotations]
 
     def pad_short_video(self, video, padding_value=0):
         # pad videos shorter than chunk duration with zeros on both sides
         if video.shape[0] < self.duration:
             pad = self.duration - video.shape[0]
-            video = F.pad(video,(0,0,0,0,pad//2,pad//2+pad%2),
-                                'constant',value=padding_value)
+            video = F.pad(video, (0, 0, 0, 0, pad//2, pad//2+pad % 2),
+                          'constant', value=padding_value)
 
             assert video.shape[0] == self.duration, "padding is wrong"
 
-            logger.info("Added padding to short video")
+            logger.debug("Added padding to short video")
 
         return video
 
@@ -282,20 +282,22 @@ class SparkDataset(Dataset):
         length = video.shape[0]
         if (((length-self.duration)/self.step) % 1 != 0):
             pad = (self.duration
-                        + self.step*(1+(length-self.duration)//self.step)
-                        - length)
+                   + self.step*(1+(length-self.duration)//self.step)
+                   - length)
 
             # if testing, store the pad lenght as class attribute
             if self.testing:
                 self.pad = pad
 
-            video = F.pad(video,(0,0,0,0,pad//2,pad//2+pad%2),
-                                'constant',value=padding_value)
+            video = F.pad(video, (0, 0, 0, 0, pad//2, pad//2+pad % 2),
+                          'constant', value=padding_value)
             length = video.shape[0]
             if not mask:
-                logger.info(f"Added padding of {pad} frames to video with unsuitable duration")
+                logger.debug(
+                    f"Added padding of {pad} frames to video with unsuitable duration")
 
-        assert ((length-self.duration)/self.step) % 1 == 0, "padding at end of video is wrong"
+        assert ((length-self.duration) /
+                self.step) % 1 == 0, "padding at end of video is wrong"
 
         return video
 
@@ -306,7 +308,7 @@ class SparkDataset(Dataset):
                          for length in lengths]
         blocks_number = torch.tensor(blocks_number)
         # number of blocks in preceding videos in data :
-        preceding_blocks = torch.roll(torch.cumsum(blocks_number, dim=0),1)
+        preceding_blocks = torch.roll(torch.cumsum(blocks_number, dim=0), 1)
         tot_blocks = preceding_blocks[0].detach().item()
         preceding_blocks[0] = 0
 
@@ -316,13 +318,14 @@ class SparkDataset(Dataset):
         return self.tot_blocks
 
     def __getitem__(self, idx):
-        if idx < 0 : idx = self.__len__() + idx
+        if idx < 0:
+            idx = self.__len__() + idx
 
-        #index of video containing chunk idx
+        # index of video containing chunk idx
         vid_id = torch.where(self.preceding_blocks == max([y
-                          for y in self.preceding_blocks
-                          if y <= idx]))[0][0]
-        #index of chunk idx in video vid_id
+                                                           for y in self.preceding_blocks
+                                                           if y <= idx]))[0][0]
+        # index of chunk idx in video vid_id
         chunk_id = idx - self.preceding_blocks[vid_id]
 
         chunks = self.get_chunks(self.lengths[vid_id],
@@ -340,7 +343,7 @@ class SparkDataset(Dataset):
         if self.normalize_video == 'chunk':
             chunk = (chunk - chunk.min()) / (chunk.max() - chunk.min())
         assert chunk.min() >= 0 and chunk.max() <= 1, \
-               "chunk values not normalized between 0 and 1"
+            "chunk values not normalized between 0 and 1"
         #print("min and max value in chunk:", chunk.min(), chunk.max())
 
         #print("vid id", vid_id)
@@ -350,11 +353,11 @@ class SparkDataset(Dataset):
         if self.gt_available:
             if self.temporal_reduction:
                 assert self.lengths[vid_id] % self.num_channels == 0, \
-                       "video length must be a multiple of num_channels"
+                    "video length must be a multiple of num_channels"
                 assert self.step % self.num_channels == 0, \
-                       "step must be a multiple of num_channels"
+                    "step must be a multiple of num_channels"
                 assert self.duration % self.num_channels == 0, \
-                        "duration must be multiple of num_channels"
+                    "duration must be multiple of num_channels"
 
                 masks_chunks = self.get_chunks(self.lengths[vid_id]//self.num_channels,
                                                self.step//self.num_channels,
@@ -373,27 +376,27 @@ class SparkDataset(Dataset):
         # remove average background
 
         if torch.is_tensor(video):
-            avg = torch.mean(video, axis = 0)
+            avg = torch.mean(video, axis=0)
             return torch.add(video, -avg)
         else:
-            avg = np.mean(video, axis = 0)
+            avg = np.mean(video, axis=0)
             return np.add(video, -avg)
 
     def get_chunks(self, video_length, step, duration):
         n_blocks = ((video_length-duration)//(step))+1
 
-        return (torch.arange(duration)[None,:]
-                + step*torch.arange(n_blocks)[:,None])
-
+        return (torch.arange(duration)[None, :]
+                + step*torch.arange(n_blocks)[:, None])
 
     ###################### functions for video resampling ######################
 
     def get_times(self, video_path):
         # get times at which video frames where sampled
         description = Image.open(video_path).tag[270][0].split('\r\n')
-        description  = [line.split('\t') for line in description]
-        description = [[int(i) if i.isdigit() else i for i in line] for line in description]
-        description = [d for d in  description if isinstance(d[0], int)]
+        description = [line.split('\t') for line in description]
+        description = [[int(i) if i.isdigit() else i for i in line]
+                       for line in description]
+        description = [d for d in description if isinstance(d[0], int)]
         return np.array([float(line[1]) for line in description])
 
     def get_fps(self, video_path):
@@ -415,7 +418,6 @@ class SparkDataset(Dataset):
 
     ##################### functions for temporal reduction #####################
 
-
     def shrink_mask(self, mask):
         # input is an annotation mask with the number of channels of the unet
         # output is a shrinked mask where :
@@ -427,21 +429,21 @@ class SparkDataset(Dataset):
         # the input
 
         assert mask.shape[0] % self.num_channels == 0, \
-        "in shrink_mask the duration of the mask is not a multiple of num_channels"
+            "in shrink_mask the duration of the mask is not a multiple of num_channels"
 
         # get subtensor of duration 'self.num_channels'
         sub_masks = np.split(mask, mask.shape[0]//self.num_channels)
 
-        #print(sub_masks[0].shape)
-        #print(len(sub_masks))
+        # print(sub_masks[0].shape)
+        # print(len(sub_masks))
 
         new_mask = []
         # for each subtensor get a single frame
         for sub_mask in sub_masks:
-            new_frame = np.array([[self.get_new_voxel_label(sub_mask[:,y,x])
+            new_frame = np.array([[self.get_new_voxel_label(sub_mask[:, y, x])
                                    for x in range(sub_mask.shape[2])]
-                                   for y in range(sub_mask.shape[1])])
-            #print(new_frame.shape)
+                                  for y in range(sub_mask.shape[1])])
+            # print(new_frame.shape)
             new_mask.append(new_frame)
 
         new_mask = np.stack(new_mask)
@@ -453,7 +455,7 @@ class SparkDataset(Dataset):
         # {0, i}, {i} -> i, i = 1,2,3
         # {0, 1, i}, {1, i} -> 1, i = 2,3
         # {0, 2 ,3}, {2, 3} -> 3
-        #print(voxel_seq)
+        # print(voxel_seq)
 
         if np.max(voxel_seq == 0):
             return 0
