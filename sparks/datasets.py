@@ -175,10 +175,6 @@ class SparkDataset(Dataset):
             # if testing, load the event label masks too (for peaks detection)
             # and compute the location of the spark peaks
 
-            # TODO: PROBABILMENTE DA CAMBIARE IN FUTURO PERCHÉ QUANDO CAMBIERÒ
-            # LA TEST FCT NON CI SARÀ PIÙ BISOGNO DI USARE I PEAKS DEGLI SPARKS
-            # (FORSE!!)
-
             if self.testing:
                 # if testing, the dataset contain a single video
 
@@ -342,8 +338,8 @@ class SparkDataset(Dataset):
 
         if self.normalize_video == 'chunk':
             chunk = (chunk - chunk.min()) / (chunk.max() - chunk.min())
-        assert chunk.min() >= 0 and chunk.max() <= 1, \
-            "chunk values not normalized between 0 and 1"
+        # assert chunk.min() >= 0 and chunk.max() <= 1, \
+        # "chunk values not normalized between 0 and 1"
         #print("min and max value in chunk:", chunk.min(), chunk.max())
 
         #print("vid id", vid_id)

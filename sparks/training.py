@@ -38,6 +38,7 @@ if __name__ == "__main__":
     # General params
     logfile = None  # change this when publishing finished project on github
     verbosity = 2
+    debug_mode = False
     wandb_project_name = "sparks2"  # use new wandb project name with new test_function
     output_relative_path = "runs"  # directory where output, saved params and
     # testing results are saved
@@ -130,6 +131,7 @@ if __name__ == "__main__":
     params["num_workers"] = c.getint("dataset", "num_workers", fallback=1)
     params["data_duration"] = c.getint("dataset", "data_duration")
     params["data_step"] = c.getint("dataset", "data_step")
+    params["testing_data_step"] = c.getint("testing", "data_step")
     params["data_smoothing"] = c.get(
         "dataset", "data_smoothing", fallback="2d")
     params["norm_video"] = c.get("dataset", "norm_video", fallback="chunk")
@@ -313,7 +315,7 @@ if __name__ == "__main__":
             sample_ids=[sample_id],
             testing=True,
             smoothing=params["data_smoothing"],
-            step=params["data_step"],
+            step=params["testing_data_step"],
             duration=params["data_duration"],
             remove_background=params["remove_background"],
             temporal_reduction=params["temporal_reduction"],

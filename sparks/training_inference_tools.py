@@ -48,8 +48,8 @@ class myTrainingManager(unet.TrainingManager):
 
         if wandb_log:
             wandb.log({m: val for m, val in test_output.items()
-                       if 'confusion_matrix' not in m})
-            wandb.log({'Step_val': self.iter})
+                       if 'confusion_matrix' not in m}, step=self.iter)
+            #wandb.log({'Step_val': self.iter}, step=self.iter)
 
         logger.info("Metrics:")
         for metric_name, metric_value in test_output.items():
@@ -105,7 +105,9 @@ class myTrainingManager(unet.TrainingManager):
                 # Log to wandb
                 if wandb_log:
                     wandb.log({"U-Net training loss": loss_sum.item() / print_every,
-                               "Step_": self.iter})
+                               # "Step_": self.iter
+                               },
+                              step=self.iter)
                     loss_sum = 0
 
             self.iter += 1

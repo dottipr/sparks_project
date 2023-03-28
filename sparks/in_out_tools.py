@@ -17,7 +17,7 @@ from metrics_tools import correspondences_precision_recall
 from PIL import Image
 from visualization_tools import (
     add_colored_classes_to_video,
-    add_colored_locations_to_video,
+    add_colored_instances_to_video,
     add_colored_paired_sparks_to_video,
 )
 
@@ -292,14 +292,17 @@ def write_videos_on_disk(
             path, out_name_root + "puffs.tif"), preds[3])
 
 
-def write_colored_class_videos_on_disk(
+def write_colored_events_videos_on_disk(
     movie,
-    classes_mask,
+    events_mask,
     out_dir,
     movie_fn,
     transparency=50,
     ignore_frames=0,
     white_bg=False,
+    instances=False,
+    label_contours=False,
+    label_mask=None
 ):
     r"""
     Given a movie and a class segmentation (labels or preds), paste colored
@@ -309,16 +312,35 @@ def write_colored_class_videos_on_disk(
 
     Set white_bg == True to save colored segmentation on white background.
 
+    If instances == True, events_maks is considered as a mask of instances
+    otherwise it is considered as a mask of classes.
+
+    If label_contours == True, the contours of the labels will be drawn on the
+    original movie, togheter with the colored predictions.
+
     Color used:
     sparks: green
     puffs: red
     waves: purple
     ignore regions: grey
     """
+    if instances:
+        colored_movie = add_colored_instances_to_video(movie=movie,
+                                                       instances_mask=events_mask,
+                                                       transparency=transparency,
+                                                       ignore_frames=ignore_frames,
+                                                       white_bg=white_bg)
+    else:
+        if label_contours:
+            assert label_mask is not None, \
+                "label_mask must be provided when label_contours is True"
 
-    colored_movie = add_colored_classes_to_video(
-        movie, classes_mask, transparency, ignore_frames, white_bg
-    )
+        colored_movie = add_colored_classes_to_video(movie=movie,
+                                                     classes_mask=events_mask,
+                                                     transparency=transparency,
+                                                     ignore_frames=ignore_frames,
+                                                     white_bg=white_bg,
+                                                     label_mask=label_mask)
 
     imageio.volwrite(os.path.join(out_dir, movie_fn + ".tif"), colored_movie)
 
