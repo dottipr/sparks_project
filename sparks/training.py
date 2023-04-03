@@ -123,6 +123,10 @@ if __name__ == "__main__":
     if params["criterion"] == "sum_losses":
         params["w"] = c.getfloat("training", "w", fallback=0.5)
     params["cuda"] = c.getboolean("training", "cuda")
+    params["scheduler"] = c.get("training", "scheduler", fallback=None)
+    if params["scheduler"] == "step":
+        params["scheduler_step_size"] = c.getint("training", "step_size")
+        params["scheduler_gamma"] = c.getfloat("training", "gamma")
 
     # dataset params
     params["relative_path"] = c.get("dataset", "relative_path")
@@ -380,6 +384,7 @@ if __name__ == "__main__":
             out_channels=num_classes,
             n_blocks=params["unet_steps"] + 1,
             start_filts=params["first_layer_channels"],
+            up_mode=params["up_mode"],
             # up_mode = 'transpose', # TESTARE DIVERSE POSSIBILTÀ
             # up_mode='resizeconv_nearest',  # Enable to avoid checkerboard artifacts
             merge_mode="concat",  # Default, dicono che funziona meglio
@@ -409,6 +414,16 @@ if __name__ == "__main__":
     ########################### initialize training ############################
 
     optimizer = optim.Adam(network.parameters(), lr=params["lr_start"])
+
+    if params["scheduler"] == "step":
+        scheduler = optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=params["scheduler_step_size"],
+            gamma=params["scheduler_gamma"],
+        )
+    else:
+        scheduler = None
+
     network.train()
 
     output_path = os.path.join(output_relative_path, params["run_name"])
@@ -462,23 +477,27 @@ if __name__ == "__main__":
     preds_output_dir = os.path.join(output_path, "predictions")
     os.makedirs(preds_output_dir, exist_ok=True)
 
+    # generate dict of managed objects
+    managed_objects = {"network": network, "optimizer": optimizer}
+    if scheduler is not None:
+        managed_objects["scheduler"] = scheduler
+
     trainer = myTrainingManager(
         # training items
         training_step=lambda _: training_step(
-            sampler,
-            network,
-            optimizer,
-            device,
-            criterion,
-            dataset_loader,
+            sampler=sampler,
+            network=network,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            device=device,
+            criterion=criterion,
+            dataset_loader=dataset_loader,
             ignore_frames=params["ignore_frames_loss"],
         ),
         save_every=c.getint("training", "save_every", fallback=5000),
         # load_path=load_path,
         save_path=output_path,
-        managed_objects=unet.managed_objects(
-            {"network": network, "optimizer": optimizer}
-        ),
+        managed_objects=managed_objects,
         # testing items
         test_function=lambda _: test_function(
             network=network,

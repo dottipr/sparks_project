@@ -103,7 +103,7 @@ class myTrainingManager(unet.TrainingManager):
                 logger.info("\tTime elapsed: {:.2f}s".format(time_elapsed))
 
                 # Log to wandb
-                if wandb_log:
+                if wandb_log and self.iter > 0:
                     wandb.log({"U-Net training loss": loss_sum.item() / print_every,
                                # "Step_": self.iter
                                },
@@ -137,6 +137,7 @@ def training_step(
     sampler,
     network,
     optimizer,
+    scheduler,
     device,
     criterion,
     dataset_loader,
@@ -166,6 +167,15 @@ def training_step(
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
+
+    if scheduler is not None:
+        lr = scheduler.get_last_lr()[0]
+        logger.debug(f"Current learning rate: {lr}")
+        scheduler.step()
+
+        new_lr = scheduler.get_last_lr()[0]
+        if new_lr != lr:
+            logger.info(f"Learning rate changed to {new_lr}")
 
     # end = time.time()
     # print(f"Runtime for 1 training step: {end-start}")
