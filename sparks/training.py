@@ -497,7 +497,7 @@ if __name__ == "__main__":
         save_every=c.getint("training", "save_every", fallback=5000),
         # load_path=load_path,
         save_path=output_path,
-        managed_objects=managed_objects,
+        managed_objects=unet.managed_objects(managed_objects),
         # testing items
         test_function=lambda _: test_function(
             network=network,

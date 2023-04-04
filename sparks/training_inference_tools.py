@@ -4,6 +4,7 @@ Functions that are used during the training of the neural network
 
 import logging
 import math
+import os
 import time
 
 import numpy as np
@@ -103,8 +104,8 @@ class myTrainingManager(unet.TrainingManager):
                 logger.info("\tTime elapsed: {:.2f}s".format(time_elapsed))
 
                 # Log to wandb
-                if wandb_log and self.iter > 0:
-                    wandb.log({"U-Net training loss": loss_sum.item() / print_every,
+                if wandb_log:
+                    wandb.log({"U-Net training loss": (loss_sum.item() / print_every if self.iter > 0 else loss_sum.item()),
                                # "Step_": self.iter
                                },
                               step=self.iter)
@@ -127,6 +128,7 @@ class myTrainingManager(unet.TrainingManager):
             if time_elapsed > maxtime:
                 logger.info("Maximum time reached!")
                 break
+
 
 ################################ training step #################################
 
