@@ -32,9 +32,9 @@ BASEDIR = os.path.dirname(os.path.realpath(__file__))
 
 ################################ Set parameters ################################
 
-training_name = "TEMP_new_annotated_peaks_physio_2"
-config_file = "config_temp_new_annotated_peaks_physio.ini"
-use_train_data = True
+training_name = "final_model"
+config_file = "config_final_model.ini"
+use_train_data = False
 
 
 ########################### Configure output folder ############################

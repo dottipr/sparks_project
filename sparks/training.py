@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import wandb
 from architectures import TempRedUNet
-from custom_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz
+from custom_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz, DiceLoss
 from datasets import SparkDataset
 from new_unet import UNet
 from torch import nn, optim
@@ -40,6 +40,7 @@ if __name__ == "__main__":
     verbosity = 2
     debug_mode = False
     wandb_project_name = "sparks2"  # use new wandb project name with new test_function
+    # wandb_project_name = "TEST"  # use new wandb project name with new test_function
     output_relative_path = "runs"  # directory where output, saved params and
     # testing results are saved
 
@@ -185,7 +186,8 @@ if __name__ == "__main__":
             # name=params["run_name"],
             notes=c.get("general", "wandb_notes", fallback=None),
             id=params["run_name"],
-            resume=resume
+            resume=resume,
+            allow_val_change=True
         )
         logging.getLogger("wandb").setLevel(logging.DEBUG)
         # wandb.save(CONFIG_FILE)
@@ -197,7 +199,10 @@ if __name__ == "__main__":
         logger.info(f"{k:>24s}: {v}")
         # load parameters to wandb
         if wandb_log:
-            wandb.config[k] = v
+            if params["load_epoch"] == 0:
+                wandb.config[k] = v
+            else:
+                wandb.config.update({k: v}, allow_val_change=True)
 
         # TODO: AGGIUNGERE TUTTI I PARAMS NECESSARI DA PRINTARE
 
@@ -472,6 +477,12 @@ if __name__ == "__main__":
             reduction="mean",
             w=params["w"],
         )
+
+    elif params["criterion"] == "dice_loss":
+        criterion = DiceLoss(classes=[1, 2, 3],
+                             from_logits=True,
+                             ignore_index=ignore_index,
+                             smooth=1e-6)
 
     # directory where predicted class movies are saved
     preds_output_dir = os.path.join(output_path, "predictions")
