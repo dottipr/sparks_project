@@ -19,14 +19,14 @@ from data_processing_tools import (
 from in_out_tools import write_videos_on_disk
 from metrics_tools import (
     compute_iou,
-    get_confusion_matrix,
+    get_matches_summary,
     get_score_matrix,
 )
 from scipy import ndimage as ndi
 from torch import nn
 from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 
-from metrics_tools import get_metrics_from_cm
+from metrics_tools import get_metrics_from_summary
 import unet
 from unet.trainer import _write_results
 
@@ -314,6 +314,9 @@ def get_preds(
         preds = []
         n_chunks = len(test_dataset)
 
+        if compute_loss:
+            loss = 0.0
+
         for i, (x, y) in enumerate(test_dataset):
             # define start and end of used frames in chunks
             start = 0 if i == 0 else half_overlap
@@ -341,6 +344,12 @@ def get_preds(
                     )
 
             pred = network(x[None, None])  # 1 x 4 x d x 64 x 512
+
+            # need to compute loss on single chunk otherwise not fitting in memory
+            if compute_loss:
+                loss += criterion(pred[..., start_mask:end_mask],
+                                  y[..., start_mask:end_mask].long()).item()
+
             pred = pred[0]
             preds.append(pred[:, start_mask:end_mask].cpu())
 
@@ -388,7 +397,7 @@ def get_preds(
         # print("OUTPUT SHAPE", preds.shape)
 
         if compute_loss:
-            loss = criterion(preds[None, :], ys[None, :]).item()
+            loss = loss / n_chunks
             return xs.numpy(), ys.numpy(), preds.numpy(), loss
         else:
             return xs.numpy(), ys.numpy(), preds.numpy()
@@ -465,11 +474,14 @@ def test_function(
 
     network.eval()
 
-    # initialize dicts that will contain the results, indexed by movie names
-    confusion_matrix = {}
-    #matched_events = {}
-    #ignored_preds = {}
-    fn_events = {}
+    # initialize dicts that will contain the results
+    tot_preds = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    tp_preds = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    ignored_preds = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    unlabeled_preds = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    tot_ys = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    tp_ys = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    undetected_ys = {'sparks': 0, 'puffs': 0, 'waves': 0}
 
     # initialize class attributes that are shared by all datasets
 
@@ -515,11 +527,11 @@ def test_function(
     preds_concat = []
 
     # define dicts to count number of annotated and pred events per class
-    n_ys_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    #n_ys_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
     #n_preds_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
 
     # define dict to count number of false negatives per class
-    n_fn_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    #n_fn_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
 
     for test_dataset in testing_datasets:
 
@@ -594,12 +606,12 @@ def test_function(
         ignore_mask = np.where(ys == 4, 1, 0)
 
         # get number of annotated events per class
-        for ca_event in ca_release_events:
-            n_ys_per_class[ca_event] += (
-                len(np.unique(ys_instances[ca_event]))-1)
+        # for ca_event in ca_release_events:
+        #     n_ys_per_class[ca_event] += (
+        #         len(np.unique(ys_instances[ca_event]))-1)
 
-            # if debug:
-            #    n_ys_temp[ca_event] += (len(np.unique(ys_instances[ca_event]))-1)
+        # if debug:
+        #    n_ys_temp[ca_event] += (len(np.unique(ys_instances[ca_event]))-1)
 
         logger.debug(
             f"Time to re-organise annotations: {time.time() - start:.2f} s"
@@ -687,13 +699,13 @@ def test_function(
         logger.debug(
             f"Time to compute pairwise scores: {time.time() - start:.2f} s")
 
-        ######################### get confusion matrix #########################
+        ####################### get matches summary #######################
 
         start = time.time()
 
-        logger.debug("Testing function: getting confusion matrix")
+        logger.debug("Testing function: getting matches summary")
 
-        confusion_matrix_res = get_confusion_matrix(
+        matched_ys_ids, matched_preds_ids = get_matches_summary(
             ys_instances=ys_instances,
             preds_instances=preds_instances,
             scores=iomin_scores,
@@ -701,8 +713,22 @@ def test_function(
             ignore_mask=ignore_mask,
         )
 
+        # count number of categorized events that are necessary for the metrics
+        for ca_event in ca_release_events:
+            tot_preds[ca_event] += len(matched_preds_ids[ca_event]['all'])
+            tp_preds[ca_event] += len(matched_preds_ids[ca_event]['tp'])
+            ignored_preds[ca_event] += len(
+                matched_preds_ids[ca_event]['ignored'])
+            unlabeled_preds[ca_event] += len(
+                matched_preds_ids[ca_event]['unlabeled'])
+
+            tot_ys[ca_event] += len(matched_ys_ids[ca_event]['all'])
+            tp_ys[ca_event] += len(matched_ys_ids[ca_event]['tp'])
+            undetected_ys[ca_event] += len(matched_ys_ids[ca_event]
+                                           ['undetected'])
+
         # confusion matrix cols and rows indices: {background, sparks, puffs, waves}
-        confusion_matrix[video_name] = confusion_matrix_res[0]
+        #confusion_matrix[video_name] = confusion_matrix_res[0]
 
         # dict indexed by predicted event indices, s.t. each entry is the
         # list of annotated event ids that match the predicted event
@@ -711,20 +737,20 @@ def test_function(
         # count number of predicted events that are ignored per class
         #ignored_preds[video_name] = confusion_matrix_res[2]
 
-        # get false negative (i.e., labelled but not detected in the corrected class)
-        fn_events = confusion_matrix_res[3]
-        for event_type in ca_release_events:
-            n_fn_per_class[event_type] += len(fn_events[event_type])
+        # get false negative (i.e., labelled but not detected in the correct class)
+        #fn_events = confusion_matrix_res[3]
+        # for event_type in ca_release_events:
+        #    n_fn_per_class[event_type] += len(fn_events[event_type])
 
         # get undetected events(i.e., labelled and not detected in any class)
         # undetected_events = confusion_matrix_res[4]
 
-        logger.debug(
-            f"Confusion matrix for video {video_name}:\n{confusion_matrix[video_name]}"
-        )
+        # logger.debug(
+        #    f"Confusion matrix for video {video_name}:\n{confusion_matrix[video_name]}"
+        # )
 
         logger.debug(
-            f"Time to compute confusion matrix: {time.time() - start:.2f} s")
+            f"Time to get matches summary: {time.time() - start:.2f} s")
 
     ############################## reduce metrics ##############################
 
@@ -749,12 +775,16 @@ def test_function(
     """
 
     # get confusion matrix of all summed events
-    metrics["events_confusion_matrix"] = sum(confusion_matrix.values())
+    #metrics["events_confusion_matrix"] = sum(confusion_matrix.values())
 
     # get other metrics (precision, recall, % correctly classified, % detected)
-    metrics_all = get_metrics_from_cm(results_cm=metrics["events_confusion_matrix"],
-                                      nb_events_per_class=n_ys_per_class,
-                                      nb_fn_per_class=n_fn_per_class)
+    metrics_all = get_metrics_from_summary(tot_preds,
+                                           tp_preds,
+                                           ignored_preds,
+                                           unlabeled_preds,
+                                           tot_ys,
+                                           tp_ys,
+                                           undetected_ys)
 
     metrics.update(metrics_all)
 

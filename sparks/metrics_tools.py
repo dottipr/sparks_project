@@ -71,9 +71,82 @@ def diff(l1, l2):
 
 
 # from UNet outputs and labels, get dict of metrics for a single video
-def get_metrics_from_cm(results_cm,
-                        nb_events_per_class,
-                        nb_fn_per_class):
+def get_metrics_from_summary(tot_preds,
+                             tp_preds,
+                             ignored_preds,
+                             unlabeled_preds,
+                             tot_ys,
+                             tp_ys,
+                             undetected_ys):
+    r"""
+    Compute instance-based metrics from matched events summary.
+
+    Instance-based metrics are:
+    # - confusion matrix
+    - precision per class
+    - recall per class
+    - % correctly classified events per class
+    - % detected events per class
+
+    Parameters
+    ----------
+    tot_preds :         dict of total number of predicted events per class
+    tp_preds :          dict of true positive predicted events per class
+    ignored_preds :     dict of ignored predicted events per class
+    unlabeled_preds :  dict of unlabeled predicted events per class
+    tot_ys :            dict of total number of annotated events per class
+    tp_ys :             dict of true positive annotated events per class
+    undetected_ys :     dict of undetected annotated events per class
+    """
+    ca_release_events = ["sparks", "puffs", "waves"]
+
+    # compute metrics
+    metrics = {}
+
+    for event_type in ca_release_events:
+        # precision
+        denom = tot_preds[event_type] - ignored_preds[event_type]
+        if denom > 0:
+            metrics[event_type + "/precision"] = (tp_preds[event_type] / denom)
+        else:
+            metrics[event_type + "/precision"] = 0
+
+        # recall
+        if tot_ys[event_type] > 0:
+            metrics[event_type + "/recall"] = (tp_ys[event_type] /
+                                               tot_ys[event_type])
+        else:
+            metrics[event_type + "/recall"] = 0
+
+        # % correctly classified events
+        denom = tot_preds[event_type] - \
+            ignored_preds[event_type] - unlabeled_preds[event_type]
+        if denom > 0:
+            metrics[event_type +
+                    "/correctly_classified"] = (tp_preds[event_type] / denom)
+        else:
+            metrics[event_type + "/correctly_classified"] = 0
+
+        # % detected events
+        if tot_ys[event_type] > 0:
+            metrics[event_type +
+                    "/detected"] = (1 - (undetected_ys[event_type] / tot_ys[event_type]))
+        else:
+            metrics[event_type + "/detected"] = 0
+
+    # compute average over classes for each metric
+    for m in ["precision", "recall", "correctly_classified", "detected"]:
+        metrics["average/" + m] = np.mean(
+            [metrics[event_type + "/" + m]
+                for event_type in ca_release_events]
+        )
+
+    return metrics
+
+
+def get_metrics_from_summary_OLD(results_cm,
+                                 nb_events_per_class,
+                                 nb_fn_per_class):
     r"""
     Compute instance-based metrics from confusion matrix and number of annotated
     events per class.
@@ -694,7 +767,110 @@ def get_score_matrix(ys_instances, preds_instances, ignore_mask=None, score="iom
     return scores
 
 
-def get_confusion_matrix(ys_instances, preds_instances, scores, t, ignore_mask):
+def get_matches_summary(ys_instances, preds_instances, scores, t, ignore_mask):
+    r"""
+    Analyze matched of each predicted event with annotated events and assert
+    whether the event is correct, mispredicted, ignored, or unlabeled. Keep
+    also track on undetected labelled events.
+
+    ys_instances, preds_instances:  dicts indexed with ca release event types
+                                    each entry is a int array
+    scores:                         array of shape n_ys_events x n_preds_events
+    t:                              min threshold to consider two events a match
+    ignore_mask:                    binary mask, ROIs ignored during training
+    """
+
+    # define calcium release event types
+    ca_release_events = ["sparks", "puffs", "waves"]
+
+    # initialize lists that summarize the results
+    matched_ys_ids = {ca_class: {} for ca_class in ca_release_events}
+    matched_preds_ids = {ca_class: {} for ca_class in ca_release_events}
+
+    for ca_class in ca_release_events:
+        # dicts need to be initialized here because used in the next loop
+
+        # get set of IDs of annotated events
+        matched_ys_ids[ca_class]['all'] = set(
+            np.unique(ys_instances[ca_class]))
+        matched_ys_ids[ca_class]['all'].remove(0)
+
+        # get name of other classes
+        other_classes = ca_release_events[:]
+        other_classes.remove(ca_class)
+
+        for other_class in other_classes:
+            # init mispredicted events
+            matched_preds_ids[ca_class][other_class] = set()
+
+            # keep track of mispredicted events in annotations as well
+            matched_ys_ids[ca_class][other_class] = set()
+
+        # init undetected annotated events
+        matched_ys_ids[ca_class]['undetected'] = matched_ys_ids[ca_class]['all'].copy()
+
+    for ca_class in ca_release_events:
+        # get set of IDs of predicted events
+        matched_preds_ids[ca_class]['all'] = set(
+            np.unique(preds_instances[ca_class]))
+        matched_preds_ids[ca_class]['all'].remove(0)
+
+        # init sets of correctly matched annotations and predictions
+        matched_preds_ids[ca_class]['tp'] = set()
+        matched_ys_ids[ca_class]['tp'] = set()
+
+        # init ignored predicted events
+        matched_preds_ids[ca_class]['ignored'] = set()
+
+        # init predicted events not matched with any label
+        matched_preds_ids[ca_class]['unlabeled'] = set()
+
+        ### go through predicted events and match them with annotated events ###
+        for pred_id in matched_preds_ids[ca_class]['all']:
+            # get set of y_ids that are matched with pred_id (score > t):
+            matched_events = set(np.where(scores[:, pred_id - 1] >= t)[0] + 1)
+
+            # if matched_events is empty, chech if pred_id is ignored
+            if not matched_events:
+                pred_roi = preds_instances[ca_class] == pred_id
+                pred_roi_size = np.count_nonzero(pred_roi)
+
+                ignored_roi = np.logical_and(pred_roi, ignore_mask)
+                ignored_roi_size = np.count_nonzero(ignored_roi)
+
+                overlap = ignored_roi_size / pred_roi_size
+
+                if overlap >= t:
+                    # mark detected event as ignored
+                    matched_preds_ids[ca_class]['ignored'].add(pred_id)
+                else:
+                    # detected event does not match any labelled event
+                    matched_preds_ids[ca_class]['unlabeled'].add(pred_id)
+
+            # otherwise, pred_id matches with at least one labelled event
+            else:
+                for other_class in ca_release_events:
+                    # check if pred_id matched with an event of the other class
+                    matched_other_class = matched_events & matched_ys_ids[other_class]['all']
+
+                    # remove matched events from undetected events
+                    matched_ys_ids[other_class]['undetected'] -= matched_other_class
+
+                    if matched_other_class:
+                        if other_class == ca_class:
+                            # pred_id is a correct prediction
+                            matched_preds_ids[ca_class]['tp'].add(pred_id)
+                            matched_ys_ids[ca_class]['tp'] |= matched_other_class
+                        else:
+                            # pred_id is misclassified
+                            matched_preds_ids[ca_class][other_class].add(
+                                pred_id)
+                            matched_ys_ids[other_class][ca_class] |= matched_other_class
+
+    return matched_ys_ids, matched_preds_ids
+
+
+def get_confusion_matrix_OLD(ys_instances, preds_instances, scores, t, ignore_mask):
     r"""
     Get confusion matrix, list of y events matched with each predicted event,
     list of ignored predicted events, and y events that aren't matched with any

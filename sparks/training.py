@@ -178,8 +178,11 @@ if __name__ == "__main__":
 
     wandb_log = c.getboolean("general", "wandb_enable", fallback=False)
     if wandb_log:
-        # only resume when loading a saved model
-        resume = "must" if params["load_epoch"] > 0 else None
+        # only resume when loading the same saved model
+        if params["load_epoch"] > 0 and params["load_run_name"] is None:
+            resume = "must"
+        else:
+            resume = None
 
         wandb.init(
             project=wandb_project_name,
@@ -506,7 +509,7 @@ if __name__ == "__main__":
             ignore_frames=params["ignore_frames_loss"],
         ),
         save_every=c.getint("training", "save_every", fallback=5000),
-        # load_path=load_path,
+        load_path=load_path,
         save_path=output_path,
         managed_objects=unet.managed_objects(managed_objects),
         # testing items
@@ -540,8 +543,9 @@ if __name__ == "__main__":
     #     loss = checkpoint['loss']
 
     if c.getboolean("general", "training", fallback=False):  # Run training procedure on data
-        # logger.info("Validate network before training")
-        # trainer.run_validation(wandb_log=wandb_log)
+        if params["load_epoch"] > 0:
+            logger.info("Validate network before training")
+            trainer.run_validation(wandb_log=wandb_log)
         logger.info("Starting training")
         trainer.train(
             params["train_epochs"],
