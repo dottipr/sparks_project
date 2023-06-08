@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 from torch.nn.modules.loss import _Loss
 from typing import List, Optional
@@ -7,7 +8,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from LovaszSoftmax.pytorch import lovasz_losses
+from nnunet.training.loss_functions.dice_loss import SoftDiceLoss
 
+logger = logging.getLogger(__name__)
 
 ################################## FOCAL LOSS ##################################
 '''
@@ -140,17 +143,17 @@ def focal_loss(
                 input.device, target.device))
 
     # create mask for ignore_index
-    #print("IGNORE INDEX", ignore_index)
+    # print("IGNORE INDEX", ignore_index)
     ignore_mask = torch.where(target == ignore_index, 0, 1)
-    #print("IGNORE MASK\n", ignore_mask, "\n", ignore_mask.shape)
+    # print("IGNORE MASK\n", ignore_mask, "\n", ignore_mask.shape)
     target_copy = torch.clone(target).detach()  # do not modify original target
     # convert target to torch.int64
     target_copy = target_copy.to(torch.int64)
     temp_ignored_index = 0  # the corresponding pts will be ignored
     target_copy[target_copy == ignore_index] = temp_ignored_index
-    #print("TARGET COPY", target_copy)
+    # print("TARGET COPY", target_copy)
     num_ignored = torch.count_nonzero(ignore_mask)
-    #print("NUM IGNORED", num_ignored)
+    # print("NUM IGNORED", num_ignored)
 
     if alpha == None:
         alpha_mask = 1.
@@ -167,32 +170,32 @@ def focal_loss(
 
     # compute softmax over the classes axis
     input_soft: torch.Tensor = F.softmax(input, dim=1) + eps
-    #input_soft: torch.Tensor = input + eps
+    # input_soft: torch.Tensor = input + eps
 
     # create the labels one hot tensor
     target_one_hot: torch.Tensor = one_hot(
         target_copy, num_classes=input.shape[1],
         device=input.device, dtype=input.dtype)
-    #print("TARGET ONE HOT", target_one_hot, target_one_hot.shape)
+    # print("TARGET ONE HOT", target_one_hot, target_one_hot.shape)
 
     # compute the actual focal loss
     weight = torch.pow(-input_soft + 1., gamma)
     focal = - weight * torch.log(input_soft)
-    #print("ALPHA MASK", alpha_mask)
-    #print("FOCAL", focal)
+    # print("ALPHA MASK", alpha_mask)
+    # print("FOCAL", focal)
     loss_tmp = torch.sum(target_one_hot * focal, dim=1)
-    #print("LOSS TMP SHAPE", loss_tmp.shape)
+    # print("LOSS TMP SHAPE", loss_tmp.shape)
     # remove loss values in ignored points
     loss_tmp = loss_tmp * ignore_mask * alpha_mask
-    #print("LOSS TMP SHAPE", loss_tmp.shape)
-    #print("LOSS TMP", loss_tmp)
+    # print("LOSS TMP SHAPE", loss_tmp.shape)
+    # print("LOSS TMP", loss_tmp)
 
     if reduction == 'none':
         loss = loss_tmp
     elif reduction == 'mean':
-        #loss_old = torch.mean(loss_tmp)
+        # loss_old = torch.mean(loss_tmp)
         loss = torch.sum(loss_tmp)/num_ignored
-        #print(loss, loss_old)
+        # print(loss, loss_old)
     elif reduction == 'sum':
         loss = torch.sum(loss_tmp)
     else:
@@ -519,9 +522,6 @@ def lovasz_softmax_3d(probas, labels, classes='present', per_image=False, ignore
       per_image: compute the loss per image instead of per batch
       ignore: void class labels
     """
-    # compute sigmoid activation
-    #probas = F.softmax(probas, dim=1)
-    probas = probas.log_softmax(dim=1).exp()
 
     if per_image:
         from LovaszSoftmax.pytorch import mean
@@ -559,14 +559,32 @@ class LovaszSoftmax3d(nn.Module):
     """
 
     def __init__(self, classes: str = 'present', per_image=False, ignore=None):
-        super(LovaszSoftmax3d, self).__init__()
+        super().__init__()
         self.classes = classes
         self.per_image = per_image
         self.ignore = ignore
 
     def forward(self, probas: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        # ! probas are logits, not probabilities !
         return lovasz_softmax_3d(
-            probas, labels, self.classes, self.per_image, self.ignore)
+            probas.exp(), labels, self.classes, self.per_image, self.ignore)
+
+
+class LovaszSoftmax(nn.Module):
+    """
+    Criterion that computes Lovasz-Softmax loss on 2-dimensional samples.
+    """
+
+    def __init__(self, classes: str = 'present', per_image=False, ignore=None):
+        super().__init__()
+        self.classes = classes
+        self.per_image = per_image
+        self.ignore = ignore
+
+    def forward(self, probas: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        # ! probas are logits, not probabilities !
+        return lovasz_losses.lovasz_softmax(
+            probas.exp(), labels, self.classes, self.per_image, self.ignore)
 
 
 ################### FOCAL & LOVASZ-SOFTMAX LOSS COMBINATIONS ###################
@@ -614,140 +632,7 @@ class SumFocalLovasz(nn.Module):
 
 ################################## DICE LOSS ##################################
 
-# https://github.com/qubvel/segmentation_models.pytorch/blob/master/segmentation_models_pytorch/losses/dice.py
+class mySoftDiceLoss(SoftDiceLoss):
 
-def soft_dice_score(
-    output: torch.Tensor,
-    target: torch.Tensor,
-    smooth: float = 0.0,
-    eps: float = 1e-7,
-    dims=None,
-) -> torch.Tensor:
-    assert output.size() == target.size()
-    if dims is not None:
-        intersection = torch.sum(output * target, dim=dims)
-        cardinality = torch.sum(output + target, dim=dims)
-    else:
-        intersection = torch.sum(output * target)
-        cardinality = torch.sum(output + target)
-    dice_score = (2.0 * intersection + smooth) / \
-        (cardinality + smooth).clamp_min(eps)
-    return dice_score
-
-
-def to_tensor(x, dtype=None) -> torch.Tensor:
-    if isinstance(x, torch.Tensor):
-        if dtype is not None:
-            x = x.type(dtype)
-        return x
-    if isinstance(x, np.ndarray):
-        x = torch.from_numpy(x)
-        if dtype is not None:
-            x = x.type(dtype)
-        return x
-    if isinstance(x, (list, tuple)):
-        x = np.array(x)
-        x = torch.from_numpy(x)
-        if dtype is not None:
-            x = x.type(dtype)
-        return x
-
-
-class DiceLoss(_Loss):
-    def __init__(
-        self,
-        classes: Optional[List[int]] = None,
-        log_loss: bool = False,
-        from_logits: bool = True,
-        smooth: float = 0.0,
-        ignore_index: Optional[int] = None,
-        eps: float = 1e-7,
-    ):
-        """Dice loss for image segmentation task.
-        It supports multiclass case
-
-        Args:
-            classes:  List of classes that contribute in loss computation. By default, all channels are included.
-            log_loss: If True, loss computed as `- log(dice_coeff)`, otherwise `1 - dice_coeff`
-            from_logits: If True, assumes input is raw logits
-            smooth: Smoothness constant for dice coefficient (a)
-            ignore_index: Label that indicates ignored pixels (does not contribute to loss)
-            eps: A small epsilon for numerical stability to avoid zero division error
-                (denominator will be always greater or equal to eps)
-
-        Shape
-             - **y_pred** - torch.Tensor of shape (N, C, D, H, W)
-             - **y_true** - torch.Tensor of shape (N, D, H, W) or (N, C, D, H, W)
-
-        Reference
-            https://github.com/BloodAxe/pytorch-toolbelt
-        """
-        super(DiceLoss, self).__init__()
-        if classes is not None:
-            classes = to_tensor(classes, dtype=torch.long)
-
-        self.classes = classes
-        self.from_logits = from_logits
-        self.smooth = smooth
-        self.eps = eps
-        self.log_loss = log_loss
-        self.ignore_index = ignore_index
-
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
-
-        assert y_true.size(0) == y_pred.size(0)  # sambe batch size
-
-        if self.from_logits:
-            # Apply activations to get [0..1] class probabilities
-            # Using Log-Exp as this gives more numerically stable result and does not cause vanishing gradient on
-            # extreme values 0 and 1
-            y_pred = y_pred.log_softmax(dim=1).exp()
-
-        bs = y_true.size(0)  # batch size
-        num_classes = y_pred.size(1)
-        dims = (0, 2)  # batch dim and spatial dims
-
-        # "flatten" spatial dimensions
-        y_true = y_true.view(bs, -1)
-        y_pred = y_pred.view(bs, num_classes, -1)
-
-        if self.ignore_index is not None:
-            mask = y_true != self.ignore_index
-            y_pred = y_pred * mask.unsqueeze(1)
-
-            # N, D*H*W -> N, D*H*W, C
-            y_true = F.one_hot((y_true * mask).to(torch.long), num_classes)
-            y_true = y_true.permute(0, 2, 1) * \
-                mask.unsqueeze(1)  # N, C, D*H*W
-        else:
-            y_true = F.one_hot(y_true, num_classes)  # N, D*H*W -> N, D*H*W, C
-            y_true = y_true.permute(0, 2, 1)  # N, C, W*H*W
-
-        scores = self.compute_score(y_pred, y_true.type_as(y_pred),
-                                    smooth=self.smooth,
-                                    eps=self.eps,
-                                    dims=dims)
-
-        if self.log_loss:
-            loss = -torch.log(scores.clamp_min(self.eps))
-        else:
-            loss = 1.0 - scores
-
-        # Dice loss is undefined for non-empty classes
-        # So we zero contribution of channel that does not have true pixels
-        # NOTE: A better workaround would be to use loss term `mean(y_pred)`
-        # for this case, however it will be a modified jaccard loss
-
-        mask = y_true.sum(dims) > 0
-        loss *= mask.to(loss.dtype)
-
-        if self.classes is not None:
-            loss = loss[self.classes]
-
-        return self.aggregate_loss(loss)
-
-    def aggregate_loss(self, loss):
-        return loss.mean()
-
-    def compute_score(self, output, target, smooth=0.0, eps=1e-7, dims=None) -> torch.Tensor:
-        return soft_dice_score(output, target, smooth, eps, dims)
+    def forward(self, x, y, loss_mask=None):
+        return 1 + super().forward(x, y, loss_mask)

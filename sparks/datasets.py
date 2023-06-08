@@ -8,6 +8,7 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch import nn
 from data_processing_tools import detect_spark_peaks
 from in_out_tools import load_annotations_ids, load_movies_ids
 from scipy.ndimage.filters import convolve
@@ -131,7 +132,7 @@ class SparkDataset(Dataset):
         if inference is not None:
             # need to keep track of movie duration, in case it is shorter than
             # `chunks_duration` and a pad is added
-            self.movie_duration = (self.data[0]).shape[0]
+            self.movie_duration = self.data[0].shape[0]
 
         if self.testing:
             assert self.gt_available, \
@@ -201,9 +202,9 @@ class SparkDataset(Dataset):
                 video) for video in self.data]
 
         if smoothing == '2d':
-            _smooth_filter = torch.tensor(([1/16, 1/16, 1/16],
-                                           [1/16, 1/2, 1/16],
-                                           [1/16, 1/16, 1/16]))
+            _smooth_filter = torch.as_tensor(([1/16, 1/16, 1/16],
+                                              [1/16, 1/2, 1/16],
+                                              [1/16, 1/16, 1/16]))
             self.data = [torch.from_numpy([convolve2d(frame, _smooth_filter,
                                                       mode='same', boundary='symm')
                                            for frame in video])
@@ -251,7 +252,7 @@ class SparkDataset(Dataset):
             self.annotations = [self.shrink_mask(mask)
                                 for mask in self.annotations]
 
-        #print("annotations shape", self.annotations[-1].shape)
+        # print("annotations shape", self.annotations[-1].shape)
 
         # if training with sparks only, set puffs and waves to 0
         if self.only_sparks and self.gt_available:
@@ -302,7 +303,7 @@ class SparkDataset(Dataset):
         # blocks in each video :
         blocks_number = [((length-self.duration)//self.step)+1
                          for length in lengths]
-        blocks_number = torch.tensor(blocks_number)
+        blocks_number = torch.as_tensor(blocks_number)
         # number of blocks in preceding videos in data :
         preceding_blocks = torch.roll(torch.cumsum(blocks_number, dim=0), 1)
         tot_blocks = preceding_blocks[0].detach().item()
@@ -318,9 +319,8 @@ class SparkDataset(Dataset):
             idx = self.__len__() + idx
 
         # index of video containing chunk idx
-        vid_id = torch.where(self.preceding_blocks == max([y
-                                                           for y in self.preceding_blocks
-                                                           if y <= idx]))[0][0]
+        vid_id = torch.where(self.preceding_blocks == max(
+            [y for y in self.preceding_blocks if y <= idx]))[0][0]
         # index of chunk idx in video vid_id
         chunk_id = idx - self.preceding_blocks[vid_id]
 
@@ -340,11 +340,11 @@ class SparkDataset(Dataset):
             chunk = (chunk - chunk.min()) / (chunk.max() - chunk.min())
         # assert chunk.min() >= 0 and chunk.max() <= 1, \
         # "chunk values not normalized between 0 and 1"
-        #print("min and max value in chunk:", chunk.min(), chunk.max())
+        # print("min and max value in chunk:", chunk.min(), chunk.max())
 
-        #print("vid id", vid_id)
-        #print("chunk id", chunk_id)
-        #print("chunks", chunks[chunk_id])
+        # print("vid id", vid_id)
+        # print("chunk id", chunk_id)
+        # print("chunks", chunks[chunk_id])
 
         if self.gt_available:
             if self.temporal_reduction:
@@ -359,7 +359,7 @@ class SparkDataset(Dataset):
                                                self.step//self.num_channels,
                                                self.duration//self.num_channels)
 
-                #print("mask chunk", masks_chunks[chunk_id])
+                # print("mask chunk", masks_chunks[chunk_id])
                 labels = self.annotations[vid_id][masks_chunks[chunk_id]]
             else:
                 labels = self.annotations[vid_id][chunks[chunk_id]]
@@ -405,7 +405,7 @@ class SparkDataset(Dataset):
         # interpolate video wrt new sampling times
         frames_time = self.get_times(video_path)
         f = interp1d(frames_time, video, kind='linear', axis=0)
-        assert(len(frames_time) == video.shape[0])
+        assert (len(frames_time) == video.shape[0])
         frames_new = np.linspace(frames_time[0],
                                  frames_time[-1],
                                  int(frames_time[-1]*new_fps))
@@ -461,3 +461,99 @@ class SparkDataset(Dataset):
             return 3
         else:
             return np.max(voxel_seq)
+
+
+# define dataset class that will be used for training the UNet-convLSTM model
+
+class SparkDatasetLSTM(SparkDataset):
+    '''
+    SparkDataset class for UNet-convLSTM model.
+
+    The dataset is adapted in such a way that each chunk is a sequence of
+    frames centered around the frame to be predicted.
+    The label is the segmentation mask of the central frame.
+    '''
+
+    def __init__(self, base_path, sample_ids, testing,
+                 duration=16, smoothing=False,
+                 resampling=False, resampling_rate=150,
+                 remove_background='average', temporal_reduction=False,
+                 num_channels=1, normalize_video='chunk',
+                 only_sparks=False, sparks_type='peaks', ignore_index=4,
+                 gt_available=True, inference=None):
+        '''
+        step = 1 and ignore_frames = 0 because we need to have a prediction
+        for each frame.
+        '''
+
+        super().__init__(base_path=base_path, sample_ids=sample_ids,
+                         testing=testing, step=1, duration=duration,
+                         smoothing=smoothing, resampling=resampling,
+                         resampling_rate=resampling_rate, remove_background=remove_background,
+                         temporal_reduction=temporal_reduction, num_channels=num_channels,
+                         normalize_video=normalize_video, only_sparks=only_sparks,
+                         sparks_type=sparks_type, ignore_index=ignore_index,
+                         ignore_frames=0, gt_available=gt_available, inference=inference)
+
+    def pad_short_video(self, video, padding_value=0):
+        '''
+        Instead of padding the video with zeros, pad it with the first
+        and last frame of the video.
+        '''
+
+        if video.shape[0] < self.duration:
+            pad = self.duration - video.shape[0]
+            video = F.pad(video, (0, 0, 0, 0, pad//2, pad//2+pad % 2),
+                          'replicate')
+
+            assert video.shape[0] == self.duration, "padding is wrong"
+
+            logger.debug("Added padding to short video")
+
+        return video
+
+    def pad_end_of_video(self, video, mask=False, padding_value=0):
+        '''
+        Pad duration/2 frames at the beginning and at the end of the video
+        with the first and last frame of the video.
+        '''
+        length = video.shape[0]
+
+        # check that duration is odd
+        assert self.duration % 2 == 1, "duration must be odd"
+
+        pad = self.duration - 1
+
+        # if testing, store the pad lenght as class attribute
+        if self.testing:
+            self.pad = pad
+
+        if mask:
+            video = video.float()  # cast annotations to float32
+
+        replicate = nn.ReplicationPad3d((0, 0, 0, 0, pad//2, pad//2))
+        video = replicate(video[None, :])[0]
+
+        if mask:
+            video = video.int()  # cast annotations back to int32
+
+        # check that duration of video is original duration + chunk duration - 1
+        assert video.shape[0] == length + self.duration - 1, \
+            "padding at end of video is wrong"
+
+        return video
+
+    def __getitem__(self, idx):
+        '''
+        As opposed to the SparkDataset class, here the label is just the
+        middle frame of the chunk.
+        '''
+        sample = super().__getitem__(idx)
+
+        if self.gt_available:
+            # extract middle frame from label
+            label = sample[1][self.duration//2]
+            # sample = (sample[0], label[None, :, :])
+            sample = (sample[0], label)
+
+        return sample

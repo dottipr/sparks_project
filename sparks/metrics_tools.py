@@ -791,9 +791,9 @@ def get_matches_summary(ys_instances, preds_instances, scores, t, ignore_mask):
         # dicts need to be initialized here because used in the next loop
 
         # get set of IDs of annotated events
-        matched_ys_ids[ca_class]['all'] = set(
+        matched_ys_ids[ca_class]['tot'] = set(
             np.unique(ys_instances[ca_class]))
-        matched_ys_ids[ca_class]['all'].remove(0)
+        matched_ys_ids[ca_class]['tot'].remove(0)
 
         # get name of other classes
         other_classes = ca_release_events[:]
@@ -807,13 +807,13 @@ def get_matches_summary(ys_instances, preds_instances, scores, t, ignore_mask):
             matched_ys_ids[ca_class][other_class] = set()
 
         # init undetected annotated events
-        matched_ys_ids[ca_class]['undetected'] = matched_ys_ids[ca_class]['all'].copy()
+        matched_ys_ids[ca_class]['undetected'] = matched_ys_ids[ca_class]['tot'].copy()
 
     for ca_class in ca_release_events:
         # get set of IDs of predicted events
-        matched_preds_ids[ca_class]['all'] = set(
+        matched_preds_ids[ca_class]['tot'] = set(
             np.unique(preds_instances[ca_class]))
-        matched_preds_ids[ca_class]['all'].remove(0)
+        matched_preds_ids[ca_class]['tot'].remove(0)
 
         # init sets of correctly matched annotations and predictions
         matched_preds_ids[ca_class]['tp'] = set()
@@ -826,7 +826,7 @@ def get_matches_summary(ys_instances, preds_instances, scores, t, ignore_mask):
         matched_preds_ids[ca_class]['unlabeled'] = set()
 
         ### go through predicted events and match them with annotated events ###
-        for pred_id in matched_preds_ids[ca_class]['all']:
+        for pred_id in matched_preds_ids[ca_class]['tot']:
             # get set of y_ids that are matched with pred_id (score > t):
             matched_events = set(np.where(scores[:, pred_id - 1] >= t)[0] + 1)
 
@@ -851,7 +851,7 @@ def get_matches_summary(ys_instances, preds_instances, scores, t, ignore_mask):
             else:
                 for other_class in ca_release_events:
                     # check if pred_id matched with an event of the other class
-                    matched_other_class = matched_events & matched_ys_ids[other_class]['all']
+                    matched_other_class = matched_events & matched_ys_ids[other_class]['tot']
 
                     # remove matched events from undetected events
                     matched_ys_ids[other_class]['undetected'] -= matched_other_class

@@ -443,6 +443,17 @@ def get_argmax_segmentation_otsu(preds, get_classes=True, debug=False):
 
     # compute threshold on summed predicted events
     sum_preds = 1 - preds["background"]  # everything but the background
+    # check if sum_preds contains nan
+    # logger.info("Checking if UNet predictions contain nan values...")
+    # if np.isnan(sum_preds).any():
+    # logger.warning(
+    # "UNet predictions contain nan values, replacing them with 0.")
+    # sum_preds = np.nan_to_num(sum_preds)
+    # logger.info("sum_preds shape: " + str(sum_preds.shape))
+    # logger.info("sum_preds min: " + str(sum_preds.min()))
+    # logger.info("sum_preds max: " + str(sum_preds.max()))
+    # logger.info("sum_preds dtype: " + str(sum_preds.dtype))
+
     t_otsu = threshold_otsu(sum_preds)
     if debug:
         logger.debug(f"Events detection threshold: {t_otsu:.3f}")

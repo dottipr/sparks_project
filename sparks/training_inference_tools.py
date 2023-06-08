@@ -50,7 +50,7 @@ class myTrainingManager(unet.TrainingManager):
         if wandb_log:
             wandb.log({m: val for m, val in test_output.items()
                        if 'confusion_matrix' not in m}, step=self.iter)
-            #wandb.log({'Step_val': self.iter}, step=self.iter)
+            # wandb.log({'Step_val': self.iter}, step=self.iter)
 
         logger.info("Metrics:")
         for metric_name, metric_value in test_output.items():
@@ -139,36 +139,52 @@ def training_step(
     sampler,
     network,
     optimizer,
+    # scaler,
     scheduler,
     device,
     criterion,
     dataset_loader,
     ignore_frames,
 ):
-    # start = time.time()
-
     network.train()
 
     x, y = sampler(dataset_loader)
-    x = x.to(device)  # [1, 256, 64, 512]
-    y = y.to(device)  # [1, 256, 64, 512]
+    x = x.to(device, non_blocking=True)  # [b, d, 64, 512]
+    y = y.to(device, non_blocking=True)  # [b, d, 64, 512] or [b, 64, 512]
 
     # detect nan in tensors
     # if (torch.isnan(x).any() or torch.isnan(y).any()):
     #    logger.info(f"Detect nan in network input: {torch.isnan(x).any()}")
     #    logger.info(f"Detect nan in network annotation: {torch.isnan(y).any()}")
 
-    y_pred = network(x[:, None])  # [1, 4, 256, 64, 512]
+    # Forward pass with mixed precision
+    # with torch.cuda.amp.autocast():  # autocast as a context manager
+    y_pred = network(x[:, None])  # [b, 4, d, 64, 512] or [b, 4, 64, 512]
 
     # Compute loss
-    loss = criterion(
-        y_pred[..., ignore_frames:-ignore_frames],
-        y[..., ignore_frames:-ignore_frames].long(),
-    )
+    if ignore_frames != 0:
+        pred = y_pred[:, :, ignore_frames:-ignore_frames]
+        target = y[:, ignore_frames:-ignore_frames]
+    else:
+        pred = y_pred
+        target = y
+    # if isinstance(criterion, SoftDiceLoss):
+    if type(criterion).__name__ == "mySoftDiceLoss":
+        # set regions in pred where label is ignored to 0
+        pred = pred * (target != 4)
+        target = target * (target != 4)
+    else:
+        target = target.long()
+
+    loss = criterion(pred, target)
 
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
+
+    # scaler.scale(loss).backward()
+    # scaler.step(optimizer)
+    # scaler.update()
 
     if scheduler is not None:
         lr = scheduler.get_last_lr()[0]
@@ -178,9 +194,6 @@ def training_step(
         new_lr = scheduler.get_last_lr()[0]
         if new_lr != lr:
             logger.info(f"Learning rate changed to {new_lr}")
-
-    # end = time.time()
-    # print(f"Runtime for 1 training step: {end-start}")
 
     return {"loss": loss}
 
@@ -241,7 +254,7 @@ def random_flip_noise(x, y):
         else:
             x = ndi.median_filter(x, size=2)
 
-    return torch.tensor(x), torch.tensor(y)
+    return torch.as_tensor(x), torch.as_tensor(y)
 
 
 ### functions related to UNet and loss weights ###
@@ -268,7 +281,7 @@ def compute_class_weights(dataset, w0=1, w1=1, w2=1, w3=1):
     w2_new = w2 * total / (4 * count2) if count2 != 0 else 0
     w3_new = w3 * total / (4 * count3) if count3 != 0 else 0
 
-    weights = torch.tensor([w0_new, w1_new, w2_new, w3_new])
+    weights = torch.as_tensor([w0_new, w1_new, w2_new, w3_new])
     return weights
 
 
@@ -308,6 +321,9 @@ def get_preds(
                 half_overlap_mask = half_overlap // test_dataset.num_channels
             else:
                 half_overlap_mask = half_overlap
+        else:
+            # not implemented yet
+            raise NotImplementedError
 
         xs = []
         ys = []
@@ -325,10 +341,14 @@ def get_preds(
             end_mask = None if i + 1 == n_chunks else -half_overlap_mask
 
             xs.append(x[start:end])
-            ys.append(y[start_mask:end_mask])
+            if y.ndim == 3:
+                ys.append(y[start_mask:end_mask])
+            else:
+                ys.append(y[None])
 
-            x = x.to(device)  # torch.cuda.FloatTensor, d x 64 x 512
-            y = y[None].to(device)  # y is torch.ByteTensor
+            # torch.cuda.FloatTensor, d x 64 x 512
+            x = x.to(device, non_blocking=True)
+            y = y[None].to(device, non_blocking=True)  # y is torch.ByteTensor
             # print("X SHAPE", x.shape)
             # print("Y SHAPE", y.shape, y.dtype)
 
@@ -343,24 +363,39 @@ def get_preds(
                         "(test): {torch.isnan(y).any()}"
                     )
 
-            pred = network(x[None, None])  # 1 x 4 x d x 64 x 512
+            pred = network(x[None, None])
+            # 1 x 4 x d x 64 x 512 with 3D-UNet
+            # 1 x 4 x 64 x 512 with LSTM-UNet
 
             # need to compute loss on single chunk otherwise not fitting in memory
-            if compute_loss:
-                loss += criterion(pred[..., start_mask:end_mask],
-                                  y[..., start_mask:end_mask].long()).item()
+            if compute_loss:  # Compute loss
+                if y.ndim == 4:
+                    output = pred[:, :, start_mask:end_mask]
+                    target = y[:, start_mask:end_mask]
+                else:
+                    output = pred
+                    target = y
+
+                if type(criterion).__name__ == "mySoftDiceLoss":
+                    # set regions in pred where label is ignored to 0
+                    output = output * (target != 4)
+                    target = target * (target != 4)
+                else:
+                    target = target.long()
+                    output = output
+
+                loss += criterion(output, target).item()
 
             pred = pred[0]
-            preds.append(pred[:, start_mask:end_mask].cpu())
+            if pred.ndim == 4:
+                preds.append(pred[:, start_mask:end_mask].cpu())
+            else:
+                preds.append(pred[:, None].cpu())
 
         # concatenated frames and predictions for a single video:
         xs = torch.cat(xs, dim=0)
         ys = torch.cat(ys, dim=0)
         preds = torch.cat(preds, dim=1)
-
-        # print("MASK OUTPUT SHAPE BEFORE REMOVING PADDING", ys.shape)
-        # print("MASK PADDING", test_dataset.pad)
-        # print("REMOVED FRAMES", test_dataset.pad // test_dataset.num_channels)
 
         if test_dataset.pad != 0:
             start_pad = test_dataset.pad // 2
@@ -372,8 +407,9 @@ def get_preds(
                 start_pad = start_pad // test_dataset.num_channels
                 end_pad = end_pad // test_dataset.num_channels
 
-            ys = ys[start_pad:end_pad]
-            preds = preds[:, start_pad:end_pad]
+            if ys.ndim == 3:
+                ys = ys[start_pad:end_pad]
+                preds = preds[:, start_pad:end_pad]
 
         # If original sample was shorter than current movie duration, remove
         # additional padded frames
@@ -392,9 +428,6 @@ def get_preds(
             preds = preds[:, start_pad:end_pad]
 
         # predictions have logarithmic values
-        # print("INPUT SHAPE", xs.shape)
-        # print("MASK SHAPE", ys.shape)
-        # print("OUTPUT SHAPE", preds.shape)
 
         if compute_loss:
             loss = loss / n_chunks
@@ -403,7 +436,7 @@ def get_preds(
             return xs.numpy(), ys.numpy(), preds.numpy()
 
 
-def run_samples_in_model(network, device, datasets, ignore_frames):
+def run_samples_in_model(network, device, datasets):
     """
     Process al movies in the UNet and get all predictions and movies as numpy
     arrays.
@@ -527,11 +560,11 @@ def test_function(
     preds_concat = []
 
     # define dicts to count number of annotated and pred events per class
-    #n_ys_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
-    #n_preds_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    # n_ys_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    # n_preds_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
 
     # define dict to count number of false negatives per class
-    #n_fn_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
+    # n_fn_per_class = {'sparks': 0, 'puffs': 0, 'waves': 0}
 
     for test_dataset in testing_datasets:
 
@@ -558,7 +591,6 @@ def test_function(
             criterion=criterion,
             detect_nan=False,
         )
-        #logger.debug("Preds shape: {}".format(preds.shape))
         # preds is a list [background, sparks, waves, puffs]
 
         # sum up losses of each sample
@@ -715,30 +747,30 @@ def test_function(
 
         # count number of categorized events that are necessary for the metrics
         for ca_event in ca_release_events:
-            tot_preds[ca_event] += len(matched_preds_ids[ca_event]['all'])
+            tot_preds[ca_event] += len(matched_preds_ids[ca_event]['tot'])
             tp_preds[ca_event] += len(matched_preds_ids[ca_event]['tp'])
             ignored_preds[ca_event] += len(
                 matched_preds_ids[ca_event]['ignored'])
             unlabeled_preds[ca_event] += len(
                 matched_preds_ids[ca_event]['unlabeled'])
 
-            tot_ys[ca_event] += len(matched_ys_ids[ca_event]['all'])
+            tot_ys[ca_event] += len(matched_ys_ids[ca_event]['tot'])
             tp_ys[ca_event] += len(matched_ys_ids[ca_event]['tp'])
             undetected_ys[ca_event] += len(matched_ys_ids[ca_event]
                                            ['undetected'])
 
         # confusion matrix cols and rows indices: {background, sparks, puffs, waves}
-        #confusion_matrix[video_name] = confusion_matrix_res[0]
+        # confusion_matrix[video_name] = confusion_matrix_res[0]
 
         # dict indexed by predicted event indices, s.t. each entry is the
         # list of annotated event ids that match the predicted event
-        #matched_events[video_name] = confusion_matrix_res[1]
+        # matched_events[video_name] = confusion_matrix_res[1]
 
         # count number of predicted events that are ignored per class
-        #ignored_preds[video_name] = confusion_matrix_res[2]
+        # ignored_preds[video_name] = confusion_matrix_res[2]
 
         # get false negative (i.e., labelled but not detected in the correct class)
-        #fn_events = confusion_matrix_res[3]
+        # fn_events = confusion_matrix_res[3]
         # for event_type in ca_release_events:
         #    n_fn_per_class[event_type] += len(fn_events[event_type])
 
@@ -762,7 +794,7 @@ def test_function(
 
     # Compute average validation loss
     metrics["validation_loss"] = sum_loss / len(testing_datasets)
-    #logger.info(f"\tvalidation loss: {loss:.4g}")
+    # logger.info(f"\tvalidation loss: {loss:.4g}")
 
     ##################### compute instances-based metrics ######################
 
@@ -775,16 +807,16 @@ def test_function(
     """
 
     # get confusion matrix of all summed events
-    #metrics["events_confusion_matrix"] = sum(confusion_matrix.values())
+    # metrics["events_confusion_matrix"] = sum(confusion_matrix.values())
 
     # get other metrics (precision, recall, % correctly classified, % detected)
-    metrics_all = get_metrics_from_summary(tot_preds,
-                                           tp_preds,
-                                           ignored_preds,
-                                           unlabeled_preds,
-                                           tot_ys,
-                                           tp_ys,
-                                           undetected_ys)
+    metrics_all = get_metrics_from_summary(tot_preds=tot_preds,
+                                           tp_preds=tp_preds,
+                                           ignored_preds=ignored_preds,
+                                           unlabeled_preds=unlabeled_preds,
+                                           tot_ys=tot_ys,
+                                           tp_ys=tp_ys,
+                                           undetected_ys=undetected_ys)
 
     metrics.update(metrics_all)
 

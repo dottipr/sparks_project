@@ -8,11 +8,13 @@ import sys
 import numpy as np
 import torch
 import wandb
-from architectures import TempRedUNet
-from custom_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz, DiceLoss
-from datasets import SparkDataset
+from architectures import TempRedUNet, UNetConvLSTM
+from custom_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz, mySoftDiceLoss, LovaszSoftmax
+from datasets import SparkDataset, SparkDatasetLSTM
 from new_unet import UNet
+import unet_openai
 from torch import nn, optim
+# from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from training_inference_tools import (
@@ -32,6 +34,7 @@ if __name__ == "__main__":
 
     BASEDIR = os.path.dirname(os.path.realpath(__file__))
     logger = logging.getLogger(__name__)
+    torch.set_float32_matmul_precision('high')
 
     ############################# fixed parameters #############################
 
@@ -118,7 +121,8 @@ if __name__ == "__main__":
         "training", "train_epochs", fallback=5000)
     params["criterion"] = c.get("training", "criterion", fallback="nll_loss")
     params["lr_start"] = c.getfloat("training", "lr_start", fallback=1e-4)
-    params["ignore_frames_loss"] = c.getint("training", "ignore_frames_loss")
+    params["ignore_frames_loss"] = c.getint(
+        "training", "ignore_frames_loss", fallback=0)
     if (params["criterion"] == "focal_loss") or (params["criterion"] == "sum_losses"):
         params["gamma"] = c.getfloat("training", "gamma", fallback=2.0)
     if params["criterion"] == "sum_losses":
@@ -128,14 +132,15 @@ if __name__ == "__main__":
     if params["scheduler"] == "step":
         params["scheduler_step_size"] = c.getint("training", "step_size")
         params["scheduler_gamma"] = c.getfloat("training", "gamma")
+    params["optimizer"] = c.get("training", "optimizer", fallback="adam")
 
     # dataset params
     params["relative_path"] = c.get("dataset", "relative_path")
     params["dataset_size"] = c.get("dataset", "dataset_size", fallback="full")
     params["batch_size"] = c.getint("dataset", "batch_size", fallback=1)
-    params["num_workers"] = c.getint("dataset", "num_workers", fallback=1)
+    params["num_workers"] = 0  # c.getint("dataset", "num_workers", fallback=1)
     params["data_duration"] = c.getint("dataset", "data_duration")
-    params["data_step"] = c.getint("dataset", "data_step")
+    params["data_step"] = c.getint("dataset", "data_step", fallback=1)
     params["testing_data_step"] = c.getint("testing", "data_step")
     params["data_smoothing"] = c.get(
         "dataset", "data_smoothing", fallback="2d")
@@ -155,6 +160,8 @@ if __name__ == "__main__":
     params["nn_architecture"] = c.get(
         "network", "nn_architecture", fallback="pablos_unet"
     )
+    if params["nn_architecture"] == "unet_lstm":
+        params["bidirectional"] = c.getboolean("network", "bidirectional")
     params["unet_steps"] = c.getint("network", "unet_steps")
     params["first_layer_channels"] = c.getint(
         "network", "first_layer_channels")
@@ -219,42 +226,11 @@ if __name__ == "__main__":
 
     # select samples that are used for training and testing
     if params["dataset_size"] == "full":
-        train_sample_ids = [
-            "01",
-            "02",
-            "03",
-            "04",
-            "06",
-            "07",
-            "08",
-            "09",
-            "11",
-            "12",
-            "13",
-            "14",
-            "16",
-            "17",
-            "18",
-            "19",
-            "21",
-            "22",
-            "23",
-            "24",
-            "27",
-            "28",
-            "29",
-            "30",
-            "33",
-            "35",
-            "36",
-            "38",
-            "39",
-            "41",
-            "42",
-            "43",
-            "44",
-            "46",
-        ]
+        train_sample_ids = ["01", "02", "03", "04", "06", "07", "08", "09",
+                            "11", "12", "13", "14", "16", "17", "18", "19",
+                            "21", "22", "23", "24", "27", "28", "29", "30",
+                            "33", "35", "36", "38", "39", "41", "42", "43",
+                            "44", "46"]
         test_sample_ids = ["05", "10", "15",
                            "20", "25", "32", "34", "40", "45"]
     elif params["dataset_size"] == "minimal":
@@ -290,25 +266,45 @@ if __name__ == "__main__":
     # initialize training dataset
     dataset_path = os.path.realpath(f"{BASEDIR}/{params['relative_path']}")
     assert os.path.isdir(dataset_path), f'"{dataset_path}" is not a directory'
-    logger.info(f"Using {dataset_path} as dataset root path")
-    dataset = SparkDataset(
-        base_path=dataset_path,
-        sample_ids=train_sample_ids,
-        testing=False,
-        smoothing=params["data_smoothing"],
-        step=params["data_step"],
-        duration=params["data_duration"],
-        remove_background=params["remove_background"],
-        temporal_reduction=params["temporal_reduction"],
-        num_channels=params["num_channels"],
-        normalize_video=params["norm_video"],
-        only_sparks=params["only_sparks"],
-        sparks_type=params["sparks_type"],
-        ignore_index=ignore_index,
-        inference=None,
-    )
+    if params["nn_architecture"] in ['pablos_unet', 'github_unet', 'openai_unet']:
+        dataset = SparkDataset(
+            base_path=dataset_path,
+            sample_ids=train_sample_ids,
+            testing=False,
+            smoothing=params["data_smoothing"],
+            step=params["data_step"],
+            duration=params["data_duration"],
+            remove_background=params["remove_background"],
+            temporal_reduction=params["temporal_reduction"],
+            num_channels=params["num_channels"],
+            normalize_video=params["norm_video"],
+            only_sparks=params["only_sparks"],
+            sparks_type=params["sparks_type"],
+            ignore_index=ignore_index,
+            inference=None,
+        )
+    elif params["nn_architecture"] == 'unet_lstm':
+        dataset = SparkDatasetLSTM(
+            base_path=dataset_path,
+            sample_ids=train_sample_ids,
+            testing=False,
+            duration=params["data_duration"],
+            smoothing=params["data_smoothing"],
+            remove_background=params["remove_background"],
+            temporal_reduction=params["temporal_reduction"],
+            num_channels=params["num_channels"],
+            normalize_video=params["norm_video"],
+            only_sparks=params["only_sparks"],
+            sparks_type=params["sparks_type"],
+            ignore_index=ignore_index,
+            inference=None
+        )
+    else:
+        logger.error(
+            f"{params['nn_architecture']} is not a valid nn architecture.")
+        exit()
 
-    # apply transforms
+    # transforms are applied when getting a sample from the dataset
     if params["noise_data_augmentation"]:
         dataset = unet.TransformedDataset(dataset, random_flip_noise)
     else:
@@ -321,26 +317,50 @@ if __name__ == "__main__":
         f"{dataset_path}", "videos_test", "[0-9][0-9]_video.tif"
     )
 
-    testing_datasets = [
-        SparkDataset(
-            base_path=dataset_path,
-            sample_ids=[sample_id],
-            testing=True,
-            smoothing=params["data_smoothing"],
-            step=params["testing_data_step"],
-            duration=params["data_duration"],
-            remove_background=params["remove_background"],
-            temporal_reduction=params["temporal_reduction"],
-            num_channels=params["num_channels"],
-            normalize_video=params["norm_video"],
-            only_sparks=params["only_sparks"],
-            sparks_type=params["sparks_type"],
-            ignore_frames=params["ignore_frames_loss"],
-            ignore_index=ignore_index,
-            inference=params["inference"],
-        )
-        for sample_id in test_sample_ids
-    ]
+    if params["nn_architecture"] in ['pablos_unet', 'github_unet', 'openai_unet']:
+        testing_datasets = [
+            SparkDataset(
+                base_path=dataset_path,
+                sample_ids=[sample_id],
+                testing=True,
+                smoothing=params["data_smoothing"],
+                step=params["testing_data_step"],
+                duration=params["data_duration"],
+                remove_background=params["remove_background"],
+                temporal_reduction=params["temporal_reduction"],
+                num_channels=params["num_channels"],
+                normalize_video=params["norm_video"],
+                only_sparks=params["only_sparks"],
+                sparks_type=params["sparks_type"],
+                ignore_frames=params["ignore_frames_loss"],
+                ignore_index=ignore_index,
+                inference=params["inference"],
+            )
+            for sample_id in test_sample_ids
+        ]
+    elif params["nn_architecture"] == 'unet_lstm':
+        testing_datasets = [
+            SparkDatasetLSTM(
+                base_path=dataset_path,
+                sample_ids=[sample_id],
+                testing=True,
+                duration=params["data_duration"],
+                smoothing=params["data_smoothing"],
+                remove_background=params["remove_background"],
+                temporal_reduction=params["temporal_reduction"],
+                num_channels=params["num_channels"],
+                normalize_video=params["norm_video"],
+                only_sparks=params["only_sparks"],
+                sparks_type=params["sparks_type"],
+                ignore_index=ignore_index,
+                inference=params["inference"]
+            )
+            for sample_id in test_sample_ids
+        ]
+    else:
+        logger.error(
+            f"{params['nn_architecture']} is not a valid nn architecture.")
+        exit()
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
@@ -387,6 +407,7 @@ if __name__ == "__main__":
             network = TempRedUNet(unet_config)
 
     elif params["nn_architecture"] == "github_unet":
+
         network = UNet(
             in_channels=params["num_channels"],
             out_channels=num_classes,
@@ -408,8 +429,42 @@ if __name__ == "__main__":
             conv_mode=params["border_mode"],
         )
 
+    elif params["nn_architecture"] == "unet_lstm":
+
+        batch_norm = {"batch": True, "none": False}
+        ndims = 2  # convolutions applied to single frames
+
+        unet_config = unet.UNetConfig(
+            steps=params["unet_steps"],
+            first_layer_channels=params["first_layer_channels"],
+            num_classes=num_classes,
+            ndims=ndims,
+            dilation=params["dilation"],
+            border_mode=params["border_mode"],
+            batch_normalization=batch_norm[params["batch_normalization"]],
+            # num_input_channels=params["data_duration"], # frames seen as modalities
+            num_input_channels=params["num_channels"]
+        )
+
+        network = UNetConvLSTM(
+            unet_config, bidirectional=params["bidirectional"])
+
+    elif params["nn_architecture"] == "openai_unet":
+        network = unet_openai.UNetModel(
+            # image_size=x.shape[1:],
+            in_channels=params["num_channels"],
+            model_channels=params["first_layer_channels"],
+            out_channels=num_classes,
+            num_res_blocks=2,
+            attention_resolutions=[],
+            # attention_resolutions=[8], # bottom layer
+            dropout=0.0,
+            dims=ndims,
+            # use_checkpoint=True
+        )
+
     if device != "cpu":
-        network = nn.DataParallel(network).to(device)
+        network = nn.DataParallel(network).to(device, non_blocking=True)
         torch.backends.cudnn.benchmark = True
 
     if wandb_log:
@@ -419,9 +474,18 @@ if __name__ == "__main__":
         logger.info("Initializing UNet weights...")
         network.apply(weights_init)
 
+    # torch.compile(network, mode="default", backend="inductor")
+    # does not work on windows
+
     ########################### initialize training ############################
 
-    optimizer = optim.Adam(network.parameters(), lr=params["lr_start"])
+    if params["optimizer"] == "adam":
+        optimizer = optim.Adam(network.parameters(), lr=params["lr_start"])
+    elif params["optimizer"] == "adadelta":
+        optimizer = optim.Adadelta(network.parameters(), lr=params["lr_start"])
+    else:
+        logger.error(f"{params['optimizer']} is not a valid optimizer.")
+        exit()
 
     if params["scheduler"] == "step":
         scheduler = optim.lr_scheduler.StepLR(
@@ -457,7 +521,8 @@ if __name__ == "__main__":
 
     if params["criterion"] == "nll_loss":
         criterion = nn.NLLLoss(
-            ignore_index=ignore_index, weight=class_weights.to(device)
+            ignore_index=ignore_index, weight=class_weights.to(
+                device, non_blocking=True)
         )
     elif params["criterion"] == "focal_loss":
         criterion = FocalLoss(
@@ -467,9 +532,14 @@ if __name__ == "__main__":
             gamma=params["gamma"],
         )
     elif params["criterion"] == "lovasz_softmax":
-        criterion = LovaszSoftmax3d(
-            classes="present", per_image=False, ignore=ignore_index
-        )
+        if params["nn_architecture"] in ['pablos_unet', 'github_unet', 'openai_unet']:
+            criterion = LovaszSoftmax3d(
+                classes="present", per_image=False, ignore=ignore_index
+            )
+        elif params["nn_architecture"] == 'unet_lstm':
+            criterion = LovaszSoftmax(
+                classes="present", per_image=True, ignore=ignore_index
+            )
     elif params["criterion"] == "sum_losses":
         criterion = SumFocalLovasz(
             classes="present",
@@ -482,10 +552,10 @@ if __name__ == "__main__":
         )
 
     elif params["criterion"] == "dice_loss":
-        criterion = DiceLoss(classes=[1, 2, 3],
-                             from_logits=True,
-                             ignore_index=ignore_index,
-                             smooth=1e-6)
+        softmax = nn.Softmax(dim=1)
+        criterion = mySoftDiceLoss(apply_nonlin=softmax,
+                                   batch_dice=True,
+                                   do_bg=False)
 
     # directory where predicted class movies are saved
     preds_output_dir = os.path.join(output_path, "predictions")
@@ -502,6 +572,7 @@ if __name__ == "__main__":
             sampler=sampler,
             network=network,
             optimizer=optimizer,
+            # scaler=GradScaler(),
             scheduler=scheduler,
             device=device,
             criterion=criterion,
