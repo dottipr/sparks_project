@@ -13,6 +13,7 @@ import numpy as np
 from matplotlib import cm
 from PIL import Image
 from scipy import ndimage as ndi
+import vispy
 
 # REMARK
 # Come creare un dataframe con vari parametri
@@ -43,19 +44,19 @@ MIN_DIST_T = round(20 / TIME_FRAME)  # min distance in time between sparks
 #################################### Napari ####################################
 
 
-# def get_discrete_cmap(name='viridis', lut=16):
-#     # function to obtain discrete Colormap instance that can be used by Napari
+def get_discrete_cmap(name='viridis', lut=16):
+    # function to obtain discrete Colormap instance that can be used by Napari
 
-#     # create original cmap
-#     segmented_cmap = cm.get_cmap(name=name, lut=16)
+    # create original cmap
+    segmented_cmap = cm.get_cmap(name=name, lut=16)
 
-#     # get colors
-#     colors = segmented_cmap(np.arange(0, segmented_cmap.N))
+    # get colors
+    colors = segmented_cmap(np.arange(0, segmented_cmap.N))
 
-#     # get new discrete cmap
-#     cmap = vispy.color.Colormap(colors, interpolation='zero')
+    # get new discrete cmap
+    cmap = vispy.color.Colormap(colors, interpolation='zero')
 
-#     return cmap
+    return cmap
 
 
 def get_labels_cmap():
@@ -152,8 +153,8 @@ def add_colored_segmentation_to_video(segmentation, video, color, transparency=5
     # color is a list of 3 RGB elements
 
     # convert segmentation into a colored mask
-    #mask_shape = (*(segmentation.shape), 4)
-    #colored_mask = np.zeros(mask_shape, dtype=np.uint8)
+    # mask_shape = (*(segmentation.shape), 4)
+    # colored_mask = np.zeros(mask_shape, dtype=np.uint8)
     r, g, b = color
     colored_mask = np.stack((r*segmentation, g*segmentation,
                             b*segmentation, transparency*segmentation), axis=-1)
@@ -477,8 +478,8 @@ def get_spark_2d_signal(video, slices, coords, spatial_context, sigma=2, return_
     signal_2d = video[t, y_start:y_end, x_start:x_end]
 
     # average over 3 frames
-    #signal_2d_avg = video_array[t-1:t+1, y_start:y_end, x_start:x_end]
-    #signal_2d_avg = np.average(signal_2d_avg, axis=0)
+    # signal_2d_avg = video_array[t-1:t+1, y_start:y_end, x_start:x_end]
+    # signal_2d_avg = np.average(signal_2d_avg, axis=0)
 
     # smooth signal
     # signal_2d_gaussian = ndimage.gaussian_filter(signal_2d, 2) # Best

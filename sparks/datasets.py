@@ -87,31 +87,32 @@ class SparkDataset(Dataset):
 
         # dataset parameters
         self.testing = testing
+        self.inference = inference
         self.gt_available = gt_available
         self.sample_ids = sample_ids
         self.only_sparks = only_sparks
         self.sparks_type = sparks_type
         self.ignore_index = ignore_index
+        self.ignore_frames = ignore_frames
 
         self.duration = duration
         self.step = step
 
         # if performing inference, get video name and take note of the padding
         # applied to the movie
-        if inference is not None:
+        if self.inference is not None:
             # check that dataset contains a single video
             assert len(sample_ids) == 1, \
                 f"Dataset set to inference mode, but it contains "\
                 f"{len(sample_ids)} samples: {sample_ids}."
 
             # check that inference mode is valid
-            assert inference in ['overlap', 'average'], \
+            assert self.inference in ['overlap', 'average'], \
                 "If testing, select one inference mode from "\
                 "'overlap' and 'average'."
 
             self.video_name = sample_ids[0]
             self.pad = 0
-            self.inference = inference
 
         self.temporal_reduction = temporal_reduction
         if self.temporal_reduction:
@@ -283,7 +284,7 @@ class SparkDataset(Dataset):
                    - length)
 
             # if testing, store the pad lenght as class attribute
-            if self.testing:
+            if self.inference is not None:
                 self.pad = pad
 
             video = F.pad(video, (0, 0, 0, 0, pad//2, pad//2+pad % 2),

@@ -16,12 +16,12 @@ from torch.utils.tensorboard import SummaryWriter
 import wandb
 
 import unet
-from dataset_tools import random_flip, weights_init#, compute_class_weights
+from dataset_tools import random_flip, weights_init  # , compute_class_weights
 from datasets import DenoiseDataset, DenoiseTestDataset
 from training_tools import training_step, test_function, sampler
 from metrics_tools import take_closest
 from focal_losses import FocalLoss
-#from architecture import TempRedUNet
+# from architecture import TempRedUNet
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
 logger = logging.getLogger(__name__)
@@ -45,22 +45,25 @@ if __name__ == "__main__":
         logger.info(f"Loading {CONFIG_FILE}")
         c.read(CONFIG_FILE)
     else:
-        logger.warning(f"No config file found at {CONFIG_FILE}, trying to use fallback values.")
+        logger.warning(
+            f"No config file found at {CONFIG_FILE}, trying to use fallback values.")
 
     ############################## set parameters ##############################
 
     params = {}
 
     # general params
-    params['name'] = c.get("general", "run_name", fallback="run") # Run name
+    params['name'] = c.get("general", "run_name", fallback="run")  # Run name
     params['load_name'] = c.get("general", "load_run_name", fallback=None)
 
     # training params
     params['load_epoch'] = c.getint("state", "load_epoch", fallback=0)
     params['train_epochs'] = c.getint("training", "epochs", fallback=5000)
-    params['training'] = c.getboolean("general", "training") # Run training procedure on data
-    params['testing'] = c.getboolean("general", "testing") # Run training procedure on data
-    #params['loss_function'] = c.get("training", "criterion", fallback="nll_loss")
+    # Run training procedure on data
+    params['training'] = c.getboolean("general", "training")
+    # Run training procedure on data
+    params['testing'] = c.getboolean("general", "testing")
+    # params['loss_function'] = c.get("training", "criterion", fallback="nll_loss")
 
     # data params
     params['dataset_basedir'] = c.get("data", "relative_path")
@@ -69,22 +72,24 @@ if __name__ == "__main__":
     params['data_duration'] = c.getint("data", "chunks_duration")
     params['data_step'] = c.getint("data", "step")
     params['ignore_frames_loss'] = c.getint("data", "ignore_frames_loss")
-    #params['only_sparks'] = c.getboolean("data", "only_sparks", fallback=False)
+    # params['only_sparks'] = c.getboolean("data", "only_sparks", fallback=False)
 
     # UNet params
     params['unet_steps'] = c.getint("network", "step")
-    params['first_layer_channels'] = c.getint("network", "first_layer_channels")
-    #params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
-    #params['num_channels'] = c.getint("network", "num_channels", fallback=1)
+    params['first_layer_channels'] = c.getint(
+        "network", "first_layer_channels")
+    # params['temporal_reduction'] = c.getboolean("network", "temporal_reduction", fallback=False)
+    # params['num_channels'] = c.getint("network", "num_channels", fallback=1)
 
     # Testing params
-    #params['sparks_min_radius'] = c.getint("testing", "sparks_min_radius")
-    #params['puffs_min_radius'] = c.getint("testing", "puffs_min_radius")
-    #params['waves_min_radius'] = c.getint("testing", "waves_min_radius")
+    # params['sparks_min_radius'] = c.getint("testing", "sparks_min_radius")
+    # params['puffs_min_radius'] = c.getint("testing", "puffs_min_radius")
+    # params['waves_min_radius'] = c.getint("testing", "waves_min_radius")
 
     ############################# configure logger #############################
 
-    level_map = {3: logging.DEBUG, 2: logging.INFO, 1: logging.WARNING, 0: logging.ERROR}
+    level_map = {3: logging.DEBUG, 2: logging.INFO,
+                 1: logging.WARNING, 0: logging.ERROR}
     log_level = level_map[c.getint("general", "verbosity", fallback="0")]
     log_handlers = (logging.StreamHandler(sys.stdout), )
 
@@ -96,7 +101,8 @@ if __name__ == "__main__":
             os.mkdir(os.path.basename(logfile))
 
         if os.path.isdir(logfile):
-            logfile_path = os.path.abspath(os.path.join(logfile, f"{__name__}.log"))
+            logfile_path = os.path.abspath(
+                os.path.join(logfile, f"{__name__}.log"))
         else:
             logfile_path = os.path.abspath(logfile)
 
@@ -118,9 +124,10 @@ if __name__ == "__main__":
     ############################# configure wandb ##############################
 
     if c.getboolean("general", "wandb_enable", fallback=False):
-        wandb.init(project=c.get("general", "wandb_project_name"), name=params['name'])
+        wandb.init(project=c.get("general", "wandb_project_name"),
+                   name=params['name'])
         logging.getLogger('wandb').setLevel(logging.DEBUG)
-        #wandb.save(CONFIG_FILE)
+        # wandb.save(CONFIG_FILE)
 
     ############################# print parameters #############################
 
@@ -150,21 +157,24 @@ if __name__ == "__main__":
         logger.info("Normalizing whole video instead of single chunks")
 
     # initialize training dataset
-    dataset_map = {'full': "", 'small': 'small_dataset', 'minimal': 'very_small_dataset'}
+    dataset_map = {'full': "", 'small': 'small_dataset',
+                   'minimal': 'very_small_dataset'}
     dataset_dir = dataset_map[params['dataset_size']]
-    dataset_path = os.path.realpath(f"{BASEDIR}/{params['dataset_basedir']}/{dataset_dir}")
-    assert os.path.isdir(dataset_path), f"\"{dataset_path}\" is not a directory"
+    dataset_path = os.path.realpath(
+        f"{BASEDIR}/{params['dataset_basedir']}/{dataset_dir}")
+    assert os.path.isdir(
+        dataset_path), f"\"{dataset_path}\" is not a directory"
     logger.info(f"Using {dataset_path} as dataset root path")
     dataset = DenoiseDataset(
         base_path=dataset_path,
-        #smoothing='2d',
+        # smoothing='2d',
         step=params['data_step'],
         duration=params['data_duration'],
-        #remove_background=c.getboolean("data", "remove_background"),
-        #temporal_reduction=params['temporal_reduction'],
-        #num_channels=params['num_channels'],
+        # remove_background=c.getboolean("data", "remove_background"),
+        # temporal_reduction=params['temporal_reduction'],
+        # num_channels=params['num_channels'],
         normalize_video=norm_video,
-        #only_sparks=params['only_sparks']
+        # only_sparks=params['only_sparks']
     )
 
     # apply transforms
@@ -173,21 +183,21 @@ if __name__ == "__main__":
     logger.info(f"Samples in training dataset: {len(dataset)}")
 
     # initialize testing dataset
-    pattern_test_filenames = os.path.join(f"{dataset_path}","videos_test",
-                                           "[0-9][0-9]_video.tif")
+    pattern_test_filenames = os.path.join(f"{dataset_path}", "videos_test",
+                                          "[0-9][0-9]_video.tif")
     test_filenames = sorted(glob.glob(pattern_test_filenames))
 
     testing_datasets = [
         DenoiseTestDataset(
             video_path=f,
-            #smoothing='2d',
+            # smoothing='2d',
             step=params['data_step'],
             duration=params['data_duration'],
-            #remove_background=c.getboolean("data", "remove_background"),
-            #temporal_reduction=params['temporal_reduction'],
-            #num_channels=params['num_channels'],
+            # remove_background=c.getboolean("data", "remove_background"),
+            # temporal_reduction=params['temporal_reduction'],
+            # num_channels=params['num_channels'],
             normalize_video=norm_video,
-            #only_sparks=params['only_sparks']
+            # only_sparks=params['only_sparks']
         ) for f in test_filenames]
 
     for i, tds in enumerate(testing_datasets):
@@ -202,9 +212,11 @@ if __name__ == "__main__":
     logger.info("Using class weights: {}".format(', '.join(str(w.item()) for w in class_weights)))'''
 
     # initialize data loaders
-    dataset_loader = DataLoader(dataset, batch_size=params['batch_size'], shuffle=True, num_workers=c.getint("training", "num_workers"))
+    dataset_loader = DataLoader(
+        dataset, batch_size=params['batch_size'], shuffle=True, num_workers=c.getint("training", "num_workers"))
     testing_dataset_loaders = [
-        DataLoader(test_dataset, batch_size=params['batch_size'], shuffle=False, num_workers=c.getint("training", "num_workers"))
+        DataLoader(test_dataset, batch_size=params['batch_size'], shuffle=False, num_workers=c.getint(
+            "training", "num_workers"))
         for test_dataset in testing_datasets
     ]
 
@@ -213,13 +225,13 @@ if __name__ == "__main__":
     unet_config = unet.UNetConfig(
         steps=params['unet_steps'],
         first_layer_channels=params['first_layer_channels'],
-        num_classes=1, # NON SO SE È GIUSTO !?!
-        #num_classes=c.getint("network", "num_classes"),
+        num_classes=1,  # NON SO SE È GIUSTO !?!
+        # num_classes=c.getint("network", "num_classes"),
         ndims=c.getint("network", "ndims"),
         dilation=c.getint("network", "dilation", fallback=1),
         border_mode=c.get("network", "border_mode"),
         batch_normalization=c.getboolean("network", "batch_normalization"),
-        #num_input_channels=params['num_channels'],
+        # num_input_channels=params['num_channels'],
     )
 
     '''if not params['temporal_reduction']:'''
@@ -240,16 +252,16 @@ if __name__ == "__main__":
 
     ########################### set testing function ###########################
 
-    #thresholds = np.linspace(0, 1, num=21) # thresholds for events detection
-                                           # TODO: maybe change because
-                                           # nonmaxima supression is computed
-                                           # for every threshold (slow)
+    # thresholds = np.linspace(0, 1, num=21) # thresholds for events detection
+        # TODO: maybe change because
+        # nonmaxima supression is computed
+        # for every threshold (slow)
     '''fixed_threshold = c.getfloat("testing", "fixed_threshold", fallback = 0.9)'''
-    #closest_t = take_closest(thresholds, fixed_threshold) # Compute idx of t in
-                                                          # thresholds list that
-                                                          # is closest to
-                                                          # fixed_threshold
-    #idx_fixed_t = list(thresholds).index(closest_t)
+    # closest_t = take_closest(thresholds, fixed_threshold) # Compute idx of t in
+    # thresholds list that
+    # is closest to
+    # fixed_threshold
+    # idx_fixed_t = list(thresholds).index(closest_t)
 
     ########################### initialize training ############################
 
@@ -265,11 +277,10 @@ if __name__ == "__main__":
 
     if params['load_name'] != None:
         load_path = os.path.join(c.get("network", "output_relative_path"),
-                                   params['load_name'])
+                                 params['load_name'])
         logger.info(f"Model loaded from directory: {load_path}")
     else:
         load_path = None
-
 
     '''if params['loss_function'] == "nll_loss":
         criterion = nn.NLLLoss(ignore_index=c.getint("data", "ignore_index"),
@@ -293,7 +304,7 @@ if __name__ == "__main__":
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False)
         ),
         save_every=c.getint("training", "save_every", fallback=5000),
-        #load_path=load_path,
+        # load_path=load_path,
         save_path=output_path,
         managed_objects=unet.managed_objects({
             'network': network,
@@ -305,19 +316,10 @@ if __name__ == "__main__":
             device,
             criterion,
             testing_datasets,
-            logger,
-            summary_writer,
-            #fixed_threshold,
-            #thresholds,
-            #idx_fixed_t,
             ignore_frames=params['ignore_frames_loss'],
             wandb_log=c.getboolean("general", "wandb_enable", fallback=False),
             training_name=c.get("general", "run_name"),
-            #sparks_min_radius=params['sparks_min_radius'],
-            #puffs_min_radius=params['puffs_min_radius'],
-            #waves_min_radius=params['waves_min_radius'],
-            #temporal_reduction=params['temporal_reduction'],
-            #num_channels=params['num_channels']
+            batch_size=params['batch_size'],
         ),
         test_every=c.getint("training", "test_every", fallback=1000),
         plot_every=c.getint("training", "plot_every", fallback=1000),
