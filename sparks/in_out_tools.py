@@ -276,6 +276,7 @@ def write_videos_on_disk(
     out_name_root = training_name + "_" + video_name + "_"
 
     logger.debug(f"Writing videos on directory {os.path.abspath(path)} ..")
+    os.makedirs(os.path.abspath(path), exist_ok=True)
 
     if not isinstance(xs, type(None)):
         imageio.volwrite(os.path.join(

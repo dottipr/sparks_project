@@ -320,19 +320,29 @@ def gaussian(n_chunks):
 @torch.no_grad()
 def do_inference(
     network, test_dataset, test_dataloader, device,
-    detect_nan=False, compute_loss=False
+    detect_nan=False, compute_loss=False, inference_types=None
 ):
     '''
-    From a given test dataset and a network model, combine all outputs 
-    from chunks for all movie frames.
+    From a given test sample (i.e., a test dataset) and a network model,
+    combine all outputs from chunks for all movie frames.
+    If inference_types is None, use the inference type defined in the test
+    dataset. Otherwise, use the inference types provided in the list.
 
-    Returns a movie of predicted distributions for each class.
+    Returns:
+        preds:      predictions (4 x movie duration x 64 x 512) if
+                    if inference_types is None, otherwise returns a dictionary
+                    with inference type as key and predictions as value
     '''
 
     chunk_idx = 0
-    inference = test_dataset.inference
 
-    if inference == 'overlap':
+    if inference_types is None:
+        inference_types = [test_dataset.inference]
+
+    # initialize dictionary with predictions
+    preds = {i: [] for i in inference_types}
+
+    if 'overlap' in inference_types:
         # this is the default inference type used in training,
         # if one of the others works better, I will probably remove
         # this one
@@ -354,11 +364,13 @@ def do_inference(
         else:
             half_overlap_mask = half_overlap
 
-        preds = []
+        preds['overlap'] = []
         n_chunks = len(test_dataset)
 
-    else:
+    if 'average' in inference_types or 'max' in inference_types or 'gaussian' in inference_types:
         movie_duration = test_dataset.data[0].shape[0]
+
+        # initialize dict with list of predictions for each frame
         output_frames = {idx: [] for idx in range(movie_duration)}
         chunks = test_dataset.get_chunks(test_dataset.lengths[0],
                                          test_dataset.step,
@@ -377,25 +389,25 @@ def do_inference(
         # b x 4 x 64 x 512 with LSTM-UNet -> not implemented yet
 
         if not compute_loss:
-            batch_preds = torch.exp(batch_preds)  # convert to probabilities
             # if computing loss, need logit values, otherwise compute
             # probabilities because it reduces the errors due to floating
             # point precision
+            batch_preds = torch.exp(batch_preds)  # convert to probabilities
 
         for pred in batch_preds:
 
-            if inference == 'overlap':
+            if 'overlap' in inference_types:
                 # define start and end of used frames in chunks
                 # inference type does not matter for x and y
                 start_mask = 0 if chunk_idx == 0 else half_overlap_mask
                 end_mask = None if chunk_idx + 1 == n_chunks else -half_overlap_mask
 
                 if pred.ndim == 4:
-                    preds.append(pred[:, start_mask:end_mask])
+                    preds['overlap'].append(pred[:, start_mask:end_mask])
                 else:
-                    preds.append(pred[:, None])
+                    preds['overlap'].append(pred[:, None])
 
-            else:
+            if 'average' in inference_types or 'max' in inference_types or 'gaussian' in inference_types:
                 # list of movie frames ids in the chunk:
                 chunk_frames = chunks[chunk_idx].tolist()
 
@@ -406,23 +418,23 @@ def do_inference(
 
             chunk_idx += 1
 
-    if inference == 'overlap':
+    if 'overlap' in inference_types:
         # concatenated predictions for a single video:
-        preds = torch.cat(preds, dim=1)
+        preds['overlap'] = torch.cat(preds['overlap'], dim=1)
 
-    else:
+    if 'average' in inference_types or 'max' in inference_types or 'gaussian' in inference_types:
         # combine predictions from all chunks for each frame
 
-        if inference == 'average':
+        if 'average' in inference_types:
             # average predictions from all chunks
-            preds = [torch.stack(p).mean(dim=0)
-                     for p in output_frames.values()]
+            preds['average'] = [torch.stack(p).mean(dim=0)
+                                for p in output_frames.values()]
 
-        elif inference == 'max':
+        if 'max' in inference_types:
             # for each pixel, keep 4-classes prediction that contains the
             # highest probability
 
-            preds = []
+            preds['max'] = []
             for p in output_frames.values():
                 p = torch.stack(p)
 
@@ -434,16 +446,22 @@ def do_inference(
 
                 # view p as list of pixels and gather predictions for each
                 # pixel according to chunk with highest probability
-                preds.append(p.view(p.size(0), p.size(1), -1).gather(
-                    dim=0, index=max_ids).view(*p.size())[0])
+                preds['max'].append(p.view(p.size(0), p.size(1), -1).gather(
+                                    dim=0, index=max_ids).view(*p.size())[0])
 
-        elif inference == 'gaussian':
+        if 'gaussian' in inference_types:
             # combine predictions using a gaussian function
-            preds = [(torch.stack(p) * gaussian(len(p)).view(-1, 1, 1, 1)).sum(dim=0)
-                     for p in output_frames.values()]
+            preds['gaussian'] = [(torch.stack(p) * gaussian(len(p)).view(-1, 1, 1, 1)).sum(dim=0)
+                                 for p in output_frames.values()]
 
-        preds = torch.stack(preds)
-        preds = preds.swapaxes(0, 1)
+    for i, p in preds.items():
+        if i != 'overlap':
+            p = torch.stack(p)
+            p = p.swapaxes(0, 1)
+            preds[i] = p
+
+    if len(inference_types) == 1:
+        preds = preds[inference_types[0]]
 
     return preds
 
@@ -452,8 +470,28 @@ def do_inference(
 @torch.no_grad()
 def get_preds(
     network, test_dataset, compute_loss, device,
-    criterion=None, detect_nan=False, test_dataloader=None, batch_size=None
+    criterion=None, detect_nan=False, test_dataloader=None, batch_size=None,
+    inference_types=None
 ):
+    '''
+    Given a trained model, a test sample (i.e., a test dataset) and a device,
+    run the sample in the model and return the predictions.
+    If compute_loss is True, also return the loss. In this case, a criterion
+    must be provided.
+    If detect_nan is True, detect nan in the input and annotation tensors.
+    If test_dataloader is None, create a dataloader with the given batch_size
+    (which must be provided in this case).
+    If inference_types is None, use the inference type defined in the test
+    dataset. Otherwise, use the inference types provided in the list.
+
+    Returns:
+        xs:         original movie (movie duration x 64 x 512)
+        ys:         original annotations (movie duration x 64 x 512)
+        preds:      predictions (4 x movie duration x 64 x 512) if 
+                    if inference_types is None, otherwise returns a dictionary
+                    with inference type as key and predictions as value
+        loss:       loss value if compute_loss is True
+    '''
 
     # check if function parameters are correct
     if compute_loss:
@@ -462,8 +500,16 @@ def get_preds(
     if test_dataloader is None:
         assert batch_size is not None, "provide batch_size if no dataloader is provided"
 
-    assert test_dataset.inference in ['overlap', 'average', 'gaussian', 'max'], \
-        "inference type not implemented yet"
+    if inference_types is None:
+        assert test_dataset.inference in ['overlap', 'average', 'gaussian', 'max'], \
+            f"inference type '{i}' not implemented yet"
+    else:
+        for i in inference_types:
+            assert i in ['overlap', 'average', 'gaussian', 'max'], \
+                f"inference type '{i}' not implemented yet"
+
+    if inference_types is None:
+        inference_types = [test_dataset.inference]
 
     # create a dataloader if not provided
     if test_dataloader is None:
@@ -477,6 +523,11 @@ def get_preds(
 
     # run movie in network and perform inference
     # preds are probabilities between 0 and 1
+    # if len(inference_types) == 1, preds is a tensor of shape
+    # 4 x movie duration x 64 x 512
+    # otherwise, preds is a dictionary with inference type as key and
+    # predictions as value
+
     preds = do_inference(
         network=network,
         test_dataset=test_dataset,
@@ -484,6 +535,7 @@ def get_preds(
         device=device,
         detect_nan=detect_nan,
         compute_loss=compute_loss,
+        inference_types=inference_types
     )
 
     # get original movie xs and annotations ys
@@ -503,7 +555,10 @@ def get_preds(
 
         if ys.ndim == 3:
             ys = ys[start_pad:end_pad]
-            preds = preds[:, start_pad:end_pad]
+            if len(inference_types) == 1:
+                preds = preds[:, start_pad:end_pad]
+            else:
+                preds = {i: p[:, start_pad:end_pad] for i, p in preds.items()}
 
     # If original sample was shorter than current movie duration, remove
     # additional padded frames
@@ -519,7 +574,10 @@ def get_preds(
             end_pad = end_pad // test_dataset.num_channels
 
         ys = ys[start_pad:end_pad]
-        preds = preds[:, start_pad:end_pad]
+        if len(inference_types) == 1:
+            preds = preds[:, start_pad:end_pad]
+        else:
+            preds = {i: p[:, start_pad:end_pad] for i, p in preds.items()}
 
     if compute_loss:  # Compute loss
         # ys is torch.ByteTensor
@@ -527,9 +585,17 @@ def get_preds(
 
         # if ys.ndim == 4:
         if ys.ndim == 3:
-            preds = preds[:, test_dataset.ignore_frames:-
-                          test_dataset.ignore_frames]
-            ys = ys[test_dataset.ignore_frames:-test_dataset.ignore_frames]
+            if len(inference_types) == 1:
+                preds_loss = preds[:, test_dataset.ignore_frames:-
+                                   test_dataset.ignore_frames]
+            else:
+                raise NotImplementedError
+                # still need to adapt code to compute loss for list of inference
+                # types, however usually loss shoulb be computed only during
+                # training, and therefore inference_types should be None
+
+            ys_loss = ys[test_dataset.ignore_frames:-
+                         test_dataset.ignore_frames]
         else:
             # not implemented yet
             raise NotImplementedError
@@ -538,154 +604,23 @@ def get_preds(
 
         if type(criterion).__name__ == "mySoftDiceLoss":
             # set regions in pred where label is ignored to 0
-            preds = preds * (ys != 4)
-            ys = ys * (ys != 4)
+            preds_loss = preds_loss * (ys_loss != 4)
+            ys_loss = ys_loss * (ys_loss != 4)
         else:
-            ys = ys.long()[None, :]
-            preds = preds[None, :]
+            ys_loss = ys_loss.long()[None, :]
+            preds_loss = preds_loss[None, :]
 
-        print("preds shape", preds.shape)
-        print("ys shape", ys.shape)
+        loss = criterion(preds_loss, ys_loss).item()
 
-        loss = criterion(preds, ys).item()
-        print("loss", loss)
         return xs.numpy(), ys.numpy(), preds.numpy(), loss
 
     else:
-        return xs.numpy(), ys.numpy(), preds.numpy()
+        if len(inference_types) == 1:
+            preds = preds.numpy()
+        else:
+            preds = {i: p.numpy() for i, p in preds.items()}
 
-
-# def get_preds_OLD(
-#         network, test_dataset, compute_loss, device, criterion=None, detect_nan=False):
-#     with torch.no_grad():
-#         # check if function parameters are correct
-#         if compute_loss:
-#             assert criterion is not None, "provide criterion if computing loss"
-
-#         if test_dataset.inference == "overlap":
-#             assert (
-#                 test_dataset.duration - test_dataset.step
-#             ) % 2 == 0, "(duration-step) is not even"
-#             half_overlap = (test_dataset.duration - test_dataset.step) // 2
-#             # to re-build videos from chunks
-
-#             # adapt half_overlap duration if using temporal reduction
-#             if test_dataset.temporal_reduction:
-#                 assert half_overlap % test_dataset.num_channels == 0, (
-#                     "with temporal reduction half_overlap must be "
-#                     "a multiple of num_channels"
-#                 )
-
-#                 half_overlap_mask = half_overlap // test_dataset.num_channels
-#             else:
-#                 half_overlap_mask = half_overlap
-#         else:
-#             # not implemented yet
-#             raise NotImplementedError
-
-#         # get original movie xs and annotations ys
-#         xs = test_dataset.data[0]
-#         ys = test_dataset.annotations[0]
-
-#         preds = []
-#         n_chunks = len(test_dataset)
-
-#         if compute_loss:
-#             loss = 0.0
-
-#         for i, (x, y) in enumerate(test_dataset):
-#             # define start and end of used frames in chunks
-#             # inference type does not matter for x and y
-#             start_mask = 0 if i == 0 else half_overlap_mask
-#             end_mask = None if i + 1 == n_chunks else -half_overlap_mask
-
-#             # torch.cuda.FloatTensor, d x 64 x 512
-#             x = x.to(device, non_blocking=True)
-#             y = y[None].to(device, non_blocking=True)  # y is torch.ByteTensor
-#             # print("X SHAPE", x.shape)
-#             # print("Y SHAPE", y.shape, y.dtype)
-
-#             # detect nan in tensors
-#             if detect_nan:
-#                 if torch.isnan(x).any() or torch.isnan(y).any():
-#                     logger.info(
-#                         f"Detect nan in network input (test): " "{torch.isnan(x).any()}"
-#                     )
-#                     logger.info(
-#                         f"Detect nan in network annotation "
-#                         "(test): {torch.isnan(y).any()}"
-#                     )
-
-#             pred = network(x[None, None])
-#             # 1 x 4 x d x 64 x 512 with 3D-UNet
-#             # 1 x 4 x 64 x 512 with LSTM-UNet
-
-#             # need to compute loss on single chunk otherwise not fitting in memory
-#             if compute_loss:  # Compute loss
-#                 if y.ndim == 4:
-#                     output = pred[:, :, start_mask:end_mask]
-#                     target = y[:, start_mask:end_mask]
-#                 else:
-#                     output = pred
-#                     target = y
-
-#                 if type(criterion).__name__ == "mySoftDiceLoss":
-#                     # set regions in pred where label is ignored to 0
-#                     output = output * (target != 4)
-#                     target = target * (target != 4)
-#                 else:
-#                     target = target.long()
-#                     output = output
-
-#                 loss += criterion(output, target).item()
-
-#             pred = pred[0]
-#             logger.info(f"Pred requires grad: {pred.requires_grad}")
-#             if pred.ndim == 4:
-#                 preds.append(pred[:, start_mask:end_mask].cpu())
-#             else:
-#                 preds.append(pred[:, None].cpu())
-
-#         # concatenated predictions for a single video:
-#         preds = torch.cat(preds, dim=1)
-
-#         if test_dataset.pad != 0:
-#             start_pad = test_dataset.pad // 2
-#             end_pad = -(test_dataset.pad // 2 + test_dataset.pad % 2)
-
-#             xs = xs[start_pad:end_pad]
-
-#             if test_dataset.temporal_reduction:
-#                 start_pad = start_pad // test_dataset.num_channels
-#                 end_pad = end_pad // test_dataset.num_channels
-
-#             if ys.ndim == 3:
-#                 ys = ys[start_pad:end_pad]
-#                 preds = preds[:, start_pad:end_pad]
-
-#         # If original sample was shorter than current movie duration, remove
-#         # additional padded frames
-#         if test_dataset.movie_duration < xs.shape[0]:
-#             pad = xs.shape[0] - test_dataset.movie_duration
-#             start_pad = pad // 2
-#             end_pad = -(pad // 2 + pad % 2)
-
-#             xs = xs[start_pad:end_pad]
-
-#             if test_dataset.temporal_reduction:
-#                 start_pad = start_pad // test_dataset.num_channels
-#                 end_pad = end_pad // test_dataset.num_channels
-
-#             ys = ys[start_pad:end_pad]
-#             preds = preds[:, start_pad:end_pad]
-
-#         # predictions have logarithmic values
-
-#         if compute_loss:
-#             loss = loss / n_chunks
-#             return xs.numpy(), ys.numpy(), preds.numpy(), loss
-#         else:
-#             return xs.numpy(), ys.numpy(), preds.numpy()
+        return xs.numpy(), ys.numpy(), preds
 
 
 def run_samples_in_model(network, device, datasets):
@@ -773,10 +708,10 @@ def test_function(
 
     ca_release_events = ["sparks", "puffs", "waves"]
 
-    sparks_type = testing_datasets[0].sparks_type
-    temporal_reduction = testing_datasets[0].temporal_reduction
-    if temporal_reduction:
-        num_channels = testing_datasets[0].num_channels
+    # sparks_type = testing_datasets[0].sparks_type
+    # temporal_reduction = testing_datasets[0].temporal_reduction
+    # if temporal_reduction:
+    #     num_channels = testing_datasets[0].num_channels
 
     # spark instances detection parameters
     min_dist_xy = testing_datasets[0].min_dist_xy

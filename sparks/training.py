@@ -1,37 +1,32 @@
-import argparse
-import configparser
 import logging
 import os
 import random
-import sys
 
 import numpy as np
 import torch
 import wandb
-from architectures import TempRedUNet, UNetConvLSTM
-from custom_losses import FocalLoss, LovaszSoftmax3d, SumFocalLovasz, mySoftDiceLoss, LovaszSoftmax
-from datasets import SparkDataset, SparkDatasetLSTM
-from new_unet import UNet
-import unet_openai
 from torch import nn, optim
 # from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from training_inference_tools import (
-    compute_class_weights,
-    random_flip,
-    random_flip_noise,
     sampler,
     test_function,
     training_step,
     weights_init,
     myTrainingManager
 )
+from training_script_utils import (
+    init_param_config_logs,
+    init_training_dataset,
+    init_testing_dataset,
+    init_model,
+    init_criterion
+)
 
 import unet
 
 if __name__ == "__main__":
-
     BASEDIR = os.path.dirname(os.path.realpath(__file__))
     logger = logging.getLogger(__name__)
     torch.set_float32_matmul_precision('high')
@@ -52,169 +47,10 @@ if __name__ == "__main__":
     num_classes = 4  # i.e., BG, sparks, waves, puffs
     ndims = 3  # using 3D data
 
-    ############################# configure logger #############################
+    ############################## get parameters ##############################
 
-    level_map = {
-        3: logging.DEBUG,
-        2: logging.INFO,
-        1: logging.WARNING,
-        0: logging.ERROR,
-    }
-    log_level = level_map[verbosity]
-    log_handlers = (logging.StreamHandler(sys.stdout),)
-
-    # use this when project is finished:
-    # if logfile:
-    #    if not os.path.isdir(os.path.basename(logfile)):
-    #        logger.info("Creating parent directory for logs")
-    #        os.mkdir(os.path.basename(logfile))
-    #
-    #    if os.path.isdir(logfile):
-    #        logfile_path = os.path.abspath(os.path.join(logfile, f"{__name__}.log"))
-    #    else:
-    #        logfile_path = os.path.abspath(logfile)
-    #
-    #    logger.info(f"Storing logs in {logfile_path}")
-    #    file_handler = logging.RotatingFileHandler(
-    #        filename=logfile_path,
-    #        maxBytes=(1024 * 1024 * 8),  # 8 MB
-    #        backupCount=4,
-    #    )
-    #    log_handlers += (file_handler, )
-
-    logging.basicConfig(
-        level=log_level,
-        format="[{asctime}] [{levelname:^8s}] [{name:^12s}] <{lineno:^4d}> -- {message:s}",
-        style="{",
-        datefmt="%H:%M:%S",
-        handlers=log_handlers,
-    )
-
-    ############################# load config file #############################
-
-    parser = argparse.ArgumentParser("Spark & Puff detector using U-Net.")
-    parser.add_argument(
-        "config", type=str, help="Input config file, used to configure training"
-    )
-    args = parser.parse_args()
-
-    CONFIG_FILE = os.path.join(BASEDIR, "config_files", args.config)
-    c = configparser.ConfigParser()
-    if os.path.isfile(CONFIG_FILE):
-        logger.info(f"Loading {CONFIG_FILE}")
-        c.read(CONFIG_FILE)
-    else:
-        logger.warning(
-            f"No config file found at {CONFIG_FILE}, trying to use fallback values."
-        )
-
-    ############################## set parameters ##############################
-
-    params = {}
-
-    # training params
-    params["run_name"] = c.get(
-        "training", "run_name", fallback="TEST")  # Run name
-    params["load_run_name"] = c.get("training", "load_run_name", fallback=None)
-    params["load_epoch"] = c.getint("training", "load_epoch", fallback=0)
-    params["train_epochs"] = c.getint(
-        "training", "train_epochs", fallback=5000)
-    params["criterion"] = c.get("training", "criterion", fallback="nll_loss")
-    params["lr_start"] = c.getfloat("training", "lr_start", fallback=1e-4)
-    params["ignore_frames_loss"] = c.getint(
-        "training", "ignore_frames_loss", fallback=0)
-    if (params["criterion"] == "focal_loss") or (params["criterion"] == "sum_losses"):
-        params["gamma"] = c.getfloat("training", "gamma", fallback=2.0)
-    if params["criterion"] == "sum_losses":
-        params["w"] = c.getfloat("training", "w", fallback=0.5)
-    params["cuda"] = c.getboolean("training", "cuda")
-    params["scheduler"] = c.get("training", "scheduler", fallback=None)
-    if params["scheduler"] == "step":
-        params["scheduler_step_size"] = c.getint("training", "step_size")
-        params["scheduler_gamma"] = c.getfloat("training", "gamma")
-    params["optimizer"] = c.get("training", "optimizer", fallback="adam")
-
-    # dataset params
-    params["relative_path"] = c.get("dataset", "relative_path")
-    params["dataset_size"] = c.get("dataset", "dataset_size", fallback="full")
-    params["batch_size"] = c.getint("dataset", "batch_size", fallback=1)
-    params["num_workers"] = 0  # c.getint("dataset", "num_workers", fallback=1)
-    params["data_duration"] = c.getint("dataset", "data_duration")
-    params["data_step"] = c.getint("dataset", "data_step", fallback=1)
-    params["testing_data_step"] = c.getint("testing", "data_step")
-    params["data_smoothing"] = c.get(
-        "dataset", "data_smoothing", fallback="2d")
-    params["norm_video"] = c.get("dataset", "norm_video", fallback="chunk")
-    params["remove_background"] = c.get(
-        "dataset", "remove_background", fallback="average"
-    )
-    params["only_sparks"] = c.getboolean(
-        "dataset", "only_sparks", fallback=False)
-    params["noise_data_augmentation"] = c.getboolean(
-        "dataset", "noise_data_augmentation", fallback=False
-    )
-    params["sparks_type"] = c.get("dataset", "sparks_type", fallback="peaks")
-    params["inference"] = c.get("dataset", "inference", fallback="overlap")
-
-    # UNet params
-    params["nn_architecture"] = c.get(
-        "network", "nn_architecture", fallback="pablos_unet"
-    )
-    if params["nn_architecture"] == "unet_lstm":
-        params["bidirectional"] = c.getboolean("network", "bidirectional")
-    params["unet_steps"] = c.getint("network", "unet_steps")
-    params["first_layer_channels"] = c.getint(
-        "network", "first_layer_channels")
-    params["num_channels"] = c.getint("network", "num_channels", fallback=1)
-    params["dilation"] = c.getboolean("network", "dilation", fallback=1)
-    params["border_mode"] = c.get("network", "border_mode")
-    params["batch_normalization"] = c.get(
-        "network", "batch_normalization", fallback="none"
-    )
-    params["temporal_reduction"] = c.getboolean(
-        "network", "temporal_reduction", fallback=False
-    )
-    params["initialize_weights"] = c.getboolean(
-        "network", "initialize_weights", fallback=False
-    )
-    if params["nn_architecture"] == "github_unet":
-        params["attention"] = c.getboolean("network", "attention")
-        params["up_mode"] = c.get("network", "up_mode")
-
-    ############################# configure wandb ##############################
-
-    wandb_log = c.getboolean("general", "wandb_enable", fallback=False)
-    if wandb_log:
-        # only resume when loading the same saved model
-        if params["load_epoch"] > 0 and params["load_run_name"] is None:
-            resume = "must"
-        else:
-            resume = None
-
-        wandb.init(
-            project=wandb_project_name,
-            # name=params["run_name"],
-            notes=c.get("general", "wandb_notes", fallback=None),
-            id=params["run_name"],
-            resume=resume,
-            allow_val_change=True
-        )
-        logging.getLogger("wandb").setLevel(logging.DEBUG)
-        # wandb.save(CONFIG_FILE)
-
-    ############################# print parameters #############################
-
-    logger.info("Command parameters:")
-    for k, v in params.items():
-        logger.info(f"{k:>24s}: {v}")
-        # load parameters to wandb
-        if wandb_log:
-            if params["load_epoch"] == 0:
-                wandb.config[k] = v
-            else:
-                wandb.config.update({k: v}, allow_val_change=True)
-
-        # TODO: AGGIUNGERE TUTTI I PARAMS NECESSARI DA PRINTARE
+    c, params, wandb_log = init_param_config_logs(
+        BASEDIR, logfile, verbosity, wandb_project_name)
 
     ############################ init random seeds #############################
 
@@ -263,104 +99,25 @@ if __name__ == "__main__":
     elif params["norm_video"] == "abs_max":
         logger.info("Normalizing whole video using 16-bit absolute max")
 
-    # initialize training dataset
     dataset_path = os.path.realpath(f"{BASEDIR}/{params['relative_path']}")
-    assert os.path.isdir(dataset_path), f'"{dataset_path}" is not a directory'
-    if params["nn_architecture"] in ['pablos_unet', 'github_unet', 'openai_unet']:
-        dataset = SparkDataset(
-            base_path=dataset_path,
-            sample_ids=train_sample_ids,
-            testing=False,
-            smoothing=params["data_smoothing"],
-            step=params["data_step"],
-            duration=params["data_duration"],
-            remove_background=params["remove_background"],
-            temporal_reduction=params["temporal_reduction"],
-            num_channels=params["num_channels"],
-            normalize_video=params["norm_video"],
-            only_sparks=params["only_sparks"],
-            sparks_type=params["sparks_type"],
-            ignore_index=ignore_index,
-            inference=None,
-        )
-    elif params["nn_architecture"] == 'unet_lstm':
-        dataset = SparkDatasetLSTM(
-            base_path=dataset_path,
-            sample_ids=train_sample_ids,
-            testing=False,
-            duration=params["data_duration"],
-            smoothing=params["data_smoothing"],
-            remove_background=params["remove_background"],
-            temporal_reduction=params["temporal_reduction"],
-            num_channels=params["num_channels"],
-            normalize_video=params["norm_video"],
-            only_sparks=params["only_sparks"],
-            sparks_type=params["sparks_type"],
-            ignore_index=ignore_index,
-            inference=None
-        )
-    else:
-        logger.error(
-            f"{params['nn_architecture']} is not a valid nn architecture.")
-        exit()
 
-    # transforms are applied when getting a sample from the dataset
-    if params["noise_data_augmentation"]:
-        dataset = unet.TransformedDataset(dataset, random_flip_noise)
-    else:
-        dataset = unet.TransformedDataset(dataset, random_flip)
+    # initialize training dataset
+    dataset = init_training_dataset(
+        params=params,
+        train_sample_ids=train_sample_ids,
+        ignore_index=ignore_index,
+        dataset_path=dataset_path
+    )
 
     logger.info(f"Samples in training dataset: {len(dataset)}")
 
     # initialize testing dataset
-    pattern_test_filenames = os.path.join(
-        f"{dataset_path}", "videos_test", "[0-9][0-9]_video.tif"
+    testing_datasets = init_testing_dataset(
+        params=params,
+        test_sample_ids=test_sample_ids,
+        ignore_index=ignore_index,
+        dataset_path=dataset_path
     )
-
-    if params["nn_architecture"] in ['pablos_unet', 'github_unet', 'openai_unet']:
-        testing_datasets = [
-            SparkDataset(
-                base_path=dataset_path,
-                sample_ids=[sample_id],
-                testing=True,
-                smoothing=params["data_smoothing"],
-                step=params["testing_data_step"],
-                duration=params["data_duration"],
-                remove_background=params["remove_background"],
-                temporal_reduction=params["temporal_reduction"],
-                num_channels=params["num_channels"],
-                normalize_video=params["norm_video"],
-                only_sparks=params["only_sparks"],
-                sparks_type=params["sparks_type"],
-                ignore_frames=params["ignore_frames_loss"],
-                ignore_index=ignore_index,
-                inference=params["inference"],
-            )
-            for sample_id in test_sample_ids
-        ]
-    elif params["nn_architecture"] == 'unet_lstm':
-        testing_datasets = [
-            SparkDatasetLSTM(
-                base_path=dataset_path,
-                sample_ids=[sample_id],
-                testing=True,
-                duration=params["data_duration"],
-                smoothing=params["data_smoothing"],
-                remove_background=params["remove_background"],
-                temporal_reduction=params["temporal_reduction"],
-                num_channels=params["num_channels"],
-                normalize_video=params["norm_video"],
-                only_sparks=params["only_sparks"],
-                sparks_type=params["sparks_type"],
-                ignore_index=ignore_index,
-                inference=params["inference"]
-            )
-            for sample_id in test_sample_ids
-        ]
-    else:
-        logger.error(
-            f"{params['nn_architecture']} is not a valid nn architecture.")
-        exit()
 
     for i, tds in enumerate(testing_datasets):
         logger.info(f"Testing dataset {i} contains {len(tds)} samples")
@@ -373,95 +130,10 @@ if __name__ == "__main__":
         num_workers=params["num_workers"],
         pin_memory=pin_memory,
     )
-    # testing_dataset_loaders = [
-    #    DataLoader(test_dataset,
-    #               batch_size=params['batch_size'],
-    #               shuffle=False,
-    #               num_workers=params['num_workers'])
-    #    for test_dataset in testing_datasets
-    # ] NON VIENE USATO ???
 
     ############################## configure UNet ##############################
 
-    if params["nn_architecture"] == "pablos_unet":
-
-        batch_norm = {"batch": True, "none": False}
-
-        unet_config = unet.UNetConfig(
-            steps=params["unet_steps"],
-            first_layer_channels=params["first_layer_channels"],
-            num_classes=num_classes,
-            ndims=ndims,
-            dilation=params["dilation"],
-            border_mode=params["border_mode"],
-            batch_normalization=batch_norm[params["batch_normalization"]],
-            num_input_channels=params["num_channels"],
-        )
-
-        if not params["temporal_reduction"]:
-            network = unet.UNetClassifier(unet_config)
-        else:
-            assert (
-                params["data_duration"] % params["num_channels"] == 0
-            ), "using temporal reduction chunks_duration must be a multiple of num_channels"
-            network = TempRedUNet(unet_config)
-
-    elif params["nn_architecture"] == "github_unet":
-
-        network = UNet(
-            in_channels=params["num_channels"],
-            out_channels=num_classes,
-            n_blocks=params["unet_steps"] + 1,
-            start_filts=params["first_layer_channels"],
-            up_mode=params["up_mode"],
-            # up_mode = 'transpose', # TESTARE DIVERSE POSSIBILTÀ
-            # up_mode='resizeconv_nearest',  # Enable to avoid checkerboard artifacts
-            merge_mode="concat",  # Default, dicono che funziona meglio
-            # planar_blocks=(0,), # magari capire cos'è e testarlo ??
-            activation="relu",
-            normalization=params[
-                "batch_normalization"
-            ],  # Penso che nell'implementazione di Pablo è 'none'
-            attention=params["attention"],  # magari da testare con 'True' ??
-            # full_norm=False,  # Uncomment to restore old sparse normalization scheme
-            dim=ndims,
-            # 'valid' ha dei vantaggi a quanto pare...
-            conv_mode=params["border_mode"],
-        )
-
-    elif params["nn_architecture"] == "unet_lstm":
-
-        batch_norm = {"batch": True, "none": False}
-        ndims = 2  # convolutions applied to single frames
-
-        unet_config = unet.UNetConfig(
-            steps=params["unet_steps"],
-            first_layer_channels=params["first_layer_channels"],
-            num_classes=num_classes,
-            ndims=ndims,
-            dilation=params["dilation"],
-            border_mode=params["border_mode"],
-            batch_normalization=batch_norm[params["batch_normalization"]],
-            # num_input_channels=params["data_duration"], # frames seen as modalities
-            num_input_channels=params["num_channels"]
-        )
-
-        network = UNetConvLSTM(
-            unet_config, bidirectional=params["bidirectional"])
-
-    elif params["nn_architecture"] == "openai_unet":
-        network = unet_openai.UNetModel(
-            # image_size=x.shape[1:],
-            in_channels=params["num_channels"],
-            model_channels=params["first_layer_channels"],
-            out_channels=num_classes,
-            num_res_blocks=2,
-            attention_resolutions=[],
-            # attention_resolutions=[8], # bottom layer
-            dropout=0.0,
-            dims=ndims,
-            # use_checkpoint=True
-        )
+    network = init_model(params=params, num_classes=num_classes, ndims=ndims)
 
     if device != "cpu":
         network = nn.DataParallel(network).to(device, non_blocking=True)
@@ -510,52 +182,13 @@ if __name__ == "__main__":
     else:
         load_path = None
 
-    # class weights
-    if params["criterion"] in ["nll_loss", "focal_loss", "sum_losses"]:
-        class_weights = compute_class_weights(dataset)
-        logger.info(
-            "Using class weights: {}".format(
-                ", ".join(str(w.item()) for w in class_weights)
-            )
-        )
-
-    if params["criterion"] == "nll_loss":
-        criterion = nn.NLLLoss(
-            ignore_index=ignore_index, weight=class_weights.to(
-                device, non_blocking=True)
-        )
-    elif params["criterion"] == "focal_loss":
-        criterion = FocalLoss(
-            reduction="mean",
-            ignore_index=ignore_index,
-            alpha=class_weights,
-            gamma=params["gamma"],
-        )
-    elif params["criterion"] == "lovasz_softmax":
-        if params["nn_architecture"] in ['pablos_unet', 'github_unet', 'openai_unet']:
-            criterion = LovaszSoftmax3d(
-                classes="present", per_image=False, ignore=ignore_index
-            )
-        elif params["nn_architecture"] == 'unet_lstm':
-            criterion = LovaszSoftmax(
-                classes="present", per_image=True, ignore=ignore_index
-            )
-    elif params["criterion"] == "sum_losses":
-        criterion = SumFocalLovasz(
-            classes="present",
-            per_image=False,
-            ignore=ignore_index,
-            alpha=class_weights,
-            gamma=params["gamma"],
-            reduction="mean",
-            w=params["w"],
-        )
-
-    elif params["criterion"] == "dice_loss":
-        softmax = nn.Softmax(dim=1)
-        criterion = mySoftDiceLoss(apply_nonlin=softmax,
-                                   batch_dice=True,
-                                   do_bg=False)
+    # initialize loss function
+    criterion = init_criterion(
+        params=params,
+        dataset=dataset,
+        ignore_index=ignore_index,
+        device=device
+    )
 
     # directory where predicted class movies are saved
     preds_output_dir = os.path.join(output_path, "predictions")
@@ -592,6 +225,7 @@ if __name__ == "__main__":
             ignore_frames=params["ignore_frames_loss"],
             training_name=params["run_name"],
             output_dir=preds_output_dir,
+            batch_size=params["batch_size"],
             training_mode=True,
             debug=debug_mode,
         ),
