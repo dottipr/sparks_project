@@ -13,7 +13,7 @@ import numpy as np
 from matplotlib import cm
 from PIL import Image
 from scipy import ndimage as ndi
-import vispy
+import vispy.color
 
 # REMARK
 # Come creare un dataframe con vari parametri

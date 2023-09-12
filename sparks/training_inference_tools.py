@@ -9,6 +9,7 @@ import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import wandb
 from data_processing_tools import (
     class_to_nb,
@@ -133,8 +134,6 @@ class myTrainingManager(unet.TrainingManager):
 ################################ training step #################################
 
 # Make one step of the training (update parameters and compute loss)
-
-
 def training_step(
     sampler,
     network,
@@ -157,24 +156,43 @@ def training_step(
     #    logger.info(f"Detect nan in network input: {torch.isnan(x).any()}")
     #    logger.info(f"Detect nan in network annotation: {torch.isnan(y).any()}")
 
+    # Calculate the required padding for both height and width:
+    # the input tensor must be divisible by 2**network.steps
+    _, _, h, w = x.shape
+    net_steps = network.module.config.steps
+    h_pad = max(2**net_steps - h % 2**net_steps, 0)
+    w_pad = max(2**net_steps - w % 2**net_steps, 0)
+
+    # Pad the input tensor once with calculated padding values
+    x = F.pad(x, (w_pad // 2, w_pad // 2 + w_pad % 2,
+                  h_pad // 2, h_pad // 2 + h_pad % 2))
+
     # Forward pass with mixed precision
     # with torch.cuda.amp.autocast():  # autocast as a context manager
     y_pred = network(x[:, None])  # [b, 4, d, 64, 512] or [b, 4, 64, 512]
 
+    # Calculate the cropping indices based on the padding
+    crop_h_start = h_pad // 2
+    crop_h_end = -(h_pad // 2 + h_pad % 2) if h_pad > 0 else None
+    crop_w_start = w_pad // 2
+    crop_w_end = -(w_pad // 2 + w_pad % 2) if w_pad > 0 else None
+
+    # Crop the output tensor once based on the calculated cropping indices
+    y_pred = y_pred[:, :, :, crop_h_start:crop_h_end, crop_w_start:crop_w_end]
+
     # Compute loss
+    # remove frames that must be ignored by the loss function
     if ignore_frames != 0:
-        pred = y_pred[:, :, ignore_frames:-ignore_frames]
-        target = y[:, ignore_frames:-ignore_frames]
-    else:
-        pred = y_pred
-        target = y
+        y_pred = y_pred[:, :, ignore_frames:-ignore_frames]
+        y = y[:, ignore_frames:-ignore_frames]
+
     # if isinstance(criterion, SoftDiceLoss):
     if type(criterion).__name__ == "mySoftDiceLoss":
         # set regions in pred where label is ignored to 0
-        pred = pred * (target != 4)
-        target = target * (target != 4)
+        y_pred = y_pred * (y != 4)
+        y = y * (y != 4)
     else:
-        target = target.long()
+        y = y.long()
 
     # move criterion weights to gpu
     if hasattr(criterion, "weight"):
@@ -184,7 +202,7 @@ def training_step(
         if (not criterion.NLLLoss.weight.is_cuda):
             criterion.NLLLoss.weight = criterion.NLLLoss.weight.to(device)
     # compute loss
-    loss = criterion(pred, target)
+    loss = criterion(y_pred, y)
 
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
@@ -394,11 +412,33 @@ def do_inference(
         if detect_nan:
             detect_nan_sample(x, y)
 
+        # Calculate the required padding for both height and width:
+        # the input tensor must be divisible by 2**network.steps
+        _, _, h, w = x.shape
+        net_steps = network.module.config.steps
+        h_pad = max(2**net_steps - h % 2**net_steps, 0)
+        w_pad = max(2**net_steps - w % 2**net_steps, 0)
+
+        # Pad the input tensor once with calculated padding values
+        x = F.pad(x, (w_pad // 2, w_pad // 2 + w_pad % 2,
+                      h_pad // 2, h_pad // 2 + h_pad % 2))
+
         # torch.cuda.FloatTensor, b x d x 64 x 512
         x = x.to(device, non_blocking=True)
         batch_preds = (network(x[:, None]).cpu())
         # b x 4 x d x 64 x 512 with 3D-UNet
         # b x 4 x 64 x 512 with LSTM-UNet -> not implemented yet
+
+        # Calculate the cropping indices based on the padding
+        crop_h_start = h_pad // 2
+        crop_h_end = -(h_pad // 2 + h_pad % 2) if h_pad > 0 else None
+        crop_w_start = w_pad // 2
+        crop_w_end = -(w_pad // 2 + w_pad % 2) if w_pad > 0 else None
+
+        # Crop the output tensor once based on the calculated cropping indices
+        batch_preds = batch_preds[:, :, :,
+                                  crop_h_start:crop_h_end,
+                                  crop_w_start:crop_w_end]
 
         if not compute_loss:
             # if computing loss, need logit values, otherwise compute
