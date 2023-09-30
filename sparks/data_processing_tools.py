@@ -11,73 +11,76 @@ the end of the script (such as compute_filtered_butter, )
 
 import logging
 import math
-import os
 import time
 
 import cc3d
-import imageio
 import numpy as np
 from scipy import fftpack
 from scipy import ndimage as ndi
 from scipy import signal, spatial
-from scipy.ndimage.morphology import binary_dilation, binary_erosion
 from skimage import morphology
-from skimage.draw import ellipsoid
 from skimage.filters import threshold_otsu
 from skimage.segmentation import watershed
 
+from config import config
+
 logger = logging.getLogger(__name__)
-
-################################ Global params #################################
-
-# physiological params to get sparks locations
-# these have to be coherent in the whole project
-
-PIXEL_SIZE = 0.2  # 1 pixel = 0.2 um x 0.2 um
-global MIN_DIST_XY
-MIN_DIST_XY = round(1.8 / PIXEL_SIZE)  # min distance in space between sparks
-TIME_FRAME = 6.8  # 1 frame = 6.8 ms
-global MIN_DIST_T
-MIN_DIST_T = round(20 / TIME_FRAME)  # min distance in time between sparks
-
 
 ########################## Annotations preprocessing ###########################
 
 
-def keep_percentile(movie, roi_mask, k=75):
+def keep_percentile(movie, roi_mask, percentile=75, min_roi_size=2):
     """
-    For a given event ROI, keep only points above k-th percentile.
+    For a given event ROI, keep only points above a certain percentile.
 
-    movie:                 input movie (possibly smoothed version)
-    roi_mask:              ROI corrisponding to one event
-    k:                     value of percentile
-    keep_border:           if True, sum values of mask before dilation +
-                           erosion to final mask
-    dilation_erosion_iter: number of dilation and erosion iterations
+    Args:
+        movie (numpy.ndarray): Input movie, possibly smoothed.
+        roi_mask (numpy.ndarray): ROI corresponding to one event.
+        percentile (int): Percentile value (e.g., 75).
+        min_roi_size (int): Minimum size of the ROI in pixels.
 
-    return:                new ROI corresponding to event
+    Returns:
+        numpy.ndarray: New ROI corresponding to the event.
     """
-
-    # extract movie ROI to event
+    # Extract movie ROI for the event
     movie_event = np.where(roi_mask, movie, 0)
 
-    # compute percentile
-    movie_event_values = movie_event[np.nonzero(movie_event)]
-    percentile = np.percentile(movie_event_values, k)
+    # Compute the specified percentile
+    movie_event_values = movie_event[movie_event > 0]
+    threshold_value = np.percentile(movie_event_values, percentile)
 
-    new_roi_mask = movie_event >= percentile
+    # Threshold the ROI to keep values above the percentile
+    new_roi_mask = movie_event >= threshold_value
 
-    # if any of the new ROI dims is shorter than 3 pixels, first dilate it
+    # Check if any of the new ROI dims is smaller than min_roi_size
     roi_sizes = np.max(np.where(new_roi_mask), axis=1) - np.min(
         np.where(new_roi_mask), axis=1
     )
-    if roi_sizes.min() < 2:
+
+    # If any dimension is too small, dilate the ROI
+    if roi_sizes.min() < min_roi_size:
         new_roi_mask = ndi.binary_dilation(new_roi_mask, iterations=1)
+
+    # Get the convex hull of the ROI for a more regular shape
     new_roi_mask = get_convex_hull(new_roi_mask)[0]
+
     return new_roi_mask
 
 
 def reduce_sparks_size(movie, class_mask, event_mask, sigma=2, k=75):
+    """
+    Reduce spark dimensions in the class annotation mask.
+
+    Args:
+    movie (ndarray): Input movie array.
+    class_mask (ndarray): Mask with classified events.
+    event_mask (ndarray): Mask with identified events.
+    sigma (float): Sigma parameter of the Gaussian filter.
+    k (int): Value of percentile.
+
+    Returns:
+    ndarray: Class mask where removed parts are labeled as undefined (4).
+    """
     """
     Reduce sparks dimension in class annotation mask.
     movie :                input array
@@ -90,7 +93,7 @@ def reduce_sparks_size(movie, class_mask, event_mask, sigma=2, k=75):
     """
     # normalise input movie between 0 and 1
     if movie.max() > 1:
-        movie = (movie - movie.min()) / (movie.max() - movie.min())
+        movie = (movie - movie.min()) / (movie.max() - movie.min())ujgfdy<vb
 
     # get sparks event mask
     spark_mask = np.where(class_mask == 1, event_mask, 0)
@@ -113,7 +116,8 @@ def reduce_sparks_size(movie, class_mask, event_mask, sigma=2, k=75):
         roi_mask = spark_mask == id_roi
 
         # reduce sparks size dimension wrt to percentile
-        new_roi_mask = keep_percentile(movie=movie, roi_mask=roi_mask, k=k)
+        new_roi_mask = keep_percentile(
+            movie=movie, roi_mask=roi_mask, percentile=k)
         # set new smaller spark peak to 1
         new_peak = np.logical_and(roi_mask, new_roi_mask)
         new_class_mask[new_peak] = 1
@@ -138,11 +142,10 @@ def final_mask(mask, radius1=2.5, radius2=3.5, ignore_ind=2):  # SLOW
 def get_new_mask(
     video,
     mask,
-    min_dist_xy=MIN_DIST_XY,
-    min_dist_t=MIN_DIST_T,
+    min_dist_xy=config.min_dist_xy,
+    min_dist_t=config.min_dist_t,
     radius_event=3,
     radius_ignore=2,
-    ignore_index=4,
     sigma=2,
     return_loc=False,
     return_loc_and_mask=False,
@@ -188,7 +191,7 @@ def get_new_mask(
             sparks_mask,
             radius1=radius_event,
             radius2=radius_event + radius_ignore,
-            ignore_ind=ignore_index,
+            ignore_ind=config.ignore_index,
         )
 
         # remove sparks from old mask
@@ -218,64 +221,47 @@ def get_new_mask(
             return mask
 
 
-def get_new_mask_raw_sparks(
-    mask,
-    radius_ignore_sparks=1,
-    radius_ignore_puffs=3,
-    radius_ignore_waves=5,
-    ignore_index=4,
+def get_mask_dilated_events(
+    mask, list_radius_ignore=[1, 5, 3], list_erosion=[0, 1, 1]
 ):
     """
     from raw segmentation masks get masks where each event has an ignore region
     around itself
+
+    if list_erosion[i] = 1 apply erosion to class i+1 else only dilation
     """
 
-    ignore_mask_sparks = None
-    if 1 in mask:
-        sparks_mask = np.where(mask == 1, 1, 0)
-        dilated_mask = ndi.binary_dilation(
-            sparks_mask, iterations=radius_ignore_sparks)
-        eroded_mask = ndi.binary_erosion(
-            sparks_mask, iterations=radius_ignore_sparks)
-        ignore_mask_sparks = np.logical_xor(dilated_mask, eroded_mask)
-        # imageio.volwrite("TEST_IGNORE_MASK_SPARKS.tif", np.uint8(ignore_mask_sparks))
+    # Check that list_radius_ignore contains a value for each class
+    assert len(list_radius_ignore) == config.num_classes - 1, (
+        f"list_radius_ignore must contain {config.num_classes - 1} values, "
+        f"but contains {len(list_radius_ignore)}."
+    )
 
-    ignore_mask_waves = None
-    if 2 in mask:
-        waves_mask = np.where(mask == 2, 1, 0)
-        dilated_mask = ndi.binary_dilation(
-            waves_mask, iterations=radius_ignore_waves)
-        eroded_mask = ndi.binary_erosion(
-            waves_mask, iterations=radius_ignore_waves)
-        ignore_mask_waves = np.logical_xor(dilated_mask, eroded_mask)
-        # imageio.volwrite("TEST_IGNORE_MASK_WAVES.tif", np.uint8(ignore_mask_waves))
+    # Check that list_erosion contains a value for each class
+    assert len(list_erosion) == config.num_classes - 1, (
+        f"list_erosion must contain {config.num_classes - 1} values, "
+        f"but contains {len(list_erosion)}."
+    )
 
-    ignore_mask_puffs = None
-    if 3 in mask:
-        puffs_mask = np.where(mask == 3, 1, 0)
-        dilated_mask = ndi.binary_dilation(
-            puffs_mask, iterations=radius_ignore_puffs)
-        eroded_mask = ndi.binary_erosion(
-            puffs_mask, iterations=radius_ignore_puffs)
-        ignore_mask_puffs = np.logical_xor(dilated_mask, eroded_mask)
-        # imageio.volwrite("TEST_IGNORE_MASK_PUFFS.tif", np.uint8(ignore_mask_puffs))
+    for class_id in config.classes_dict.values():
+        ignore_mask = None
+        if class_id in mask:
+            class_mask = np.where(mask == class_id, 1, 0)
+            dilated_mask = ndi.binary_dilation(
+                class_mask, iterations=list_radius_ignore[class_id - 1]
+            )
+            if list_erosion[class_id - 1] == 1:
+                eroded_mask = ndi.binary_erosion(
+                    class_mask, iterations=list_radius_ignore[class_id - 1]
+                )
+                ignore_mask = np.logical_xor(dilated_mask, eroded_mask)
+            else:
+                ignore_mask = np.logical_xor(dilated_mask, class_mask)
 
-    if ignore_mask_sparks is not None:
-        mask = np.where(ignore_mask_sparks, ignore_index, mask)
-    if ignore_mask_puffs is not None:
-        mask = np.where(ignore_mask_puffs, ignore_index, mask)
-    if ignore_mask_waves is not None:
-        mask = np.where(ignore_mask_waves, ignore_index, mask)
+            if ignore_mask is not None:
+                mask = np.where(ignore_mask, config.ignore_index, mask)
 
     return mask
-
-    # remove sparks from old mask
-    no_sparks_mask = np.where(mask == 1, 0, mask)
-
-    # create new mask
-    new_mask = np.where(sparks_mask != 0, sparks_mask, no_sparks_mask)
-
-    return new_mask
 
 
 ########################### General masks processing ###########################
@@ -299,7 +285,7 @@ def class_to_nb(event_type):
     return class_to_nb_dict[event_type]
 
 
-def sparks_connectivity_mask(min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T):
+def sparks_connectivity_mask(min_dist_xy=config.min_dist_xy, min_dist_t=config.min_dist_t):
     """
     Compute the mask that defines the minimal distance between two spark peaks.
     """
@@ -729,10 +715,25 @@ def merge_labels(labelled_mask, max_gap):
 
 
 def remove_small_events(
-    class_instances, class_type, min_t=None, min_width=None, max_gap=None
+    class_instances, class_type, min_t=None, min_width=None, max_gap=None,
+    new_id=0
 ):
     r"""
     Remove small predicted events and merge events belonging together.
+
+    class_instances:    numpy array with labelled events (positive integers)
+    class_type:         string, in ['sparks', 'puffs', 'waves']
+    min_t:              minimum duration of an event (in frames, only for 
+                        sparks and puffs)
+    min_width:          minimum width of an event (in pixels, only for sparks
+                        and waves)
+    max_gap:            maximum gap between two events (in frames, only for
+                        puffs and waves)
+    new_id:             int, value used to replace removed events (default: 0)
+                        if not 0, use a very high value not to interfere with
+                        other events
+
+    return mask where such events are removed/relabelled
     """
 
     if class_type in ["puffs", "waves"]:
@@ -762,7 +763,7 @@ def remove_small_events(
                 event_width = slices[2].stop - slices[2].start
             if event_width < min_width:
                 # logger.debug(f"Removing event labelled with {idx} (too small)")
-                class_instances = np.where(event_roi, 0, class_instances)
+                class_instances = np.where(event_roi, new_id, class_instances)
 
         if class_type in ["sparks", "puffs"]:
             assert min_t is not None, "Provide 'min_t' with sparks and puffs."
@@ -771,7 +772,7 @@ def remove_small_events(
             event_t = slices[0].stop - slices[0].start
             if event_t < min_t:
                 # logger.debug(f"Removing event labelled with {idx} (too short)")
-                class_instances = np.where(event_roi, 0, class_instances)
+                class_instances = np.where(event_roi, new_id, class_instances)
 
     return class_instances
 
@@ -781,14 +782,6 @@ def get_processed_result(
     puffs,
     waves,
     xs,
-    conn_mask,
-    connectivity,
-    max_gap,
-    sigma,
-    wave_min_width,
-    puff_min_t,
-    spark_min_t,
-    spark_min_width,
     training_mode=False,
     debug=False
 ):
@@ -987,7 +980,7 @@ def detect_spark_peaks(
 
 
 def get_sparks_locations_from_mask(
-    mask, min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T, ignore_frames=0
+    mask, min_dist_xy=config.min_dist_xy, min_dist_t=config.min_dist_t, ignore_frames=0
 ):
     """
     Get sparks coords from annotations mask with spark peaks.
@@ -1015,12 +1008,13 @@ def get_sparks_locations_from_mask(
     return coords
 
 
+# OLD
 def process_spark_prediction(
     pred,
     movie=None,
     t_detection=0.9,
-    min_dist_xy=MIN_DIST_XY,
-    min_dist_t=MIN_DIST_T,
+    min_dist_xy=config.min_dist_xy,
+    min_dist_t=config.min_dist_t,
     min_radius=3,
     return_mask=False,
     return_clean_pred=False,

@@ -1,5 +1,64 @@
 # Detection and Classification of Local Ca²⁺ Release Events in Cardiomyocytes Using 3D-UNet Neural Network
 
+## Project's directories organization
+TODO: Idea presa da chatGPT.. adattare il mio codice e poi adattare questa lista
+project_root/
+│
+├── data/
+│   ├── raw/
+│   │   ├── dataset1/
+│   │   │   ├── train/
+│   │   │   └── test/
+│   │   └── dataset2/
+│   │       ├── train/
+│   │       └── test/
+│   ├── processed/
+│   │   ├── dataset1/
+│   │   │   ├── train/
+│   │   │   └── test/
+│   │   └── dataset2/
+│   │       ├── train/
+│   │       └── test/
+│   ├── annotations/
+│   │   ├── dataset1/
+│   │   ├── dataset2/
+│   └── ...
+│
+├── code/
+│   ├── notebooks/
+│   ├── src/
+│   │   ├── data_preprocessing/
+│   │   ├── model/
+│   │   ├── training/
+│   │   ├── evaluation/
+│   │   └── utils/
+│   ├── config/
+│   ├── experiments/
+│   └── ...
+│
+├── experiments/
+│   ├── experiment1/
+│   ├── experiment2/
+│   └── ...
+│
+├── logs/
+│   ├── training_logs/
+│   └── ...
+│
+├── models/
+│   ├── saved_models/
+│   └── ...
+│
+├── results/
+│   ├── metrics/
+│   ├── visualizations/
+│   └── ...
+│
+├── environment.yml
+├── README.md
+├── requirements.txt
+└── .gitignore
+
 ## How to clone this repo
 
 Use command:
@@ -9,6 +68,10 @@ git clone --recurse-submodules -j8 git@github.com:priscacheese/sparks_project.gi
 
 (See: [How do I "git clone" a repo, including its submodules?](https://stackoverflow.com/questions/3796927/how-do-i-git-clone-a-repo-including-its-submodules))
 
+
+## REMARKS:
+Some parts of the code are optimized to accept different datasets with different classes etc, but some others aren't.  
+For example, some visualization tools only work for our specific dataset.
 ## List of main Python scripts (status at 18/10/2022)
 
 Short explanation of the purposes of each script present in this project.

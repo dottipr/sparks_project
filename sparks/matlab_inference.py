@@ -1,3 +1,12 @@
+""""
+Script that contains a function that can be used to get 
+predictions from a movie path or from a movie array in numpy 
+format in Matlab.
+
+TODO: update the code according to the meeting I had with Rado
+and the updated versions of the other scripts.
+"""
+
 import napari
 from visualization_tools import get_annotations_contour, get_discrete_cmap, get_labels_cmap
 import imageio
@@ -7,7 +16,7 @@ import numpy as np
 import torch
 from datasets import SparkDatasetPath
 from torch import nn
-from training_inference_tools import get_preds, myTrainingManager
+from training_inference_tools import get_preds, MyTrainingManager
 from data_processing_tools import get_processed_result, preds_dict_to_mask
 from in_out_tools import write_videos_on_disk
 from training_script_utils import init_model
@@ -77,11 +86,7 @@ assert params['nn_architecture'] in ['pablos_unet', 'github_unet', 'openai_unet'
 ### Configure UNet ###
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-network = init_model(
-    params=params,
-    num_classes=4,
-    ndims=3
-)
+network = init_model(params=params)
 network = nn.DataParallel(network).to(device)
 network.eval()
 
@@ -92,7 +97,7 @@ summary_writer = SummaryWriter(
     os.path.join(model_path, "summary"), purge_step=0
 )
 
-trainer = myTrainingManager(
+trainer = MyTrainingManager(
     # training items
     training_step=None,
     save_path=model_path,
@@ -135,17 +140,17 @@ def get_preds_from_path(
     ### Get sample as dataset ###
     sample_dataset = SparkDatasetPath(
         sample_path=movie_path,
-        step=params["data_step"],
-        duration=params["data_duration"],
-        smoothing=params["data_smoothing"],
-        remove_background=params["remove_background"],
-        temporal_reduction=params["temporal_reduction"],
-        num_channels=params["num_channels"],
-        normalize_video=params["norm_video"],
-        only_sparks=params["only_sparks"],
-        sparks_type=params["sparks_type"],
+        params.data_step=params["data_step"],
+        params.data_duration=params["data_duration"],
+        params.data_smoothing=params["data_smoothing"],
+        params.remove_background=params["remove_background"],
+        params.temporal_reduction=params["temporal_reduction"],
+        params.num_channels=params["num_channels"],
+        params.norm_video=params["norm_video"],
+        params.only_sparks=params["only_sparks"],
+        params.sparks_type=params["sparks_type"],
         ignore_index=4,
-        ignore_frames=params["ignore_frames_loss"],
+        params.ignore_frames_loss=params["ignore_frames_loss"],
         # resampling=False, # could be implemented later
         # resampling_rate=150,
     )
@@ -153,9 +158,9 @@ def get_preds_from_path(
     ### Set physiological parameters ###
 
     # min distance in space between two sparks
-    min_dist_xy = sample_dataset.min_dist_xy  # = 9 pixels
+    min_dist_xy = sample_dataset.confi.min_dist_xy  # = 9 pixels
     # min distance in time between two sparks
-    min_dist_t = sample_dataset.min_dist_t  # = 3 frames
+    min_dist_t = sample_dataset.config.min_dist_t  # = 3 frames
 
     # spark instances detection parameters
     radius = math.ceil(min_dist_xy / 2)
@@ -168,7 +173,7 @@ def get_preds_from_path(
     spark_min_width = 3
     spark_min_t = 3
     puff_min_t = 5
-    wave_min_width = round(15 / sample_dataset.pixel_size)
+    wave_min_width = round(15 / sample_dataset.config.pixel_size)
 
     # connectivity for event instances detection
     connectivity = 26
@@ -183,8 +188,6 @@ def get_preds_from_path(
         network=model,
         test_dataset=sample_dataset,
         compute_loss=False,
-        device=next(model.parameters()).device,  # same device as model
-        batch_size=1,
         inference_types=None,
     )  # ys and preds are numpy arrays
 
