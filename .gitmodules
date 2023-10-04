@@ -1,6 +1,0 @@
-[submodule "sparks/LovaszSoftmax"]
-	path = sparks/LovaszSoftmax
-	url = https://github.com/bermanmaxim/LovaszSoftmax.git
-[submodule "nnUNet"]
-	path = nnUNet
-	url = git@github.com:MIC-DKFZ/nnUNet.git

@@ -147,8 +147,6 @@ cython_debug/
 anaconda3/
 OLD/
 wandb/
-*runs/
-predictions/
 .keras/
 .conda/
 .jupyter/
@@ -162,27 +160,23 @@ predictions/
 .python_history
 .viminfo
 slurm*
-test*
 2020*
 2021*
 2022*
-*old*
-*OLD*
-*LOCAL*
 *.png
 *.csv
 .Xauthority
 #*.txt
 *.json
 *.jpg
-*DELETEME*
 UNETR
-models/*
-data2/*
-*TEST*
+models/saved_models/*
 pytorch/
 sparks/trainings_validation/*
-data/*
+data/sparks_dataset/*
+*old*
+*local*
+*deleteme*
 
 # other projects' directories
 elektronn3-dev
