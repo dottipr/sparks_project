@@ -19,7 +19,7 @@ from config import TrainingConfig, config
 from data.data_processing_tools import preds_dict_to_mask, process_raw_predictions
 from data.datasets import SparkDatasetPath
 from utils.in_out_tools import write_videos_on_disk
-from utils.training_inference_tools import get_preds
+from utils.training_inference_tools import get_preds, get_preds_from_path
 from utils.training_script_utils import init_model
 from utils.visualization_tools import (
     get_annotations_contour,
@@ -63,87 +63,11 @@ def main():
 
     # Define movie path
     movie_path = os.path.join(
-        r"C:\Users\dotti\sparks_project\data\sparks_dataset", "05_video.tif"
+        r"C:\Users\prisc\Code\sparks_project\data\sparks_dataset\34_video.tif"
+        # r"C:\Users\dotti\sparks_project\data\sparks_dataset", "05_video.tif"
     )
 
-    # Function definition
-    @torch.no_grad()
-    def get_preds_from_path(
-        model, params, movie_path, return_dict=False, output_dir=None
-    ):
-        """
-        Function to get predictions from a movie path.
-
-        Args:
-        - model: Model to use for prediction.
-        - params: Training parameters for prediction.
-        - movie_path: Path to the movie.
-        - return_dict: If True, return a dictionary; else return a tuple of numpy arrays.
-        - output_dir: If not None, save raw predictions on disk.
-
-        Returns:
-        - If return_dict is True, return a dictionary with keys 'sparks', 'puffs', 'waves';
-        else return a tuple of numpy arrays with integral values for classes and instances.
-        """
-
-        ### Get sample as dataset ###
-        sample_dataset = SparkDatasetPath(
-            sample_path=movie_path,
-            params=params,
-            ignore_index=config.ignore_index,
-            # resampling=False, # It could be implemented later
-            # resampling_rate=150,
-        )
-
-        ### Run sample in UNet ###
-        input_movie, preds_dict = get_preds(
-            network=model,
-            test_dataset=sample_dataset,
-            compute_loss=False,
-            params=params,
-            inference_types=None,
-            return_dict=True,
-        )
-
-        ### Get processed output ###
-
-        # Get predicted segmentation and event instances
-        preds_instances, preds_segmentation, _ = process_raw_predictions(
-            raw_preds_dict=preds_dict,
-            input_movie=input_movie,
-            training_mode=False,
-            debug=False,
-        )
-        # preds_instances and preds_segmentations are dictionaries
-        # with keys 'sparks', 'puffs', 'waves'.
-
-        ## Save raw preds on disk ### I don't know if this is necessary
-        if output_dir is not None:
-            # Create output directory if it does not exist
-            os.makedirs(output_dir, exist_ok=True)
-            write_videos_on_disk(
-                training_name=None,
-                video_name=sample_dataset.video_name,
-                path=output_dir,
-                preds=[
-                    None,
-                    preds_dict["sparks"],
-                    preds_dict["waves"],
-                    preds_dict["puffs"],
-                ],
-                ys=None,
-            )
-
-        if return_dict:
-            return preds_segmentation, preds_instances
-
-        else:
-            # Get integral values for classes and instances
-            preds_segmentation = preds_dict_to_mask(preds_segmentation)
-            preds_instances = sum(preds_instances.values())
-            # Instances already have different IDs
-
-            return preds_segmentation, preds_instances
+    ### Get predictions from movie path ###
 
     segmentation, instances = get_preds_from_path(
         model=network,

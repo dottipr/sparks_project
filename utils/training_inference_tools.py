@@ -19,14 +19,19 @@ from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 from torch import nn
 
 from config import config
-from data.data_processing_tools import (masks_to_instances_dict,
-                                        preds_dict_to_mask,
-                                        process_raw_predictions,
-                                        trim_and_pad_video)
+from data.data_processing_tools import (
+    masks_to_instances_dict,
+    preds_dict_to_mask,
+    process_raw_predictions,
+    trim_and_pad_video,
+)
 from data.datasets import SparkDatasetPath
-from evaluation.metrics_tools import (compute_iou, get_matches_summary,
-                                      get_metrics_from_summary,
-                                      get_score_matrix)
+from evaluation.metrics_tools import (
+    compute_iou,
+    get_matches_summary,
+    get_metrics_from_summary,
+    get_score_matrix,
+)
 from models.UNet import unet
 from models.UNet.unet.trainer import _write_results
 from utils.in_out_tools import write_videos_on_disk
@@ -520,10 +525,9 @@ def gaussian(n_chunks):
 @torch.no_grad()
 def do_inference(
     network,
-    test_dataset,
+    params,
     test_dataloader,
     device,
-    detect_nan=False,
     compute_loss=False,
     inference_types=None,
     return_dict=False,
@@ -532,20 +536,19 @@ def do_inference(
     Perform inference on a test dataset using a network model.
 
     Args:
-        network (nn.Module): The network model.
-        test_dataset (Dataset): The test dataset.
-        test_dataloader (DataLoader): DataLoader for the test dataset.
-        device (torch.device): The device to perform inference on.
-        detect_nan (bool): Flag to detect NaN values.
-        compute_loss (bool): Flag to compute the loss.
-        inference_types (list): List of inference types.
-            If None, use the inference type defined in the test dataset.
-            Otherwise, use the inference types provided in the list.
-        return_dict (bool): Flag to return a dictionary with inference type as
-            key and predictions as value, or a single tensor of predictions.
+    - network (nn.Module): The network model.
+    - params (TrainingConfig): A TrainingConfig containing various parameters.
+    - test_dataloader (DataLoader): DataLoader for the test dataset.
+    - device (torch.device): The device to perform inference on.
+    - compute_loss (bool): Flag to compute the loss.
+    - inference_types (list): List of inference types.
+        If None, use the inference type defined in the test dataset.
+        Otherwise, use the inference types provided in the list.
+    - return_dict (bool): Flag to return a dictionary with inference type as
+        key and predictions as value, or a single tensor of predictions.
 
     Returns:
-        preds: Predictions based on the specified inference type(s).
+    - preds: Predictions based on the specified inference type(s).
         If inference_types is None, preds is a tensor of shape
         num_classes x movie duration x 64 x 512.
         Otherwise, preds is a dictionary with inference type as key and
@@ -555,7 +558,13 @@ def do_inference(
     chunk_idx = 0
 
     if inference_types is None:
-        inference_types = [test_dataset.inference]
+        inference_types = [params.inference]
+
+    # Move network to device
+    network.to(device)
+
+    # Set network to evaluation mode
+    network.eval()
 
     # Initialize dictionary with predictions
     preds = {i: [] for i in inference_types}
@@ -566,44 +575,43 @@ def do_inference(
 
         # Check and set up overlap inference
         assert (
-            test_dataset.duration - test_dataset.step
+            params.data_duration - params.data_step
         ) % 2 == 0, "(duration-step) is not even in overlap inference"
-        half_overlap = (test_dataset.duration - test_dataset.step) // 2
+        half_overlap = (params.data_duration - params.data_step) // 2
 
         # Adapt half_overlap duration if using temporal reduction
-        if test_dataset.temporal_reduction:
-            assert half_overlap % test_dataset.num_channels == 0, (
+        if params.temporal_reduction:
+            assert half_overlap % params.num_channels == 0, (
                 "With temporal reduction half_overlap must be "
                 "a multiple of num_channels"
             )
 
-            half_overlap_mask = half_overlap // test_dataset.num_channels
+            half_overlap_mask = half_overlap // params.num_channels
         else:
             half_overlap_mask = half_overlap
 
         preds["overlap"] = []
-        n_chunks = len(test_dataset)
+        n_chunks = len(params)
 
     if (
         "average" in inference_types
         or "max" in inference_types
         or "gaussian" in inference_types
     ):
-        movie_duration = test_dataset.data[0].shape[0]
+        movie_duration = params.data[0].shape[0]
 
         # Initialize dict with list of predictions for each frame
         output_frames = {idx: [] for idx in range(movie_duration)}
-        chunks = test_dataset.get_chunks(
-            test_dataset.lengths[0], test_dataset.step, test_dataset.duration
-        )
+        chunks = params.get_chunks(params.lengths[0], params.step, params.duration)
 
     for x in test_dataloader:
         # If ground truth is available, x is a tuple (x, y)
-        if test_dataset.gt_available:
-            x, y = x
-
-        if detect_nan:
-            detect_nan_sample(x, y)
+        if isinstance(x, tuple):
+            # x is a tuple
+            x, _ = x
+        else:
+            # x is not a tuple
+            pass
 
         # Calculate the required padding for both height and width:
         _, _, h, w = x.shape
@@ -730,28 +738,26 @@ def do_inference(
 # function to run a test sample (i.e., a test dataset) in the UNet
 @torch.no_grad()
 def get_preds(
-    network,
-    test_dataset,
-    compute_loss,
+    model,
     params,
+    test_dataset,
+    return_dict=False,
     criterion=None,
     detect_nan=False,
     test_dataloader=None,
     inference_types=None,
-    return_dict=False,
 ):
     """
-    Given a trained model, a test sample (i.e., a test dataset), and a device,
-    run the sample in the model and return the predictions.
+    Given a trained model and a test sample (i.e., a test dataset), run the
+    sample in the model and return the predictions.
 
     Args:
-        network (torch.nn.Module): The trained neural network model.
+        model (torch.nn.Module): The trained neural network model.
         test_dataset (torch.utils.data.Dataset): The test dataset containing the
             sample.
-        compute_loss (bool): Whether to compute the loss (requires providing a
-            criterion).
         params (TrainingConfig): A TrainingConfig containing various parameters.
-        criterion (torch.nn.Module, optional): The loss criterion for computing loss.
+        criterion (torch.nn.Module, optional): If provided, the loss criterion
+            for computing loss.
         detect_nan (bool, optional): Whether to detect NaN values in input and
             annotation tensors.
         test_dataloader (torch.utils.data.DataLoader, optional): An existing
@@ -774,12 +780,6 @@ def get_preds(
         loss (float or None): The loss value if `compute_loss` is True, otherwise
             None.
     """
-
-    # Ensure parameters are correctly provided
-    assert (
-        not compute_loss or criterion is not None
-    ), "Provide criterion if computing loss."
-
     if inference_types is None:
         assert test_dataset.inference in [
             "overlap",
@@ -806,12 +806,12 @@ def get_preds(
 
     # Run movie in the network and perform inference
     preds = do_inference(
-        network=network,
-        test_dataset=test_dataset,
+        network=model,
+        params=params,
         test_dataloader=test_dataloader,
         device=params.device,
         detect_nan=detect_nan,
-        compute_loss=compute_loss,
+        compute_loss=True if criterion is not None else False,
         inference_types=inference_types,
         return_dict=return_dict,
     )
@@ -892,7 +892,7 @@ def get_preds(
                         for event_type, pred in preds_dict.items()
                     }
 
-    if compute_loss:
+    if criterion is not None:
         assert ys is not None, "Cannot compute loss if annotations are not available."
 
         if ys.ndim == 3:
@@ -953,19 +953,23 @@ def get_preds_from_path(model, params, movie_path, return_dict=False, output_dir
     Function to get predictions from a movie path.
 
     Args:
-    - model: Model to use for prediction.
-    - params: Training parameters for prediction.
+    - model (torch.nn.Module): The trained neural network model.
+    - params (TrainingConfig): A TrainingConfig containing various parameters.
     - movie_path: Path to the movie.
-    - return_dict: If True, return a dictionary; else return a tuple of numpy arrays.
+    - return_dict (bool, optional): Whether to return a dictionary with
+        inference type as key and predictions as value, or a single tensor of
+        predictions. Defaults to False.
     - output_dir: If not None, save raw predictions on disk.
 
     Returns:
-    - If return_dict is True, return a dictionary with keys 'sparks', 'puffs', 'waves';
-      else return a tuple of numpy arrays with integral values for classes and instances.
+    - If return_dict is True, return a dictionary with keys 'sparks', 'puffs',
+        'waves'; else return a tuple of numpy arrays with integral values for
+        classes and instances.
     """
 
     ### Get sample as dataset ###
     sample_dataset = SparkDatasetPath(
+        sample_path=movie_path,
         params=params,
         ignore_index=config.ignore_index,
         # resampling=False, # It could be implemented later
@@ -974,9 +978,8 @@ def get_preds_from_path(model, params, movie_path, return_dict=False, output_dir
 
     ### Run sample in UNet ###
     input_movie, preds_dict = get_preds(
-        network=model,
+        model=model,
         test_dataset=sample_dataset,
-        compute_loss=False,
         params=params,
         inference_types=None,
         return_dict=True,
@@ -1059,7 +1062,6 @@ def get_preds_from_path(model, params, movie_path, return_dict=False, output_dir
 #         xs, ys, preds = get_preds(
 #             network=network,
 #             test_dataset=test_dataset,
-#             compute_loss=False,
 #             device=device,
 #         )
 
@@ -1135,9 +1137,8 @@ def test_function(
 
         # Run sample in UNet, returns a list [bg, sparks, waves, puffs]
         xs, ys, preds, loss = get_preds(
-            network=network,
+            model=network,
             test_dataset=test_dataset,
-            compute_loss=True,
             device=device,
             criterion=criterion,
             batch_size=params.batch_size,

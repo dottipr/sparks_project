@@ -197,9 +197,8 @@ def main():
         logger.info(f"\tProcessing samples in UNet...")
         # ys and preds are numpy arrays
         input_movies[sample_id], ys[sample_id], preds_dict[sample_id] = get_preds(
-            network=network,
+            model=network,
             test_dataset=testing_dataset,
-            compute_loss=False,
             params=params,
             inference_types=inference_types,
             return_dict=True,

@@ -169,7 +169,6 @@ slurm*
 #*.txt
 *.json
 *.jpg
-UNETR
 models/saved_models/*
 pytorch/
 sparks/trainings_validation/*
@@ -177,7 +176,3 @@ data/sparks_dataset/*
 *old*
 *local*
 *deleteme*
-
-# other projects' directories
-elektronn3-dev
-multi-object-tracker

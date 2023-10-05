@@ -9,9 +9,10 @@ import logging
 
 import torch
 import torch.nn.functional as F
-import UNet.unet as unet
 from torch import nn
-from unet.network import crop_and_merge
+
+from . import UNet as unet
+from .UNet.unet.network import crop_and_merge
 
 ### temporal reducion unet ###
 
