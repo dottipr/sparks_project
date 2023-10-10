@@ -9,6 +9,7 @@ Last modified: 28.09.2023
 # import datetime
 import logging
 import os
+from typing import Dict, List, Optional
 
 import imageio
 import numpy as np
@@ -48,7 +49,12 @@ logger = logging.getLogger(__name__)
 ################################ Loading utils #################################
 
 
-def load_movies_ids(data_folder, ids, names_available=False, movie_names=None):
+def load_movies_ids(
+    data_folder: str,
+    ids: List[str],
+    names_available: bool = False,
+    movie_names: Optional[str] = None,
+) -> Dict[str, np.ndarray]:
     """
     Load movies corresponding to a given list of indices.
 
@@ -83,7 +89,9 @@ def load_movies_ids(data_folder, ids, names_available=False, movie_names=None):
     return xs_all_trainings
 
 
-def load_annotations_ids(data_folder, ids, mask_names="video_mask"):
+def load_annotations_ids(
+    data_folder: str, ids: List[str], mask_names: str = "video_mask"
+) -> Dict[str, np.ndarray]:
     """
     Load annotations for a list of movie IDs.
 

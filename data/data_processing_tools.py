@@ -45,7 +45,8 @@ __all__ = [
     "renumber_labelled_mask",
     "masks_to_instances_dict",
     "merge_labels",
-    "analyse_spark_roi" "remove_small_events",
+    "analyse_spark_roi",
+    "remove_small_events",
     "process_raw_predictions",
     "preds_dict_to_mask",
     "detect_single_roi_peak",
@@ -140,7 +141,8 @@ def reduce_sparks_size(movie, class_mask, event_mask, sigma=2, k=75):
         event_roi = spark_mask == event_id
 
         # Reduce spark size dimension with respect to percentile
-        new_roi_mask = keep_percentile(movie=movie, roi_mask=event_roi, percentile=k)
+        new_roi_mask = keep_percentile(
+            movie=movie, roi_mask=event_roi, percentile=k)
 
         # Set new smaller spark peaks to 1
         new_peak = np.logical_and(event_roi, new_roi_mask)
@@ -169,7 +171,8 @@ def annotate_undefined_around_peaks(mask, inner_radius=2.5, outer_radius=3.5):  
     dist_transform = ndi.distance_transform_edt(1 - mask)
     annotated_mask = np.zeros(mask.shape, dtype=np.int64)
     annotated_mask[dist_transform < outer_radius] = config.ignore_index
-    annotated_mask[dist_transform < inner_radius] = config.classes_dict["sparks"]
+    annotated_mask[dist_transform <
+                   inner_radius] = config.classes_dict["sparks"]
 
     return annotated_mask
 
@@ -467,7 +470,8 @@ def get_argmax_segmentation(class_predictions, return_classes=True):
 
     class_predictions = {}
     for event_type, event_label in config.classes_dict.items():
-        class_predictions[event_type] = np.where(argmax_classes == event_label, 1, 0)
+        class_predictions[event_type] = np.where(
+            argmax_classes == event_label, 1, 0)
 
     return class_predictions, argmax_classes
 
@@ -509,7 +513,8 @@ def get_otsu_argmax_segmentation(preds, return_classes=True, debug=False):
     binary_sum_preds = sum_preds > t_otsu
 
     # Create new empty mask of shape (num_classes x duration x height x width)
-    masked_class_preds = np.zeros((config.num_classes, *binary_sum_preds.shape))
+    masked_class_preds = np.zeros(
+        (config.num_classes, *binary_sum_preds.shape))
 
     # Mask out removed events from UNet preds for each class
     # This is necessary because the classes need to be in the right order
@@ -720,7 +725,8 @@ def renumber_labelled_mask(labelled_mask, shift_id=0):
 
     if labelled_mask.max() > 0:
         unique_labels = np.unique(labelled_mask)
-        unique_labels = unique_labels[unique_labels != 0]  # Remove background label
+        # Remove background label
+        unique_labels = unique_labels[unique_labels != 0]
 
         new_mask = np.zeros_like(labelled_mask)
 
@@ -733,7 +739,8 @@ def renumber_labelled_mask(labelled_mask, shift_id=0):
 
         # Check that the number of events hasn't changed
         new_labels = np.unique(new_mask)
-        expected_labels = np.arange(shift_id + 1, shift_id + len(unique_labels) + 1)
+        expected_labels = np.arange(
+            shift_id + 1, shift_id + len(unique_labels) + 1)
         assert np.array_equal(
             new_labels, expected_labels
         ), f"New labels are incorrect: {new_labels}."
@@ -939,7 +946,8 @@ def process_raw_predictions(
         # Update segmented predicted masks accordingly
         if event_type in ["ignore", "background"]:
             continue
-        preds_classes_dict[event_type] = preds_instances_dict[event_type].astype(bool)
+        preds_classes_dict[event_type] = preds_instances_dict[event_type].astype(
+            bool)
 
         # Remove spark peak locations of sparks that have been removed
         if event_type in coords_events.keys():
@@ -961,7 +969,8 @@ def process_raw_predictions(
         shift_id = max(shift_id, np.max(preds_instances_dict[event_type]))
 
     if debug:
-        logger.debug(f"Time for removing small events: {time.time() - start:.2f} s")
+        logger.debug(
+            f"Time for removing small events: {time.time() - start:.2f} s")
 
     return preds_instances_dict, preds_classes_dict, coords_events
 
@@ -1016,7 +1025,8 @@ def detect_single_roi_peak(movie, roi_mask, max_filter_size=10):
     argwhere = np.argwhere(argmaxima)
 
     if len(argwhere) != 1:
-        raise ValueError(f"Found more than one peak in ROI: {len(argwhere)} peaks")
+        raise ValueError(
+            f"Found more than one peak in ROI: {len(argwhere)} peaks")
 
     # Find slice t corresponding to max location
     y, x = argwhere[0]
@@ -1106,7 +1116,8 @@ def simple_nonmaxima_suppression(
         min_distance = 1
 
     if np.isscalar(min_distance):
-        c_min_dist = ndi.generate_binary_structure(input_array.ndim, min_distance)
+        c_min_dist = ndi.generate_binary_structure(
+            input_array.ndim, min_distance)
     else:
         c_min_dist = np.array(min_distance, bool)
         if c_min_dist.ndim != input_array.ndim:
@@ -1130,7 +1141,8 @@ def simple_nonmaxima_suppression(
 
     # Search for local maxima
     dilated = ndi.maximum_filter(smooth_img, footprint=min_distance)
-    is_local_maxima = np.logical_and(smooth_img == dilated, smooth_img > threshold)
+    is_local_maxima = np.logical_and(
+        smooth_img == dilated, smooth_img > threshold)
 
     peak_coordinates = np.argwhere(is_local_maxima).tolist()
 
@@ -1445,7 +1457,8 @@ def compute_filtered_butter(
     for i, band in enumerate(bands_freq):
         Wn = band / max(f)
 
-        sos = signal.butter(N=filter_order, Wn=Wn, btype=filter_type, output="sos")
+        sos = signal.butter(N=filter_order, Wn=Wn,
+                            btype=filter_type, output="sos")
 
         filtered = signal.sosfiltfilt(sos, filtered, axis=0)
 

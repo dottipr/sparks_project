@@ -250,7 +250,8 @@ def training_step(
 
     # Pad the input tensor
     x = F.pad(
-        x, (w_pad // 2, w_pad // 2 + w_pad % 2, h_pad // 2, h_pad // 2 + h_pad % 2)
+        x, (w_pad // 2, w_pad // 2 + w_pad %
+            2, h_pad // 2, h_pad // 2 + h_pad % 2)
     )
 
     # Forward pass
@@ -266,8 +267,8 @@ def training_step(
 
     # Remove frames that must be ignored by the loss function
     if params.ignore_frames != 0:
-        y_pred = y_pred[:, :, params.ignore_frames : -params.ignore_frames]
-        y = y[:, params.ignore_frames : -params.ignore_frames]
+        y_pred = y_pred[:, :, params.ignore_frames: -params.ignore_frames]
+        y = y[:, params.ignore_frames: -params.ignore_frames]
 
     # Handle specific loss functions
     if params.criterion == "dice_loss":
@@ -413,7 +414,8 @@ def compute_class_weights(dataset, weights=None):
 
     for w in weights:
         if class_counts[c] != 0:
-            weights[c] = w * total_samples / (config.num_classes * class_counts[c])
+            weights[c] = w * total_samples / \
+                (config.num_classes * class_counts[c])
 
     return weights
 
@@ -494,7 +496,8 @@ def detect_nan_sample(x, y):
     if torch.isnan(x).any() or torch.isnan(y).any():
         if torch.isnan(x).any() or torch.isnan(y).any():
             logger.warning(
-                "Detect NaN in network input (test): {}".format(torch.isnan(x).any())
+                "Detect NaN in network input (test): {}".format(
+                    torch.isnan(x).any())
             )
             logger.warning(
                 "Detect NaN in network annotation (test): {}".format(
@@ -575,9 +578,9 @@ def do_inference(
 
         # Check and set up overlap inference
         assert (
-            params.data_duration - params.data_step
+            params.data_duration - params.data_stride
         ) % 2 == 0, "(duration-step) is not even in overlap inference"
-        half_overlap = (params.data_duration - params.data_step) // 2
+        half_overlap = (params.data_duration - params.data_stride) // 2
 
         # Adapt half_overlap duration if using temporal reduction
         if params.temporal_reduction:
@@ -602,7 +605,8 @@ def do_inference(
 
         # Initialize dict with list of predictions for each frame
         output_frames = {idx: [] for idx in range(movie_duration)}
-        chunks = params.get_chunks(params.lengths[0], params.step, params.duration)
+        chunks = params.get_chunks(
+            params.lengths[0], params.step, params.duration)
 
     for x in test_dataloader:
         # If ground truth is available, x is a tuple (x, y)
@@ -621,7 +625,8 @@ def do_inference(
 
         # Pad the input tensor once with calculated padding values
         x = F.pad(
-            x, (w_pad // 2, w_pad // 2 + w_pad % 2, h_pad // 2, h_pad // 2 + h_pad % 2)
+            x, (w_pad // 2, w_pad // 2 + w_pad %
+                2, h_pad // 2, h_pad // 2 + h_pad % 2)
         )
 
         # Send input tensor to the specified device
@@ -810,7 +815,6 @@ def get_preds(
         params=params,
         test_dataloader=test_dataloader,
         device=params.device,
-        detect_nan=detect_nan,
         compute_loss=True if criterion is not None else False,
         inference_types=inference_types,
         return_dict=return_dict,
@@ -847,7 +851,8 @@ def get_preds(
                     }
             else:
                 if not return_dict:
-                    preds = {i: p[:, start_pad:end_pad] for i, p in preds.items()}
+                    preds = {i: p[:, start_pad:end_pad]
+                             for i, p in preds.items()}
                 else:
                     for i, preds_dict in preds.items():
                         preds[i] = {
@@ -898,7 +903,7 @@ def get_preds(
         if ys.ndim == 3:
             if len(inference_types) == 1 and not return_dict:
                 preds_loss = preds[
-                    :, test_dataset.ignore_frames : -test_dataset.ignore_frames
+                    :, test_dataset.ignore_frames: -test_dataset.ignore_frames
                 ]
             else:
                 raise NotImplementedError
@@ -907,7 +912,8 @@ def get_preds(
                 # training, and therefore inference_types should be None.
                 # Similarly, return_dict should be False.
 
-            ys_loss = ys[test_dataset.ignore_frames : -test_dataset.ignore_frames]
+            ys_loss = ys[test_dataset.ignore_frames: -
+                         test_dataset.ignore_frames]
         else:
             raise NotImplementedError
 
@@ -933,7 +939,8 @@ def get_preds(
             if not return_dict:
                 preds = preds.numpy()
             else:
-                preds = {event_type: pred.numpy() for event_type, pred in preds.items()}
+                preds = {event_type: pred.numpy()
+                         for event_type, pred in preds.items()}
         else:
             if not return_dict:
                 preds = {i: p.numpy() for i, p in preds.items()}
@@ -971,7 +978,6 @@ def get_preds_from_path(model, params, movie_path, return_dict=False, output_dir
     sample_dataset = SparkDatasetPath(
         sample_path=movie_path,
         params=params,
-        ignore_index=config.ignore_index,
         # resampling=False, # It could be implemented later
         # resampling_rate=150,
     )
@@ -997,7 +1003,7 @@ def get_preds_from_path(model, params, movie_path, return_dict=False, output_dir
     # preds_instances and preds_segmentations are dictionaries
     # with keys 'sparks', 'puffs', 'waves'.
 
-    ## Save raw preds on disk ### I don't know if this is necessary
+    # Save raw preds on disk ### I don't know if this is necessary
     if output_dir is not None:
         # Create output directory if it does not exist
         os.makedirs(output_dir, exist_ok=True)
@@ -1182,7 +1188,8 @@ def test_function(
         # TODO: remove ignored frames as well?
         ignore_mask = np.where(ys == config.ignore_index, 1, 0)
 
-        logger.debug(f"Time to re-organise annotations: {time.time() - start:.2f} s")
+        logger.debug(
+            f"Time to re-organise annotations: {time.time() - start:.2f} s")
 
         ######################### Get processed output #########################
 
@@ -1207,7 +1214,8 @@ def test_function(
 
         # Stack annotations and remove marginal frames
         ys_concat.append(
-            trim_and_pad_video(video=ys, n_margin_frames=params.ignore_frames_loss)
+            trim_and_pad_video(
+                video=ys, n_margin_frames=params.ignore_frames_loss)
         )
 
         # Stack preds and remove marginal frames
@@ -1222,7 +1230,8 @@ def test_function(
             )
         )
 
-        logger.debug(f"Time to process predictions: {time.time() - start:.2f} s")
+        logger.debug(
+            f"Time to process predictions: {time.time() - start:.2f} s")
 
         ############### Compute pairwise scores (based on IoMin) ###############
 
@@ -1255,7 +1264,8 @@ def test_function(
             score="iomin",
         )
 
-        logger.debug(f"Time to compute pairwise scores: {time.time() - start:.2f} s")
+        logger.debug(
+            f"Time to compute pairwise scores: {time.time() - start:.2f} s")
 
         ####################### Get matches summary #######################
 
@@ -1276,14 +1286,18 @@ def test_function(
                 continue
             tot_preds[ca_event] += len(matched_preds_ids[ca_event]["tot"])
             tp_preds[ca_event] += len(matched_preds_ids[ca_event]["tp"])
-            ignored_preds[ca_event] += len(matched_preds_ids[ca_event]["ignored"])
-            unlabeled_preds[ca_event] += len(matched_preds_ids[ca_event]["unlabeled"])
+            ignored_preds[ca_event] += len(
+                matched_preds_ids[ca_event]["ignored"])
+            unlabeled_preds[ca_event] += len(
+                matched_preds_ids[ca_event]["unlabeled"])
 
             tot_ys[ca_event] += len(matched_ys_ids[ca_event]["tot"])
             tp_ys[ca_event] += len(matched_ys_ids[ca_event]["tp"])
-            undetected_ys[ca_event] += len(matched_ys_ids[ca_event]["undetected"])
+            undetected_ys[ca_event] += len(matched_ys_ids[ca_event]
+                                           ["undetected"])
 
-        logger.debug(f"Time to get matches summary: {time.time() - start:.2f} s")
+        logger.debug(
+            f"Time to get matches summary: {time.time() - start:.2f} s")
 
     ############################## Reduce metrics ##############################
 

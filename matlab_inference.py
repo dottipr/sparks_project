@@ -45,8 +45,7 @@ def main():
 
     ### Configure UNet ###
     params.set_device(
-        device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    )
+        device="cuda" if torch.cuda.is_available() else "cpu")
 
     network = init_model(params=params)
     network = nn.DataParallel(network).to(params.device)
@@ -54,8 +53,10 @@ def main():
     ### Load UNet model ###
 
     # Path to the saved model checkpoint
-    models_relative_path = "runs/"
-    model_path = os.path.join(models_relative_path, params.training_name, model_name)
+    models_relative_path = os.path.join(config.output_relative_path,
+                                        "saved_models")
+    model_path = os.path.join(models_relative_path,
+                              params.training_name, model_name)
 
     # Load the model state dictionary
     network.load_state_dict(torch.load(model_path, map_location=params.device))
@@ -63,8 +64,8 @@ def main():
 
     # Define movie path
     movie_path = os.path.join(
-        r"C:\Users\prisc\Code\sparks_project\data\sparks_dataset\34_video.tif"
-        # r"C:\Users\dotti\sparks_project\data\sparks_dataset", "05_video.tif"
+        # r"C:\Users\prisc\Code\sparks_project\data\sparks_dataset\34_video.tif"
+        r"C:\Users\dotti\sparks_project\data\sparks_dataset", "05_video.tif"
     )
 
     ### Get predictions from movie path ###
@@ -76,7 +77,7 @@ def main():
         return_dict=False,
     )
 
-    ### Visualize preds with Napari
+    # Visualize preds with Napari
 
     # open original movie
     sample = np.asarray(imageio.volread(movie_path))

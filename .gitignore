@@ -144,6 +144,12 @@ cython_debug/
 *.tif
 *.xlsx
 *.sh
+*.png
+*.csv
+#*.txt
+*.json
+*.jpg
+*.zip
 anaconda3/
 OLD/
 wandb/
@@ -159,16 +165,11 @@ wandb/
 .network.sh.swp
 .python_history
 .viminfo
+.Xauthority
 slurm*
 2020*
 2021*
 2022*
-*.png
-*.csv
-.Xauthority
-#*.txt
-*.json
-*.jpg
 models/saved_models/*
 pytorch/
 sparks/trainings_validation/*
@@ -176,3 +177,4 @@ data/sparks_dataset/*
 *old*
 *local*
 *deleteme*
+

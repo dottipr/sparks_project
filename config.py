@@ -20,6 +20,7 @@ from configparser import ConfigParser
 
 import numpy as np
 import torch
+
 import wandb
 
 __all__ = ["config", "TrainingConfig"]
@@ -46,7 +47,7 @@ class ProjectConfig:
         # wandb_project_name = "TEST"
         self.wandb_project_name = "sparks2"
         # Directory where output, saved parameters, and testing results are saved
-        self.output_relative_path = "runs"
+        self.output_relative_path = "models"
 
         ### Dataset parameters ###
 
@@ -164,7 +165,7 @@ class TrainingConfig:
             >0 if using temporal_reduction, value depends on temporal
             reduction configuration
 
-        params.data_step:
+        params.data_stride:
             Step between two chunks extracted from the sample
 
         params.data_duration:
@@ -178,8 +179,8 @@ class TrainingConfig:
             If 'moving' or 'average', remove background from input movies
             accordingly
 
-        params.only_sparks:
-            If True, train using only sparks annotations
+        # params.only_sparks: # not used anymore
+        #     If True, train using only sparks annotations
 
         params.sparks_type:
             Can be 'raw', 'peaks' (use smaller annotated ROIs), or 'dilated'
@@ -306,21 +307,25 @@ class TrainingConfig:
         # dataset_section.getint("num_workers", fallback=1)
         self.num_workers = 0
         self.data_duration = dataset_section.getint("data_duration")
-        self.data_step = dataset_section.getint("data_step", fallback=1)
-        self.testing_data_step = self.c.getint(
-            "testing", "data_step", fallback=self.data_step
+        self.data_stride = dataset_section.getint("data_stride", fallback=1)
+        self.testing_data_stride = self.c.getint(
+            "testing", "data_stride", fallback=self.data_stride
         )
         self.data_smoothing = dataset_section.get("data_smoothing", fallback="2d")
         self.norm_video = dataset_section.get("norm_video", fallback="chunk")
         self.remove_background = dataset_section.get(
             "remove_background", fallback="average"
         )
-        self.only_sparks = dataset_section.getboolean("only_sparks", fallback=False)
+        # self.only_sparks = dataset_section.getboolean(
+        #     "only_sparks", fallback=False) # not used anymore
         self.noise_data_augmentation = dataset_section.getboolean(
             "noise_data_augmentation", fallback=False
         )
         self.sparks_type = dataset_section.get("sparks_type", fallback="peaks")
         self.inference = dataset_section.get("inference", fallback="overlap")
+        self.new_fps = dataset_section.getint(
+            "new_fps", fallback=0
+        )  # can be implemented later
 
     def load_unet_params(self):
         # Load UNet parameters
@@ -387,13 +392,13 @@ class TrainingConfig:
 
     def set_device(self, device):
         # Set the device to use for training
-        self.device = device
+        self.device = torch.device(device)
         if device == "cuda":
             self.pin_memory = True
         elif device == "cpu":
             self.pin_memory = False
         else:
-            raise ValueError(f"Device is {device} but is shold be 'cuda' or 'cpu'.")
+            raise ValueError(f"Device is {device} but is should be 'cuda' or 'cpu'.")
 
         self.n_gpus = torch.cuda.device_count()
 

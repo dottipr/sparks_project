@@ -95,19 +95,10 @@ def init_training_dataset(params, train_sample_ids, print_dataset_info=True):
     assert os.path.isdir(dataset_path), f'"{dataset_path}" is not a directory'
 
     dataset_args = {
+        "params": params,
         "base_path": dataset_path,
         "sample_ids": train_sample_ids,
         "testing": False,
-        "smoothing": params.data_smoothing,
-        "step": params.data_step,
-        "duration": params.data_duration,
-        "remove_background": params.remove_background,
-        "temporal_reduction": params.temporal_reduction,
-        "num_channels": params.num_channels,
-        "normalize_video": params.norm_video,
-        "only_sparks": params.only_sparks,
-        "sparks_type": params.sparks_type,
-        "ignore_index": config.ignore_index,
         "inference": None,
     }
 
@@ -153,20 +144,10 @@ def init_testing_dataset(params, test_sample_ids, print_dataset_info=True):
     testing_datasets = []
 
     dataset_args = {
+        "params": params,
         "base_path": dataset_path,
         "sample_ids": test_sample_ids,
         "testing": True,
-        "smoothing": params.data_smoothing,
-        "step": params.testing_data_step,
-        "duration": params.data_duration,
-        "remove_background": params.remove_background,
-        "temporal_reduction": params.temporal_reduction,
-        "num_channels": params.num_channels,
-        "normalize_video": params.norm_video,
-        "only_sparks": params.only_sparks,
-        "sparks_type": params.sparks_type,
-        "ignore_frames": params.ignore_frames_loss,
-        "ignore_index": config.ignore_index,
         "inference": params.inference,
     }
 

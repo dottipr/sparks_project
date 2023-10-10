@@ -12,9 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from LovaszSoftmax.pytorch import lovasz_losses
-
-logger = logging.getLogger(__name__)
+from .LovaszSoftmax import lovasz_losses
 
 __all__ = [
     "FocalLoss",
@@ -75,12 +73,14 @@ def one_hot(
     """
     if not isinstance(labels, torch.Tensor):
         raise TypeError(
-            "Input labels type is not a torch.Tensor. Got {}".format(type(labels))
+            "Input labels type is not a torch.Tensor. Got {}".format(
+                type(labels))
         )
 
     if not labels.dtype == torch.int64:
         raise ValueError(
-            "labels must be of the same dtype torch.int64. Got: {}".format(labels.dtype)
+            "labels must be of the same dtype torch.int64. Got: {}".format(
+                labels.dtype)
         )
 
     if num_classes < 1:
@@ -140,7 +140,8 @@ def focal_loss(
     """
 
     if not isinstance(input, torch.Tensor):
-        raise TypeError("Input type is not a torch.Tensor. Got {}".format(type(input)))
+        raise TypeError(
+            "Input type is not a torch.Tensor. Got {}".format(type(input)))
 
     if not len(input.shape) >= 2:
         raise ValueError(
@@ -181,7 +182,8 @@ def focal_loss(
         alpha_mask = 1.0
     else:
         # create alpha mask that will multiply focal loss
-        assert len(alpha) == input.shape[1], "alpha does not contain a weight per class"
+        assert len(
+            alpha) == input.shape[1], "alpha does not contain a weight per class"
         alpha_mask = torch.zeros(target.shape)
         for idx, alpha_t in enumerate(alpha):
             alpha_mask[target == idx] = alpha_t
@@ -212,7 +214,8 @@ def focal_loss(
     elif reduction == "sum":
         loss = torch.sum(loss_tmp)
     else:
-        raise NotImplementedError("Invalid reduction mode: {}".format(reduction))
+        raise NotImplementedError(
+            "Invalid reduction mode: {}".format(reduction))
     return loss
 
 
@@ -280,6 +283,9 @@ class FocalLoss(nn.Module):
 
 
 ############################# LOVASZ-SOFTMAX LOSS ##############################
+"""
+from https://github.com/bermanmaxim/LovaszSoftmax
+"""
 
 
 def lovasz_softmax_3d(probas, labels, classes="present", per_image=False, ignore=None):
@@ -294,11 +300,12 @@ def lovasz_softmax_3d(probas, labels, classes="present", per_image=False, ignore
     """
 
     if per_image:
-        from LovaszSoftmax.pytorch import mean
+        from utils.LovaszSoftmax.lovasz_losses import mean
 
         loss = mean(
             lovasz_losses.lovasz_softmax_flat(
-                *flatten_probas_3d(prob.unsqueeze(0), lab.unsqueeze(0), ignore),
+                *flatten_probas_3d(prob.unsqueeze(0),
+                                   lab.unsqueeze(0), ignore),
                 classes=classes
             )
             for prob, lab in zip(probas, labels)
@@ -588,7 +595,8 @@ class Dice_CELoss(nn.Module):
         # for all 4 classes in the input, set values where target == ignore_index to 0
         input_clean = torch.zeros_like(input)
         for i in range(input.shape[1]):
-            input_clean[:, i] = torch.where(target == self.ignore_index, 0, input[:, i])
+            input_clean[:, i] = torch.where(
+                target == self.ignore_index, 0, input[:, i])
 
         # remove ignored ROIs from target
         target_clean = torch.where(target == self.ignore_index, 0, target)

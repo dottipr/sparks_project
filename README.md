@@ -155,7 +155,7 @@ These parameters are important to be recovered after the training for comparison
 	* **batch_size**: batch size used by the dataloader
 	* **num_workers**: number of workers used in the dataloader
 	* **data_duration**: number of frames of the data movie sampled as input for the UNet
-	* **data_step**: step between two consecutive input for the UNet sampled from a data movie
+	* **data_stride**: step between two consecutive input for the UNet sampled from a data movie
 	* **data_smoothing**: smoothing that is applied to the dataset samples as a preprocessing procedure, possible values are '2d', '3d' or 'none'
 	* **norm_video**: normalisation that is applied to the dataset samples as a preprocessing step, possible values are 'abs_max', 'chunk', 'movie' or 'none'
 	* **remove_background**: remove background from dataset samples as a preprocessing procedure, possible values are 'moving', 'average' or 'none'
