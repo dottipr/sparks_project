@@ -14,10 +14,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.data
-import wandb
 from scipy import ndimage as ndi
 from torch import nn
 
+import wandb
 from config import TrainingConfig, config
 from data.data_processing_tools import process_raw_predictions
 from data.datasets import SparkDataset, SparkDatasetInference
@@ -808,7 +808,7 @@ def get_preds_from_path(  # TODO: vedere se si può eliminare e tenere solo get_
     )
 
     ### Run sample in UNet ###
-    input_movie, preds_dict = get_preds(
+    input_movie, preds_dict = get_raw_preds_dict(
         model=model,
         test_dataset=sample_dataset,
         params=params,
@@ -914,7 +914,7 @@ def test_function(  # da aggiornare in base alla nuova definizione dei datasets
         logger.debug(f"Testing function: running sample {video_name} in UNet")
 
         # Run sample in UNet, returns a list [bg, sparks, waves, puffs]
-        xs, ys, preds, loss = get_preds(
+        xs, ys, preds, loss = get_raw_preds_dict(
             model=network,
             test_dataset=test_dataset,
             device=device,

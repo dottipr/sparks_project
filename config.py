@@ -21,6 +21,7 @@ from logging.handlers import RotatingFileHandler
 
 import numpy as np
 import torch
+
 import wandb
 
 __all__ = ["config", "TrainingConfig"]
@@ -47,7 +48,7 @@ class ProjectConfig:
         # wandb_project_name = "TEST"
         self.wandb_project_name = "sparks2"
         # Directory where output, saved parameters, and testing results are saved
-        self.output_relative_path = "models"
+        self.output_relative_path = os.path.join("models", "saved_models")
 
         ### Dataset parameters ###
 

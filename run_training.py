@@ -16,13 +16,13 @@ import logging
 import os
 
 import torch
-import wandb
 from torch import nn, optim
 
 # from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
+import wandb
 from config import TrainingConfig, config
 from models.UNet import unet
 from utils.training_inference_tools import (
@@ -122,9 +122,10 @@ def main():
     )
 
     # Initialize testing datasets
-    testing_datasets = init_testing_dataset(
+    # testing_datasets = init_testing_dataset(
+    testing_datasets = init_dataset(
         params=params,
-        test_sample_ids=test_sample_ids,
+        sample_ids=test_sample_ids,
     )
 
     # Initialize data loaders
@@ -190,7 +191,7 @@ def main():
     summary_writer = SummaryWriter(os.path.join(output_path, "summary"), purge_step=0)
 
     # Check if a pre-trained model should be loaded
-    if params.load_run_name != None:
+    if params.load_run_name != "":
         load_path = os.path.join(config.output_relative_path, params.load_run_name)
         logger.info(f"Model loaded from directory: {load_path}")
     else:
