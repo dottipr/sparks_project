@@ -39,7 +39,7 @@ Remarks:
 - 01.03.2022: This code is now adapted for PC232.
 
 Author: Prisca Dotti
-Last modified: 29.09.2023
+Last modified: 11.10.2023
 """
 
 import argparse
@@ -140,18 +140,6 @@ def main():
     out_folder = os.path.join(raw_data_directory, f"unet_masks_{args.sparks}_sparks")
     os.makedirs(out_folder, exist_ok=True)
 
-    # Set events parameters
-    if args.sparks == "peaks":
-        radius_event, radius_ignore = 3, 1
-
-    elif args.sparks == "dilated":
-        # Values for sparks, waves, puffs
-        radius_ignore_list, erosion_list = [1, 3, 2], [0, 1, 1]
-
-    elif args.sparks == "small":
-        k = 75  # Choose value k of percentile
-        sigma = 2  # Used for smoothing original
-
     # Compute new annotation masks
     for id in args.sample_ids:
         print(f"Processing mask {id}...")
@@ -173,16 +161,22 @@ def main():
                 video = load_movies_ids(data_folder=video_folder, ids=[id])[id]
             print(f"\tVideo shape: {video.shape}")
 
+            # parameters for peaks annotation
+            radius_event, radius_ignore = 3, 1
+
             mask = annotate_sparks_with_peaks(
                 video=video,
-                sparks_mask=old_mask,
+                labels_mask=old_mask,
                 peak_radius=radius_event,
                 ignore_radius=radius_ignore,
-            )
+            )[1]
 
             out_path = os.path.join(out_folder, f"{id}_class_label_peaks.tif")
 
         elif args.sparks == "dilated":
+            # Values for sparks, waves, puffs, respectively
+            radius_ignore_list, erosion_list = [1, 3, 2], [0, 1, 1]
+
             mask = apply_ignore_regions_to_events(
                 mask=old_mask,
                 ignore_radii=radius_ignore_list,
@@ -207,6 +201,9 @@ def main():
                 data_folder=old_mask_folder, ids=[id], mask_names="event_label"
             )[id]
 
+            k = 75  # Choose value k of percentile
+            sigma = 2  # Used for smoothing original
+
             mask = reduce_sparks_size(
                 movie=video,
                 class_mask=old_mask,
@@ -216,6 +213,8 @@ def main():
             )
 
             out_path = os.path.join(out_folder, f"{id}_class_label_small_peaks.tif")
+        else:
+            raise ValueError(f"Unknown sparks type: {args.sparks}")
 
         print(f"\tNew values: {np.unique(mask)}")
         imageio.volwrite(out_path, np.uint8(mask))

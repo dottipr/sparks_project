@@ -1,26 +1,21 @@
-
 import numpy as np
-
 import torch
 import torch.nn as nn
 
 from .layers import *
 
-__all__ = ["UNet",
-           "UNetConfig",
-           "UNetClassifier",
-           "UNetRegressor"]
+__all__ = ["UNet", "UNetConfig", "UNetClassifier", "UNetRegressor"]
 
 
 def crop_slices(shape1, shape2):
-
-    slices = [slice((sh1 - sh2) // 2, (sh1 - sh2) // 2 + sh2)
-              for sh1, sh2 in zip(shape1, shape2)]
+    slices = [
+        slice((sh1 - sh2) // 2, (sh1 - sh2) // 2 + sh2)
+        for sh1, sh2 in zip(shape1, shape2)
+    ]
     return slices
 
 
 def crop_and_merge(tensor1, tensor2):
-
     slices = crop_slices(tensor1.size(), tensor2.size())
     slices[0] = slice(None)
     slices[1] = slice(None)
@@ -30,21 +25,21 @@ def crop_and_merge(tensor1, tensor2):
 
 
 class UNetConfig:
-
-    def __init__(self,
-                 steps=4,
-                 first_layer_channels=64,
-                 num_classes=2,
-                 num_input_channels=1,
-                 two_sublayers=True,
-                 ndims=2,
-                 dilation=1,
-                 border_mode='valid',
-                 remove_skip_connections=False,
-                 batch_normalization=False,
-                 scaled_convolution=False):
-
-        if border_mode not in ['valid', 'same']:
+    def __init__(
+        self,
+        steps=4,
+        first_layer_channels=64,
+        num_classes=2,
+        num_input_channels=1,
+        two_sublayers=True,
+        ndims=2,
+        dilation=1,
+        border_mode="valid",
+        remove_skip_connections=False,
+        batch_normalization=False,
+        scaled_convolution=False,
+    ):
+        if border_mode not in ["valid", "same"]:
             raise ValueError("`border_mode` not in ['valid', 'same']")
 
         self.steps = steps
@@ -60,14 +55,15 @@ class UNetConfig:
         self.scaled_convolution = scaled_convolution
 
         border = 4 if self.two_sublayers else 2
-        if self.border_mode == 'same':
+        if self.border_mode == "same":
             border = 0
-        #self.first_step = lambda x: x - border
-        #self.rev_first_step = lambda x: x + border
-        #self.down_step = lambda x: (x - 1) // 2 + 1 - border
-        #self.rev_down_step = lambda x: (x + border) * 2
-        #self.up_step = lambda x: (x * 2) - border
-        #self.rev_up_step = lambda x: (x + border - 1) // 2 + 1
+        # self.first_step = lambda x: x - border
+        # self.rev_first_step = lambda x: x + border
+        # self.down_step = lambda x: (x - 1) // 2 + 1 - border
+        # self.rev_down_step = lambda x: (x + border) * 2
+        # self.up_step = lambda x: (x * 2) - border
+        # self.rev_up_step = lambda x: (x + border - 1) // 2 + 1
+
     '''
     def out_shape(self, in_shape):
         """
@@ -157,28 +153,42 @@ class UNetConfig:
         return in_pad_widths, out_pad_widths
     '''
 
+
 class UNetLayer(nn.Module):
-
-    def __init__(self, num_channels_in, num_channels_out,
-                 conv_layer_class, bn_layer_class, dilation,
-                 two_sublayers=True, border_mode='valid'):
-
+    def __init__(
+        self,
+        num_channels_in,
+        num_channels_out,
+        conv_layer_class,
+        bn_layer_class,
+        dilation,
+        two_sublayers=True,
+        border_mode="valid",
+    ):
         super().__init__()
 
-        padding = {'valid': 0, 'same': dilation}[border_mode]
+        padding = {"valid": 0, "same": dilation}[border_mode]
 
         relu = nn.ReLU()
-        conv1 = conv_layer_class(num_channels_in, num_channels_out,
-                                 kernel_size=3, padding=padding,
-                                 dilation=dilation)
+        conv1 = conv_layer_class(
+            num_channels_in,
+            num_channels_out,
+            kernel_size=3,
+            padding=padding,
+            dilation=dilation,
+        )
         bn1 = bn_layer_class(num_channels_out)
 
         if not two_sublayers:
             layers = [conv1, relu, bn1]
         else:
-            conv2 = conv_layer_class(num_channels_out, num_channels_out,
-                                     kernel_size=3, padding=padding,
-                                     dilation=dilation)
+            conv2 = conv_layer_class(
+                num_channels_out,
+                num_channels_out,
+                kernel_size=3,
+                padding=padding,
+                dilation=dilation,
+            )
             bn2 = bn_layer_class(num_channels_out)
             layers = [conv1, relu, bn1, conv2, relu, bn2]
 
@@ -197,19 +207,16 @@ def _layer_classes(config):
         (2, False): (nn.Conv2d, nn.ConvTranspose2d),
         (3, False): (nn.Conv3d, nn.ConvTranspose3d),
         (2, True): (ScaledConv2d, ScaledConvTranspose2d),
-        (3, True): (ScaledConv3d, ScaledConvTranspose3d)
+        (3, True): (ScaledConv3d, ScaledConvTranspose3d),
     }[ndims, sc]
 
-    maxpool_class = {
-        2: nn.MaxPool2d,
-        3: nn.MaxPool3d
-    }[ndims]
+    maxpool_class = {2: nn.MaxPool2d, 3: nn.MaxPool3d}[ndims]
 
     bn_class = {
         (2, False): Identity,
         (3, False): Identity,
         (2, True): nn.BatchNorm2d,
-        (3, True): nn.BatchNorm3d
+        (3, True): nn.BatchNorm3d,
     }[ndims, bn]
 
     return conv_class, convtransp_class, maxpool_class, bn_class
@@ -230,7 +237,8 @@ class UNet(nn.Module):
 
         def build_ulayer(cin, cout):
             return UNetLayer(
-                cin, cout,
+                cin,
+                cout,
                 conv_layer_class=ConvLayer,
                 bn_layer_class=BatchNorm,
                 dilation=self.config.dilation,
@@ -239,14 +247,12 @@ class UNet(nn.Module):
             )
 
         flc = self.config.first_layer_channels
-        layer1 = build_ulayer(self.config.num_input_channels,
-                              flc)
+        layer1 = build_ulayer(self.config.num_input_channels, flc)
 
         # Down layers.
         down_layers = [layer1]
         for i in range(1, self.config.steps + 1):
-            lyr = build_ulayer(flc * 2**(i - 1),
-                               flc * 2**i)
+            lyr = build_ulayer(flc * 2 ** (i - 1), flc * 2**i)
 
             down_layers.append(lyr)
 
@@ -254,25 +260,25 @@ class UNet(nn.Module):
         up_layers = []
         for i in range(self.config.steps - 1, -1, -1):
             # Up-convolution
-            upconv = ConvTransposeLayer(in_channels=flc * 2**(i+1),
-                                        out_channels=flc * 2**i,
-                                        kernel_size=2,
-                                        stride=2)
-            lyr = build_ulayer(flc * 2**(i + 1),
-                               flc * 2**i)
+            upconv = ConvTransposeLayer(
+                in_channels=flc * 2 ** (i + 1),
+                out_channels=flc * 2**i,
+                kernel_size=2,
+                stride=2,
+            )
+            lyr = build_ulayer(flc * 2 ** (i + 1), flc * 2**i)
 
             up_layers.extend([upconv, lyr])
 
-        final_layer = ConvLayer(in_channels=flc,
-                                out_channels=self.config.num_classes,
-                                kernel_size=1)
+        final_layer = ConvLayer(
+            in_channels=flc, out_channels=self.config.num_classes, kernel_size=1
+        )
 
         self.down_path = nn.Sequential(*down_layers)
         self.up_path = nn.Sequential(*up_layers)
         self.final_layer = final_layer
 
     def forward(self, x, return_feature_maps=False):
-
         x = self.down_path[0](x)
 
         feature_maps = []
@@ -285,7 +291,9 @@ class UNet(nn.Module):
 
         feature_maps.extend(down_outputs)
 
-        for upconv_layer, unet_layer, down_output in zip(self.up_path[::2], self.up_path[1::2], down_outputs[-2::-1]):
+        for upconv_layer, unet_layer, down_output in zip(
+            self.up_path[::2], self.up_path[1::2], down_outputs[-2::-1]
+        ):
             x = upconv_layer(x)
 
             if not self.config.remove_skip_connections:

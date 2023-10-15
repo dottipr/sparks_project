@@ -1,3 +1,7 @@
+# Remarks (Prisca Dotti): there are still some issues with respect to type
+# hints and torchscript. I will try to fix them as soon as possible.
+# Last update: 11.10.2023
+
 # ELEKTRONN3 - Neural Network Toolkit
 #
 # Copyright (c) 2017 - now
@@ -35,15 +39,16 @@ __all__ = ["UNet"]
 
 import copy
 import itertools
-from typing import Optional, Sequence, Tuple, Union
+from typing import Optional, Sequence, Tuple, Type, Union
 
 import torch
 from torch import nn
+from torch.jit._script import script
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 
 
-def get_conv(dim=3):
+def get_conv(dim: int = 3) -> Union[Type[nn.Conv2d], Type[nn.Conv3d]]:
     """Chooses an implementation for a convolution layer."""
     if dim == 3:
         return nn.Conv3d
@@ -53,7 +58,9 @@ def get_conv(dim=3):
         raise ValueError("dim has to be 2 or 3")
 
 
-def get_convtranspose(dim=3):
+def get_convtranspose(
+    dim: int = 3,
+) -> Union[Type[nn.ConvTranspose2d], Type[nn.ConvTranspose3d]]:
     """Chooses an implementation for a transposed convolution layer."""
     if dim == 3:
         return nn.ConvTranspose3d
@@ -63,7 +70,7 @@ def get_convtranspose(dim=3):
         raise ValueError("dim has to be 2 or 3")
 
 
-def get_maxpool(dim=3):
+def get_maxpool(dim: int = 3) -> Union[Type[nn.MaxPool2d], Type[nn.MaxPool3d]]:
     """Chooses an implementation for a max-pooling layer."""
     if dim == 3:
         return nn.MaxPool3d
@@ -73,9 +80,9 @@ def get_maxpool(dim=3):
         raise ValueError("dim has to be 2 or 3")
 
 
-def get_normalization(normtype: str, num_channels: int, dim: int = 3):
+def get_normalization(normtype: str, num_channels: int, dim: int = 3) -> nn.Module:
     """Chooses an implementation for a batch normalization layer."""
-    if normtype is None or normtype == "none":
+    if normtype == "" or normtype == "none":
         return nn.Identity()
     elif normtype.startswith("group"):
         if normtype == "group":
@@ -110,7 +117,7 @@ def get_normalization(normtype: str, num_channels: int, dim: int = 3):
         )
 
 
-def planar_kernel(x):
+def planar_kernel(x: Union[int, Sequence[int]]) -> Sequence[int]:
     """Returns a "planar" kernel shape (e.g. for 2D convolution in 3D space)
     that doesn't consider the first spatial dim (D)."""
     if isinstance(x, int):
@@ -119,7 +126,7 @@ def planar_kernel(x):
         return x
 
 
-def planar_pad(x):
+def planar_pad(x: Union[int, Sequence[int]]) -> Sequence[int]:
     """Returns a "planar" padding shape that doesn't pad along the first spatial dim (D)."""
     if isinstance(x, int):
         return (0, x, x)
@@ -128,15 +135,15 @@ def planar_pad(x):
 
 
 def conv3(
-    in_channels,
-    out_channels,
-    kernel_size=3,
-    stride=1,
-    padding=1,
-    bias=True,
-    planar=False,
-    dim=3,
-):
+    in_channels: int,
+    out_channels: int,
+    kernel_size: Union[int, Tuple[int, int, int]] = 3,
+    stride: Union[int, Tuple[int, int, int]] = 1,
+    padding: Union[int, Tuple[int, int, int]] = 1,
+    bias: bool = True,
+    planar: bool = False,
+    dim: int = 3,
+) -> nn.Module:
     """Returns an appropriate spatial convolution layer, depending on args.
     - dim=2: Conv2d with 3x3 kernel
     - dim=3 and planar=False: Conv3d with 3x3x3 kernel
@@ -156,7 +163,13 @@ def conv3(
     )
 
 
-def upconv2(in_channels, out_channels, mode="transpose", planar=False, dim=3):
+def upconv2(
+    in_channels: int,
+    out_channels: int,
+    mode: str = "transpose",
+    planar: bool = False,
+    dim: int = 3,
+) -> nn.Module:
     """Returns a learned upsampling operator depending on args."""
     kernel_size = 2
     stride = 2
@@ -181,14 +194,16 @@ def upconv2(in_channels, out_channels, mode="transpose", planar=False, dim=3):
             upsampling_mode=upsampling_mode,
             kernel_size=rc_kernel_size,
         )
+    else:
+        raise ValueError(f'Unknown mode "{mode}"')
 
 
-def conv1(in_channels, out_channels, dim=3):
+def conv1(in_channels: int, out_channels: int, dim: int = 3) -> nn.Module:
     """Returns a 1x1 or 1x1x1 convolution, depending on dim"""
     return get_conv(dim)(in_channels, out_channels, kernel_size=1)
 
 
-def get_activation(activation):
+def get_activation(activation: Union[str, nn.Module]) -> nn.Module:
     if isinstance(activation, str):
         if activation == "relu":
             return nn.ReLU()
@@ -202,6 +217,11 @@ def get_activation(activation):
             return nn.SiLU()
         elif activation == "lin":
             return nn.Identity()
+        else:
+            raise ValueError(
+                f'Unknown activation "{activation}".\n'
+                'Valid choices are "relu", "leaky", "prelu", "rrelu", "silu" or "lin".'
+            )
     else:
         # Deep copy is necessary in case of paremtrized activations
         return copy.deepcopy(activation)
@@ -215,16 +235,16 @@ class DownConv(nn.Module):
 
     def __init__(
         self,
-        in_channels,
-        out_channels,
-        pooling=True,
-        planar=False,
-        activation="relu",
-        normalization=None,
-        full_norm=True,
-        dim=3,
-        conv_mode="same",
-    ):
+        in_channels: int,
+        out_channels: int,
+        pooling: bool = True,
+        planar: bool = False,
+        activation: Union[str, nn.Module] = "relu",
+        normalization: str = "none",
+        full_norm: bool = True,
+        dim: int = 3,
+        conv_mode: str = "same",
+    ) -> None:
         super().__init__()
 
         self.in_channels = in_channels
@@ -266,7 +286,7 @@ class DownConv(nn.Module):
             self.norm0 = nn.Identity()
         self.norm1 = get_normalization(normalization, self.out_channels, dim=dim)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         y = self.conv1(x)
         y = self.norm0(y)
         y = self.act1(y)
@@ -278,7 +298,7 @@ class DownConv(nn.Module):
         return y, before_pool
 
 
-@torch.jit.script
+@script
 def autocrop(
     from_down: torch.Tensor, from_up: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -362,18 +382,18 @@ class UpConv(nn.Module):
 
     def __init__(
         self,
-        in_channels,
-        out_channels,
-        merge_mode="concat",
-        up_mode="transpose",
-        planar=False,
-        activation="relu",
-        normalization=None,
-        full_norm=True,
-        dim=3,
-        conv_mode="same",
-        attention=False,
-    ):
+        in_channels: int,
+        out_channels: int,
+        merge_mode: str = "concat",
+        up_mode: str = "transpose",
+        planar: bool = False,
+        activation: Union[str, nn.Module] = "relu",
+        normalization: str = "none",
+        full_norm: bool = True,
+        dim: int = 3,
+        conv_mode: str = "same",
+        attention: bool = False,
+    ) -> None:
         super().__init__()
 
         self.in_channels = in_channels
@@ -435,7 +455,7 @@ class UpConv(nn.Module):
             self.attention = DummyAttention()
         self.att = None  # Field to store attention mask for later analysis
 
-    def forward(self, enc, dec):
+    def forward(self, enc: torch.Tensor, dec: torch.Tensor) -> torch.Tensor:
         """Forward pass
         Arguments:
             enc: Tensor from the encoder pathway
@@ -474,13 +494,13 @@ class ResizeConv(nn.Module):
 
     def __init__(
         self,
-        in_channels,
-        out_channels,
-        kernel_size=3,
-        planar=False,
-        dim=3,
-        upsampling_mode="nearest",
-    ):
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int = 3,
+        planar: bool = False,
+        dim: int = 3,
+        upsampling_mode: str = "nearest",
+    ) -> None:
         super().__init__()
         self.upsampling_mode = upsampling_mode
         self.scale_factor = 2
@@ -511,7 +531,7 @@ class ResizeConv(nn.Module):
                 f"kernel_size={kernel_size} is not supported. Choose 1 or 3."
             )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.conv(self.upsample(x))
 
 
@@ -522,12 +542,12 @@ class GridAttention(nn.Module):
 
     def __init__(
         self,
-        in_channels,
-        gating_channels,
-        inter_channels=None,
-        dim=3,
-        sub_sample_factor=2,
-    ):
+        in_channels: int,
+        gating_channels: int,
+        inter_channels: Optional[int] = None,
+        dim: int = 3,
+        sub_sample_factor: int = 2,
+    ) -> None:
         super().__init__()
 
         assert dim in [2, 3]
@@ -600,7 +620,7 @@ class GridAttention(nn.Module):
 
         self.init_weights()
 
-    def forward(self, x, g):
+    def forward(self, x: torch.Tensor, g: torch.Tensor) -> Tuple[torch.Tensor, None]:
         # theta => (b, c, t, h, w) -> (b, i_c, t, h, w) -> (b, i_c, thw)
         # phi   => (b, g_d) -> (b, i_c)
         theta_x = self.theta(x)
@@ -627,22 +647,22 @@ class GridAttention(nn.Module):
 
         return wy, sigm_psi_f
 
-    def init_weights(self):
-        def weight_init(m):
+    def init_weights(self) -> None:
+        def weight_init(m: nn.Module) -> None:
             classname = m.__class__.__name__
-            if classname.find("Conv") != -1:
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Conv3d):
                 nn.init.kaiming_normal_(m.weight.data, a=0, mode="fan_in")
-            elif classname.find("Linear") != -1:
-                nn.init.kaiming_normal_(m.weight.data, a=0, mode="fan_in")
-            elif classname.find("BatchNorm") != -1:
+            elif isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm3d):
                 nn.init.normal_(m.weight.data, 1.0, 0.02)
                 nn.init.constant_(m.bias.data, 0.0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight.data, a=0, mode="fan_in")
 
         self.apply(weight_init)
 
 
 class DummyAttention(nn.Module):
-    def forward(self, x, g):
+    def forward(self, x: torch.Tensor, g: torch.Tensor) -> Tuple[torch.Tensor, None]:
         return x, None
 
 
@@ -953,8 +973,9 @@ class UNet(nn.Module):
         self.planar_blocks = planar_blocks
 
         # create the encoder pathway and add to a list
+        ins = self.in_channels
         for i in range(n_blocks):
-            ins = self.in_channels if i == 0 else outs
+            # ins = self.in_channels if i == 0 else outs
             outs = self.start_filts * (2**i)
             pooling = True if i < n_blocks - 1 else False
             planar = i in self.planar_blocks
@@ -971,11 +992,12 @@ class UNet(nn.Module):
                 conv_mode=conv_mode,
             )
             self.down_convs.append(down_conv)
+            ins = outs
 
         # create the decoder pathway and add to a list
         # - careful! decoding only requires n_blocks-1 blocks
+        outs = ins
         for i in range(n_blocks - 1):
-            ins = outs
             outs = ins // 2
             planar = n_blocks - 2 - i in self.planar_blocks
 
@@ -993,23 +1015,24 @@ class UNet(nn.Module):
                 conv_mode=conv_mode,
             )
             self.up_convs.append(up_conv)
+            ins = outs
 
         self.conv_final = conv1(outs, self.out_channels, dim=dim)
 
         self.apply(self.weight_init)
 
     @staticmethod
-    def weight_init(m):
+    def weight_init(m: nn.Module) -> None:
         if isinstance(m, GridAttention):
             return
         if isinstance(
             m, (nn.Conv3d, nn.Conv2d, nn.ConvTranspose3d, nn.ConvTranspose2d)
         ):
             nn.init.xavier_normal_(m.weight)
-            if getattr(m, "bias") is not None:
+            if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         encoder_outs = []
 
         # Encoder pathway, save outputs for merging
@@ -1038,7 +1061,7 @@ class UNet(nn.Module):
         return x
 
     @torch.jit.unused
-    def forward_gradcp(self, x):
+    def forward_gradcp(self, x: torch.Tensor) -> torch.Tensor:
         """``forward()`` implementation with gradient checkpointing enabled.
         Apart from checkpointing, this behaves the same as ``forward()``."""
         encoder_outs = []
@@ -1061,14 +1084,14 @@ class UNet(nn.Module):
 
 
 def test_model(
-    batch_size=1,
-    in_channels=1,
-    out_channels=2,
-    n_blocks=3,
-    planar_blocks=(),
-    merge_mode="concat",
-    dim=3,
-):
+    batch_size: int = 1,
+    in_channels: int = 1,
+    out_channels: int = 2,
+    n_blocks: int = 3,
+    planar_blocks: Sequence = (),
+    merge_mode: str = "concat",
+    dim: int = 3,
+) -> None:
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model = UNet(
         in_channels=in_channels,
@@ -1106,6 +1129,8 @@ def test_model(
             batch_size, in_channels, 2**n_blocks, 2**n_blocks, device=device
         )
         expected_out_shape = (batch_size, out_channels, 2**n_blocks, 2**n_blocks)
+    else:
+        raise ValueError("dim has to be 2 or 3")
 
     # Test forward, autograd, and backward pass with test input
     out = model(x)
@@ -1114,13 +1139,13 @@ def test_model(
     assert out.shape == expected_out_shape
 
 
-def test_2d_config(max_n_blocks=4):
+def test_2d_config(max_n_blocks: int = 4) -> None:
     for n_blocks in range(1, max_n_blocks + 1):
         print(f"Testing 2D U-Net with n_blocks = {n_blocks}...")
         test_model(n_blocks=n_blocks, dim=2)
 
 
-def test_planar_configs(max_n_blocks=4):
+def test_planar_configs(max_n_blocks: int = 4) -> None:
     for n_blocks in range(1, max_n_blocks + 1):
         planar_combinations = itertools.chain(
             *[

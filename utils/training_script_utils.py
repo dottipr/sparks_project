@@ -10,18 +10,24 @@ Functions:
     init_criterion: Initialize loss function.
 
 Author: Prisca Dotti
-Last modified: 27.09.2023
+Last modified: 12.10.2023
 """
 import argparse
 import logging
 import os
+from typing import List, Union
 
 from torch import nn
 
 import models.UNet as unet
 import models.unetOpenAI as unet_openai
-from config import config
-from data.datasets import SparkDataset, SparkDatasetLSTM
+from config import TrainingConfig, config
+from data.datasets import (
+    SparkDataset,
+    SparkDatasetLSTM,
+    SparkDatasetResampled,
+    SparkDatasetTemporalReduction,
+)
 from models.architectures import TempRedUNet, UNetConvLSTM
 from models.new_unet import UNet
 from utils.custom_losses import (
@@ -29,10 +35,11 @@ from utils.custom_losses import (
     FocalLoss,
     LovaszSoftmax,
     LovaszSoftmax3d,
+    MySoftDiceLoss,
     SumFocalLovasz,
-    mySoftDiceLoss,
 )
 from utils.training_inference_tools import (
+    TransformedSparkDataset,
     compute_class_weights,
     random_flip,
     random_flip_noise,
@@ -40,7 +47,7 @@ from utils.training_inference_tools import (
 
 __all__ = [
     "init_config_file_path",
-    "init_training_dataset",
+    "init_dataset",
     "init_testing_dataset",
     "init_model",
     "init_criterion",
@@ -49,7 +56,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-def init_config_file_path():
+def init_config_file_path() -> str:
     """
     Initialize the path to the configuration file based on the provided argument or
     command line input.
@@ -74,9 +81,11 @@ def init_config_file_path():
         exit()
 
 
-def init_training_dataset(params, train_sample_ids, print_dataset_info=True):
+def init_dataset(
+    params: TrainingConfig, sample_ids: List[str], print_dataset_info: bool = True
+) -> TransformedSparkDataset:
     """
-    Initialize the training dataset based on provided parameters and sample IDs.
+    Initialize the dataset based on provided parameters and sample IDs.
 
     Args:
         params (TrainingConfig): TrainingConfig instance containing configuration
@@ -90,22 +99,26 @@ def init_training_dataset(params, train_sample_ids, print_dataset_info=True):
     """
 
     # Define dataset path
-    dataset_path = os.path.realpath(f"{config.basedir}/{params.relative_path}")
+    dataset_path = os.path.realpath(f"{config.basedir}/{params.dataset_path}")
 
     assert os.path.isdir(dataset_path), f'"{dataset_path}" is not a directory'
 
     dataset_args = {
         "params": params,
         "base_path": dataset_path,
-        "sample_ids": train_sample_ids,
-        "testing": False,
+        "sample_ids": sample_ids,
         "inference": None,
     }
 
     if params.nn_architecture == "unet_lstm":
         dataset = SparkDatasetLSTM(**dataset_args)
     elif params.nn_architecture in ["pablos_unet", "github_unet", "openai_unet"]:
-        dataset = SparkDataset(**dataset_args)
+        if params.temporal_reduction:  # not tested
+            dataset = SparkDatasetTemporalReduction(**dataset_args)
+        elif params.new_fps != 0:  # not tested
+            dataset = SparkDatasetResampled(**dataset_args)
+        else:
+            dataset = SparkDataset(**dataset_args)
     else:
         logger.error(f"{params.nn_architecture} is not a valid nn architecture.")
         exit()
@@ -113,7 +126,7 @@ def init_training_dataset(params, train_sample_ids, print_dataset_info=True):
     # Apply transforms based on noise_data_augmentation setting
     # (transforms are applied when getting a sample from the dataset)
     transforms = random_flip_noise if params.noise_data_augmentation else random_flip
-    dataset = unet.TransformedDataset(dataset, transforms)
+    dataset = TransformedSparkDataset(dataset, transforms)
 
     if print_dataset_info:
         logger.info(f"Samples in training dataset: {len(dataset)}")
@@ -121,7 +134,9 @@ def init_training_dataset(params, train_sample_ids, print_dataset_info=True):
     return dataset
 
 
-def init_testing_dataset(params, test_sample_ids, print_dataset_info=True):
+def init_testing_dataset(
+    params: TrainingConfig, test_sample_ids: List[str], print_dataset_info: bool = True
+) -> List:
     """
     Initialize the testing dataset based on provided parameters and sample IDs.
 
@@ -137,7 +152,7 @@ def init_testing_dataset(params, test_sample_ids, print_dataset_info=True):
     """
 
     # Define dataset path
-    dataset_path = os.path.realpath(f"{config.basedir}/{params.relative_path}")
+    dataset_path = os.path.realpath(f"{config.basedir}/{params.dataset_path}")
 
     assert os.path.isdir(dataset_path), f'"{dataset_path}" is not a directory'
 
@@ -160,7 +175,9 @@ def init_testing_dataset(params, test_sample_ids, print_dataset_info=True):
         exit()
 
     for sample_id in test_sample_ids:
-        dataset = DatasetClass(**dataset_args, sample_ids=[sample_id])
+        dataset = DatasetClass(
+            **dataset_args, sample_ids=[sample_id]
+        )  # TODO: aggiornare secondo il nuovo SparkDataset
         testing_datasets.append(dataset)
 
         if print_dataset_info:
@@ -171,7 +188,7 @@ def init_testing_dataset(params, test_sample_ids, print_dataset_info=True):
     return testing_datasets
 
 
-def init_model(params):
+def init_model(params: TrainingConfig) -> nn.Module:
     """
     Initialize the deep learning model based on the specified architecture in params.
 
@@ -267,11 +284,15 @@ def init_model(params):
             dims=config.ndims,
             # use_checkpoint=True
         )
+    else:
+        raise ValueError(f"{params.nn_architecture} is not a valid nn architecture.")
 
     return network
 
 
-def init_criterion(params, dataset):
+def init_criterion(
+    params: TrainingConfig, dataset: Union[SparkDataset, SparkDatasetLSTM]
+) -> nn.Module:  # TODO: aggiungere altri datasets oppure una classe più generale
     """
     Initialize the loss function based on the specified criterion in params.
 
@@ -308,6 +329,9 @@ def init_criterion(params, dataset):
             )
         )
 
+        # Convert class_weights to list
+        class_weights = [w.item() for w in class_weights]
+
         # Initialize the loss function
         criterion = FocalLoss(
             reduction="mean",
@@ -326,6 +350,10 @@ def init_criterion(params, dataset):
             criterion = LovaszSoftmax(
                 classes="present", per_image=True, ignore=config.ignore_index
             )
+        else:
+            raise ValueError(
+                f"{params.nn_architecture} is not a valid nn architecture."
+            )
 
     elif params.criterion == "sum_losses":
         # Compute class weights
@@ -336,21 +364,24 @@ def init_criterion(params, dataset):
             )
         )
 
+        # Convert class_weights to list
+        class_weights = [w.item() for w in class_weights]
+
         # Initialize the loss function
         criterion = SumFocalLovasz(
             classes="present",
             per_image=False,
             ignore=config.ignore_index,
             alpha=class_weights,
-            gamma=params["gamma"],
+            gamma=params.gamma,
             reduction="mean",
-            w=params["w"],
+            w=params.w,
         )
 
     elif params.criterion == "dice_loss":
         # Initialize the loss function
         softmax = nn.Softmax(dim=1)
-        criterion = mySoftDiceLoss(apply_nonlin=softmax, batch_dice=True, do_bg=False)
+        criterion = MySoftDiceLoss(apply_nonlin=softmax, batch_dice=True, do_bg=False)
 
     elif params.criterion == "dice_nll_loss":
         # Compute class weights
@@ -368,7 +399,6 @@ def init_criterion(params, dataset):
         )
 
     else:
-        logger.error(f"{params.criterion} is not a valid criterion.")
-        exit()
+        raise ValueError(f"{params.criterion} is not a valid criterion.")
 
     return criterion

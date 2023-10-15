@@ -9,7 +9,7 @@ Predictions are saved as:
           results.
 
 Author: Prisca Dotti
-Last modified: 03.10.2023
+Last modified: 14.10.2023
 """
 
 import logging
@@ -20,12 +20,12 @@ import torch
 from torch import nn
 
 from config import TrainingConfig, config
+from data import datasets
 from data.data_processing_tools import masks_to_instances_dict, process_raw_predictions
-from data.datasets import SparkDataset
 from utils.in_out_tools import write_videos_on_disk
 
 # from torch.cuda.amp import GradScaler
-from utils.training_inference_tools import get_preds
+from utils.training_inference_tools import get_raw_preds_dict
 from utils.training_script_utils import init_model
 
 logger = logging.getLogger(__name__)
@@ -83,9 +83,7 @@ def main():
 
     ########################### Detect GPU, if available ###########################
 
-    params.set_device(
-        device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    )
+    params.set_device(device="auto")
     params.display_device_info()
 
     ######################## Config dataset and UNet model #########################
@@ -196,7 +194,11 @@ def main():
 
         logger.info(f"\tProcessing samples in UNet...")
         # ys and preds are numpy arrays
-        input_movies[sample_id], ys[sample_id], preds_dict[sample_id] = get_preds(
+        (
+            input_movies[sample_id],
+            ys[sample_id],
+            preds_dict[sample_id],
+        ) = get_raw_preds_dict(
             model=network,
             test_dataset=testing_dataset,
             params=params,

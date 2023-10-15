@@ -2,12 +2,15 @@
 Script with tools for data visualisation (e.g. plots and Napari).
 
 Author: Prisca Dotti
-Last modified: 27.09.2023
+Last modified: 13.10.2023
 """
 
 import itertools
 import logging
 import math
+import random
+from ast import Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import vispy.color
@@ -54,7 +57,7 @@ logger = logging.getLogger(__name__)
 #################################### Napari ####################################
 
 
-def get_discrete_cmap(name="gray", lut=16):
+def get_discrete_cmap(name: str = "gray", lut: int = 16) -> vispy.color.Colormap:
     """
     This function creates a discrete colormap from an original colormap with a
     specified number of discrete colors. It returns a Colormap instance that can
@@ -81,7 +84,7 @@ def get_discrete_cmap(name="gray", lut=16):
     return cmap
 
 
-def get_labels_cmap():
+def get_labels_cmap() -> Dict[int, list]:
     """
     Get a color map (cmap) for visualizing labeled regions.
 
@@ -113,7 +116,9 @@ def get_labels_cmap():
     return labels_cmap
 
 
-def set_edges_to_white(input_movie, white, thickness=0):
+def set_edges_to_white(
+    input_movie: np.ndarray, white: Union[Tuple, List], thickness: int = 0
+) -> None:
     """
     Set the edges of an input movie to a specified color (called white for now).
 
@@ -163,7 +168,9 @@ def set_edges_to_white(input_movie, white, thickness=0):
         input_movie[-thickness - 1 :, :, -thickness - 1 :] = white
 
 
-def get_annotations_contour(annotations, contour_val=2):
+def get_annotations_contour(
+    annotations: np.ndarray, contour_val: int = 2
+) -> np.ndarray:
     """
     Compute the contour of annotation masks for Napari visualization.
 
@@ -203,7 +210,9 @@ def get_annotations_contour(annotations, contour_val=2):
 #################### colored events on movie visualisation #####################
 
 
-def paste_segmentation_on_video(video, colored_mask):
+def paste_segmentation_on_video(
+    video: List[Image.Image], colored_mask: List[Image.Image]
+) -> None:
     """
     Paste colored segmentation masks on video frames.
 
@@ -230,7 +239,12 @@ def paste_segmentation_on_video(video, colored_mask):
         frame.paste(ann, mask=ann.split()[3])
 
 
-def add_colored_segmentation_to_video(segmentation, video, color, transparency=50):
+def add_colored_segmentation_to_video(
+    segmentation: np.ndarray,
+    video: List[Image.Image],
+    color: Tuple[int, int, int],
+    transparency: int = 50,
+) -> List[Image.Image]:
     """
     This function adds a colored segmentation overlay to each frame in a video
     using the specified color and transparency.
@@ -272,25 +286,7 @@ def add_colored_segmentation_to_video(segmentation, video, color, transparency=5
     return video
 
 
-def l2_distance(point1, point2):
-    """
-    Calculate the L2 Euclidean distance between two points in N-dimensional space.
-
-    Args:
-        point1 (tuple or list): Coordinates of the first point (N values).
-        point2 (tuple or list): Coordinates of the second point (N values).
-
-    Returns:
-        float: L2 Euclidean distance between the two points.
-    """
-    if len(point1) != len(point2):
-        raise ValueError("Points must have the same dimensionality")
-
-    squared_distance = sum((x - y) ** 2 for x, y in zip(point1, point2))
-    return math.sqrt(squared_distance)
-
-
-def ball(center, radius):
+def ball(center: Tuple[int, int, int], radius: int) -> List[Tuple[int, int, int]]:
     """
     This function returns a list of coordinates (t, y, x) within a 3D ball
     shape centered at the specified center.
@@ -313,7 +309,13 @@ def ball(center, radius):
     return ball_indices
 
 
-def color_ball(mask, center, radius, color, transparency=50):
+def color_ball(
+    mask: np.ndarray,
+    center: Tuple[int, int, int],
+    radius: int,
+    color: Tuple[int, int, int],
+    transparency: float = 0.5,  # original was 50
+) -> np.ndarray:
     """
     This function colors a region within a 3D ball shape in an RGBA mask with the
     specified color and transparency.
@@ -337,24 +339,31 @@ def color_ball(mask, center, radius, color, transparency=50):
     return mask
 
 
-def l2_distance(p1, p2):
+def l2_distance(point1: Sequence[int], point2: Sequence[int]) -> float:
     """
-    This function calculates the L2 Euclidean distance between two 2D points
-    specified by their coordinates.
+    Calculate the L2 Euclidean distance between two points in N-dimensional space.
 
     Args:
-        point1 (tuple): Coordinates of the first point (y1, x1).
-        point2 (tuple): Coordinates of the second point (y2, x2).
+        point1 (tuple or list): Coordinates of the first point (N values).
+        point2 (tuple or list): Coordinates of the second point (N values).
 
     Returns:
         float: L2 Euclidean distance between the two points.
     """
-    y1, x1 = p1
-    y2, x2 = p2
-    return math.sqrt(math.pow((y1 - y2), 2) + math.pow((x1 - x2), 2))
+    if len(point1) != len(point2):
+        raise ValueError("Points must have the same dimensionality")
+
+    squared_distance = sum((x - y) ** 2 for x, y in zip(point1, point2))
+    return math.sqrt(squared_distance)
 
 
-def add_colored_locations_to_video(locations, video, color, transparency=50, radius=4):
+def add_colored_locations_to_video(
+    locations: List[Tuple[int, int, int]],
+    video: List[Image.Image],
+    color: Tuple[int, int, int],
+    transparency: float = 0.5,  # original was 50
+    radius: int = 4,
+) -> List[Image.Image]:
     """
     This function adds colored circular markers to specified (t, x, y) locations in
     a video using the specified color, transparency, and radius (used for sparks).
@@ -389,8 +398,13 @@ def add_colored_locations_to_video(locations, video, color, transparency=50, rad
 
 
 def add_colored_paired_sparks_to_video(
-    movie, paired_true, paired_preds, fp, fn, transparency=50, white_background=False
-):
+    movie: np.ndarray,
+    paired_true: List[Tuple[int, int, int]],
+    paired_preds: List[Tuple[int, int, int]],
+    fp: List[Tuple[int, int, int]],
+    fn: List[Tuple[int, int, int]],
+    transparency: int = 50,
+) -> List[np.ndarray]:
     """
     This function takes an original video, along with lists of paired true, paired
     predicted, false positive, and false negative spark coordinates. It adds color-coded
@@ -403,7 +417,6 @@ def add_colored_paired_sparks_to_video(
         fp (list): List of false positive spark coordinates.
         fn (list): List of false negative spark coordinates.
         transparency (int): Transparency level for colored annotations (0-255).
-        white_background (bool): Whether the background should be white.
 
     Returns:
         list of numpy.ndarray: Colored video frames.
@@ -415,16 +428,28 @@ def add_colored_paired_sparks_to_video(
 
     # Color-coded annotations
     annotated_video = add_colored_locations_to_video(
-        paired_true, rgb_video, [0, 255, 0], 0.8 * transparency
+        locations=paired_true,
+        video=rgb_video,
+        color=(0, 255, 0),
+        transparency=0.8 * transparency,
     )  # green
     annotated_video = add_colored_locations_to_video(
-        paired_preds, annotated_video, [0, 255, 200], 0.8 * transparency
+        locations=paired_preds,
+        video=annotated_video,
+        color=(0, 255, 200),
+        transparency=0.8 * transparency,
     )  # cyan
     annotated_video = add_colored_locations_to_video(
-        fp, annotated_video, [255, 255, 0], transparency
+        locations=fp,
+        video=annotated_video,
+        color=(255, 255, 0),
+        transparency=transparency,
     )  # yellow
     annotated_video = add_colored_locations_to_video(
-        fn, annotated_video, [255, 0, 0], transparency
+        locations=fn,
+        video=annotated_video,
+        color=(255, 0, 0),
+        transparency=transparency,
     )  # red
 
     annotated_video = [np.array(frame) for frame in annotated_video]
@@ -432,13 +457,13 @@ def add_colored_paired_sparks_to_video(
 
 
 def add_colored_classes_to_video(
-    movie,
-    classes_mask,
-    transparency=50,
-    ignore_frames=0,
-    white_bg=False,
-    label_mask=None,
-):
+    movie: np.ndarray,
+    classes_mask: np.ndarray,
+    transparency: int = 50,
+    ignore_frames: int = 0,
+    white_bg: bool = False,
+    label_mask: Optional[np.ndarray] = None,
+) -> List[np.ndarray]:
     """
     This function takes an original video, a segmentation mask with class
     labels, and optional labelled segmentation mask. It adds color-coded class
@@ -517,8 +542,12 @@ def add_colored_classes_to_video(
 
 
 def add_colored_instances_to_video(
-    movie, instances_mask, transparency=50, ignore_frames=0, white_bg=False
-):
+    movie: np.ndarray,
+    instances_mask: np.ndarray,
+    transparency: int = 50,
+    ignore_frames: int = 0,
+    white_bg: bool = False,
+) -> List[np.ndarray]:
     """
     This function takes an original video and a segmentation mask with event
     instances. It assigns a random color to each event instance and adds the
@@ -549,7 +578,7 @@ def add_colored_instances_to_video(
         event_mask = instances_mask == event_id
 
         # Create a random color for each event
-        color = np.random.randint(0, 255, size=3)
+        color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
 
         color_movie = add_colored_segmentation_to_video(
             segmentation=event_mask,
@@ -572,7 +601,9 @@ def add_colored_instances_to_video(
 ############################## signal extraction ###############################
 
 
-def create_circular_mask(h, w, center, radius):
+def create_circular_mask(
+    h: int, w: int, center: Tuple[int, int], radius: int
+) -> np.ndarray:
     """
     Create a circular mask of given radius around the specified center.
 
@@ -591,7 +622,9 @@ def create_circular_mask(h, w, center, radius):
     return mask
 
 
-def create_signal_mask(t, h, w, start, stop, center, radius):
+def create_signal_mask(
+    t: int, h: int, w: int, start: int, stop: int, center: Tuple[int, int], radius: int
+) -> np.ndarray:
     """
     Create a video mask with a circular region of interest (ROI) specified by
     center and radius.
@@ -620,8 +653,16 @@ def create_signal_mask(t, h, w, start, stop, center, radius):
 
 
 def get_spark_signal(
-    video, sparks_labelled, center, radius, context_duration, return_info=False
-):
+    video: np.ndarray,
+    sparks_labelled: np.ndarray,
+    center: Tuple[int, int, int],
+    radius: int,
+    context_duration: int,
+    return_info: bool = False,
+) -> Union[
+    Tuple[np.ndarray, np.ndarray],
+    Tuple[np.ndarray, np.ndarray, Tuple[int, int], int, int],
+]:
     """
     Compute the signal of a spark event given its center and radius.
 
@@ -659,8 +700,10 @@ def get_spark_signal(
 
     start = max(0, start)
     stop = min(video.shape[0], stop)
+
+    t, h, w = sparks_labelled.shape
     signal_mask = create_signal_mask(
-        *sparks_labelled.shape, start, stop, (x, y), radius
+        t=t, h=h, w=w, start=start, stop=stop, center=(x, y), radius=radius
     )
 
     frames = np.arange(start, stop)
@@ -673,8 +716,13 @@ def get_spark_signal(
 
 
 def get_spark_2d_signal(
-    video, slices, coords, spatial_context, sigma=None, return_info=False
-):
+    video: np.ndarray,
+    slices: Tuple[slice, slice, slice],
+    coords: Tuple[int, int, int],
+    spatial_context: int,
+    sigma: Optional[int] = None,
+    return_info: bool = False,
+) -> Union[Tuple[int, int, int, np.ndarray, np.ndarray, np.ndarray], np.ndarray,]:
     """
     Compute the 2D signal of a spark event given its slices and coordinates.
 

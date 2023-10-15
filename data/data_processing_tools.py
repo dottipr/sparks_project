@@ -7,15 +7,15 @@ REMARKS
 the end of the script (such as compute_filtered_butter, ...)
 
 Author: Prisca Dotti
-Last modified: 03.10.2023
+Last modified: 11.10.2023
 """
 
 import logging
 import time
+from typing import Dict, List, Tuple, Union
 
 import cc3d
 import numpy as np
-from scipy import fftpack
 from scipy import ndimage as ndi
 from scipy import signal, spatial
 from scipy.ndimage import binary_fill_holes, median_filter
@@ -64,7 +64,9 @@ __all__ = [
 ########################## Annotations preprocessing ###########################
 
 
-def keep_percentile(movie, roi_mask, percentile=75, min_roi_size=2):
+def keep_percentile(
+    movie: np.ndarray, roi_mask: np.ndarray, percentile: int = 75, min_roi_size: int = 2
+) -> np.ndarray:
     """
     For a given event ROI, keep only points above a certain percentile.
 
@@ -102,7 +104,13 @@ def keep_percentile(movie, roi_mask, percentile=75, min_roi_size=2):
     return new_roi_mask
 
 
-def reduce_sparks_size(movie, class_mask, event_mask, sigma=2, k=75):
+def reduce_sparks_size(
+    movie: np.ndarray,
+    class_mask: np.ndarray,
+    event_mask: np.ndarray,
+    sigma: float = 2.0,
+    k: int = 75,
+) -> np.ndarray:
     """
     Reduce spark dimensions in the class annotation mask.
 
@@ -141,8 +149,7 @@ def reduce_sparks_size(movie, class_mask, event_mask, sigma=2, k=75):
         event_roi = spark_mask == event_id
 
         # Reduce spark size dimension with respect to percentile
-        new_roi_mask = keep_percentile(
-            movie=movie, roi_mask=event_roi, percentile=k)
+        new_roi_mask = keep_percentile(movie=movie, roi_mask=event_roi, percentile=k)
 
         # Set new smaller spark peaks to 1
         new_peak = np.logical_and(event_roi, new_roi_mask)
@@ -155,7 +162,9 @@ def reduce_sparks_size(movie, class_mask, event_mask, sigma=2, k=75):
     return new_class_mask
 
 
-def annotate_undefined_around_peaks(mask, inner_radius=2.5, outer_radius=3.5):  # SLOW
+def annotate_undefined_around_peaks(
+    peak_mask: np.ndarray, inner_radius: float = 2.5, outer_radius: float = 3.5
+) -> np.ndarray:
     """
     Annotate regions around spark peaks as undefined (class 4).
 
@@ -168,117 +177,93 @@ def annotate_undefined_around_peaks(mask, inner_radius=2.5, outer_radius=3.5):  
     - numpy.ndarray: Annotated mask with spark and undefined regions.
 
     """
-    dist_transform = ndi.distance_transform_edt(1 - mask)
-    annotated_mask = np.zeros(mask.shape, dtype=np.int64)
+    # Convert the input mask to boolean (True for peaks, False for background)
+    peak_mask = peak_mask.astype(bool)
+
+    dist_transform = np.array(ndi.distance_transform_edt(~peak_mask))
+
+    annotated_mask = np.zeros(peak_mask.shape, dtype=np.int64)
     annotated_mask[dist_transform < outer_radius] = config.ignore_index
-    annotated_mask[dist_transform <
-                   inner_radius] = config.classes_dict["sparks"]
+    annotated_mask[dist_transform < inner_radius] = config.classes_dict["sparks"]
 
     return annotated_mask
 
 
 def annotate_sparks_with_peaks(
-    video,
-    sparks_mask,
-    peak_radius=3,
-    ignore_radius=2,
-    return_spark_loc=False,
-    return_spark_loc_and_mask=False,
-    ignore_frames=0,
-):
+    video: np.ndarray,
+    labels_mask: np.ndarray,
+    peak_radius: int = 3,
+    ignore_radius: int = 2,
+    ignore_frames: int = 0,
+) -> Tuple[List[Tuple[int, int, int]], np.ndarray]:
     """
     Annotate sparks in a binary mask using peak detection.
 
     Parameters:
-    - video: Input video data.
-    - spark_mask: Binary mask containing spark regions.
-    - peak_radius: Radius for spark peak region.
-    - ignore_radius: Radius for spark ignore region.
-    - sigma: Standard deviation for Gaussian smoothing.
-    - return_spark_loc: If True, return the locations of spark peaks.
-    - return_spark_loc_and_mask: If True, return both spark locations and
-        annotated mask.
-    - ignore_frames: Number of frames to ignore from the start and end of the
+    - video (numpy.ndarray): Input video data.
+    - labels_mask (numpy.ndarray): Mask containing segmented labeled events.
+    - peak_radius (int): Radius for spark peak region.
+    - ignore_radius (int): Radius for spark ignore region.
+    - ignore_frames (int): Number of frames to ignore from the start and end of the
         video.
 
-    Returns:
-    - Annotated mask with spark regions.
-    - (Optional) List of spark peak locations.
+    Returns (tuple):
+    - List[Tuple[int, int, int]]: List of spark peak locations.
+    - numpy.ndarray: Annotated mask with spark regions.
     """
     sparks_label = config.classes_dict["sparks"]
 
     # Detect spark peak locations
-    if sparks_label in sparks_mask:
-        sparks_maxima_mask = np.where(sparks_mask == 1, sparks_label, 0)
+    if sparks_label in labels_mask:
+        sparks_mask = np.where(labels_mask == 1, sparks_label, 0)
 
-        sparks_loc, sparks_mask = simple_nonmaxima_suppression(
+        sparks_loc, sparks_peak_mask = simple_nonmaxima_suppression(
             input_array=video,
-            mask=sparks_maxima_mask,
+            mask=sparks_mask,
             min_distance=config.conn_mask,
-            return_mask=True,
-            threshold=0,
+            threshold=0.0,
+            sigma=2.0,
         )
 
         logger.debug(f"Number of sparks detected: {len(sparks_loc)}")
 
-        # Return spark locations if required
-        if return_spark_loc:
-            if ignore_frames > 0:
-                # Remove sparks detected in ignored frames
-                mask_duration = sparks_mask.shape[0]
-                sparks_loc = exclude_marginal_sparks_coords(
-                    spark_coords=sparks_loc,
-                    n_exclude_frames=ignore_frames,
-                    video_duration=mask_duration,
-                )
-            return sparks_loc
-
         # Ignore sparks ROIs detected in ignored frames
         if ignore_frames > 0:
             # remove sparks from maxima mask
-            sparks_mask = trim_and_pad_video(sparks_mask, ignore_frames)
+            sparks_peak_mask = trim_and_pad_video(sparks_peak_mask, ignore_frames)
 
         # Add spark ignore regions
-        sparks_mask = annotate_undefined_around_peaks(
-            sparks_mask,
+        sparks_peak_mask = annotate_undefined_around_peaks(
+            peak_mask=sparks_peak_mask,
             inner_radius=peak_radius,
             outer_radius=peak_radius + ignore_radius,
         )
 
         # Remove sparks from the original mask
-        no_sparks_mask = np.where(sparks_mask == 1, 0, sparks_mask)
+        no_sparks_mask = np.where(labels_mask == 1, 0, labels_mask)
 
         # Create a new mask with spark annotations
-        new_mask = np.where(sparks_mask != 0, sparks_mask, no_sparks_mask)
+        new_mask = np.where(sparks_peak_mask != 0, sparks_peak_mask, no_sparks_mask)
 
-        # Return spark locations and annotated mask if required
-        if return_spark_loc_and_mask:
-            if ignore_frames > 0:
-                # Remove sparks detected in ignored frames from locations
-                mask_duration = sparks_mask.shape[0]
-                sparks_loc = exclude_marginal_sparks_coords(
-                    spark_coords=sparks_loc,
-                    n_exclude_frames=ignore_frames,
-                    video_duration=mask_duration,
-                )
-            return sparks_loc, new_mask
-
-        else:
-            return new_mask
+        # Return spark locations and annotated mask
+        if ignore_frames > 0:
+            # Remove sparks detected in ignored frames from locations
+            mask_duration = labels_mask.shape[0]
+            sparks_loc = exclude_marginal_sparks_coords(
+                spark_coords=sparks_loc,
+                n_exclude_frames=ignore_frames,
+                video_duration=mask_duration,
+            )
+        return sparks_loc, new_mask
 
     else:
-        # Return empty lists or the original mask if no sparks found
-        if return_spark_loc:
-            return []
-        elif return_spark_loc_and_mask:
-            return [], sparks_mask
-        else:
-            return sparks_mask
+        # Return empty lists and the original mask if no sparks found
+        return [], labels_mask
 
 
 def apply_ignore_regions_to_events(
-    mask, ignore_radii=[1, 5, 3], apply_erosion=[0, 1, 1]
-):
+    mask: np.ndarray, ignore_radii: list = [1, 5, 3], apply_erosion: list = [0, 1, 1]
+) -> np.ndarray:
     """
     Apply ignore regions around events in a segmentation mask.
 
@@ -323,7 +308,9 @@ def apply_ignore_regions_to_events(
 ########################### General masks processing ###########################
 
 
-def trim_and_pad_video(video, n_margin_frames, pad_value=0):
+def trim_and_pad_video(
+    video: np.ndarray, n_margin_frames: int, pad_value: int = 0
+) -> np.ndarray:
     """
     Trim and pad a video by removing a specified number of frames from the
     beginning and end and padding with the given padding value.
@@ -352,7 +339,9 @@ def trim_and_pad_video(video, n_margin_frames, pad_value=0):
     return trimmed_video
 
 
-def exclude_marginal_sparks_coords(spark_coords, n_exclude_frames, video_duration):
+def exclude_marginal_sparks_coords(
+    spark_coords: List[Tuple[int, int, int]], n_exclude_frames: int, video_duration: int
+) -> List[Tuple[int, int, int]]:
     """
     Exclude spark coordinates located in the first and last 'n_exclude_frames'
     frames of a video with 'video_duration'.
@@ -382,7 +371,7 @@ def exclude_marginal_sparks_coords(spark_coords, n_exclude_frames, video_duratio
     return spark_coords
 
 
-def get_convex_hull(image):
+def get_convex_hull(image: np.ndarray) -> np.ndarray:
     """
     Compute the convex hull of a binary Numpy array.
 
@@ -403,8 +392,10 @@ def get_convex_hull(image):
 
 
 def get_smallest_event(
-    events_mask, get_shortest_duration=False, get_smallest_width=False
-):
+    events_mask: np.ndarray,
+    get_shortest_duration: bool = False,
+    get_smallest_width: bool = False,
+) -> Dict[str, int]:
     """
     Get the dimensions of the 'smallest' event within the given class mask.
 
@@ -448,12 +439,14 @@ def get_smallest_event(
 ######################### UNet predictions processing ##########################
 
 
-def get_argmax_segmentation(class_predictions, return_classes=True):
+def get_argmax_segmentation(
+    class_predictions_raw: np.ndarray, return_classes: bool = True
+) -> Union[np.ndarray, Tuple[Dict[str, np.ndarray], np.ndarray]]:
     """
     Get class-wise segmentation predictions from raw UNet outputs.
 
     Args:
-    - preds (numpy.ndarray): Raw UNet outputs for each class.
+    - class_predictions_raw (numpy.ndarray): Raw UNet outputs for each class.
                              Shape: (num_classes x duration x height x width).
     - return_classes (bool): If True, return class-wise predictions.
                              If False, return the argmax class predictions.
@@ -463,20 +456,22 @@ def get_argmax_segmentation(class_predictions, return_classes=True):
         If return_classes is True, returns a dictionary of class-wise predictions.
         If return_classes is False, returns the argmax class predictions.
     """
-    argmax_classes = np.argmax(class_predictions, axis=0)
+    argmax_classes = np.argmax(class_predictions_raw, axis=0)
 
     if not return_classes:
         return argmax_classes
 
-    class_predictions = {}
-    for event_type, event_label in config.classes_dict.items():
-        class_predictions[event_type] = np.where(
-            argmax_classes == event_label, 1, 0)
+    class_predictions_dict = {
+        event_type: (argmax_classes == event_label)
+        for event_type, event_label in config.classes_dict.items()
+    }
 
-    return class_predictions, argmax_classes
+    return class_predictions_dict, argmax_classes
 
 
-def get_otsu_argmax_segmentation(preds, return_classes=True, debug=False):
+def get_otsu_argmax_segmentation(
+    preds: Dict[str, np.ndarray], return_classes: bool = True, debug: bool = False
+) -> Union[np.ndarray, Tuple[Dict[str, np.ndarray], np.ndarray]]:
     """
     Compute segmentation predictions using Otsu thresholding. Compute Otsu
     threshold with respect to the sum of positive predictions and remove
@@ -513,8 +508,7 @@ def get_otsu_argmax_segmentation(preds, return_classes=True, debug=False):
     binary_sum_preds = sum_preds > t_otsu
 
     # Create new empty mask of shape (num_classes x duration x height x width)
-    masked_class_preds = np.zeros(
-        (config.num_classes, *binary_sum_preds.shape))
+    masked_class_preds = np.zeros((config.num_classes, *binary_sum_preds.shape))
 
     # Mask out removed events from UNet preds for each class
     # This is necessary because the classes need to be in the right order
@@ -525,18 +519,17 @@ def get_otsu_argmax_segmentation(preds, return_classes=True, debug=False):
 
     # Get argmax of classes
     return get_argmax_segmentation(
-        class_predictions=masked_class_preds, return_classes=return_classes
+        class_predictions_raw=masked_class_preds, return_classes=return_classes
     )
 
 
 def get_separated_events(
-    argmax_preds,
-    movie,
-    return_peaks_coords=False,
-    debug=False,
-    training_mode=False,
-    watershed_classes=["sparks"],
-):
+    argmax_preds: Dict[str, np.ndarray],
+    movie: np.ndarray,
+    debug: bool = False,
+    training_mode: bool = False,
+    watershed_classes: List[str] = ["sparks"],
+) -> Tuple[Dict[str, np.ndarray], Dict[str, List[Tuple[int, int, int]]],]:
     """
     Separate each class into event instances using watershed separation
     algorithm.
@@ -544,23 +537,23 @@ def get_separated_events(
     Args:
     - argmax_preds (dict): Segmented UNet output with class-wise predictions.
     - movie (numpy.ndarray): Input movie.
-    - return_sparks_loc (bool): If True, return spark peaks locations together
-        with separated events.
     - debug (bool): If True, print intermediate results.
     - training_mode (bool): If True, separate events using a simpler algorithm.
     - watershed_classes (list of str): list of event types for which Watershed
         algorithm is used in addition to connected components.
 
-    Returns:
+    Returns (tuple):
     - dict: Separated events with keys config.classes_dict.keys() where each
     entry is an array with labelled events (from 1 to n_events).
-    - dict: Dictionary with list of  peaks locations if return_peaks_coords is
-    True. (keys: watersheds_classes)
+    - dict: Dictionary with list of peaks locations (keys: watersheds_classes).
     """
     separated_events = {}
     coords_events = {}
 
     for (event_type,) in config.classes_dict.keys():
+        if event_type in ["ignore", "background"]:
+            continue
+
         # Separate connected components in puff (3) and wave classes (2)
         if event_type not in watershed_classes:
             separated_events[event_type] = cc3d.connected_components(
@@ -575,7 +568,6 @@ def get_separated_events(
                 input_array=movie,
                 mask=argmax_preds[event_type],
                 min_distance=config.conn_mask,
-                return_mask=True,
                 threshold=0.0,
                 sigma=config.sparks_sigma,
             )
@@ -588,9 +580,10 @@ def get_separated_events(
 
             # Compute smooth version of input video
             smooth_xs = ndi.gaussian_filter(movie, sigma=config.sparks_sigma)
+            smooth_xs = smooth_xs.astype(float)
 
             # Compute watershed separation
-            markers, _ = ndi.label(mask_loc)
+            markers = ndi.label(mask_loc)[0]
 
             split_event_mask = watershed(
                 image=-smooth_xs,
@@ -679,16 +672,13 @@ def get_separated_events(
                 separated_events[event_type]
             ), f"{event_type} IDs are not consecutive: {np.unique(np.unique(separated_events[event_type]))}"
 
-    if return_peaks_coords:
-        return separated_events, coords_events
-
-    return separated_events
+    return separated_events, coords_events
 
 
 ###################### Event instances' masks processing #######################
 
 
-def count_instances_per_class(instances_dict):
+def count_instances_per_class(instances_dict: Dict[str, List[int]]) -> Dict[str, int]:
     """
     Given a dictionary of class-wise event instances, count the number of
     instances for each class.
@@ -709,7 +699,7 @@ def count_instances_per_class(instances_dict):
 
 
 # Functions related to the processing of masks with labelled event instances
-def renumber_labelled_mask(labelled_mask, shift_id=0):
+def renumber_labelled_mask(labelled_mask: np.ndarray, shift_id: int = 0) -> np.ndarray:
     """
     Renumber labelled events in a mask to consecutive integers.
 
@@ -739,8 +729,7 @@ def renumber_labelled_mask(labelled_mask, shift_id=0):
 
         # Check that the number of events hasn't changed
         new_labels = np.unique(new_mask)
-        expected_labels = np.arange(
-            shift_id + 1, shift_id + len(unique_labels) + 1)
+        expected_labels = np.arange(shift_id + 1, shift_id + len(unique_labels) + 1)
         assert np.array_equal(
             new_labels, expected_labels
         ), f"New labels are incorrect: {new_labels}."
@@ -750,7 +739,9 @@ def renumber_labelled_mask(labelled_mask, shift_id=0):
     return new_mask
 
 
-def masks_to_instances_dict(instances_mask, labels_mask, shift_ids=False):
+def masks_to_instances_dict(
+    instances_mask: np.ndarray, labels_mask: np.ndarray, shift_ids: bool = False
+) -> Dict[int, np.ndarray]:
     """
     Given two integer masks, one with event labels and one with event instances,
     get a dictionary indexed by event labels with values containing the mask of
@@ -789,7 +780,7 @@ def masks_to_instances_dict(instances_mask, labels_mask, shift_ids=False):
     return instances_dict
 
 
-def merge_labels(labelled_mask, max_gap):
+def merge_labels(labelled_mask: np.ndarray, max_gap: int) -> np.ndarray:
     """
     Merge labels in the input mask if their distance in time is smaller than
     the max gap.
@@ -824,7 +815,7 @@ def merge_labels(labelled_mask, max_gap):
 
 
 # Currently not used, but maybe it could be useful
-def analyse_spark_roi(spark_mask):
+def analyse_spark_roi(spark_mask: np.ndarray) -> Tuple[int, float, int]:
     """
     Analyze a spark event ROI mask.
 
@@ -854,7 +845,9 @@ def analyse_spark_roi(spark_mask):
     return duration, max_radius, n_pixels
 
 
-def remove_small_events(instances_dict, new_id=0):
+def remove_small_events(
+    instances_dict: Dict[str, np.ndarray], new_id: int = 0
+) -> Dict[str, np.ndarray]:
     """
     Remove small predicted events and merge events belonging together.
 
@@ -902,8 +895,13 @@ def remove_small_events(instances_dict, new_id=0):
 
 
 def process_raw_predictions(
-    raw_preds_dict, input_movie, training_mode=False, debug=False
-):
+    raw_preds_dict: Dict[str, np.ndarray],
+    input_movie: np.ndarray,
+    training_mode: bool = False,
+    debug: bool = False,
+) -> Tuple[
+    Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, List[Tuple[int, int, int]]]
+]:
     """
     Process raw UNet outputs to compute segmented predictions and event instances.
 
@@ -917,7 +915,9 @@ def process_raw_predictions(
     - Tuple: A tuple containing processed event instances, segmented predictions,
       and event coordinates.
     """
-    raw_preds_dict = {"background": 1 - sum(raw_preds_dict.values(), axis=0)}
+    raw_preds_list = list(raw_preds_dict.values())
+    raw_preds_dict = {"background": 1 - np.sum(raw_preds_list, axis=0)}
+
     assert (
         raw_preds_dict["background"].shape == input_movie.shape
     ), "U-Net outputs and input movie must have the same shape."
@@ -931,7 +931,6 @@ def process_raw_predictions(
     preds_instances_dict, coords_events = get_separated_events(
         argmax_preds=preds_classes_dict,
         movie=input_movie,
-        return_peaks_coords=True,
         debug=debug,
         training_mode=training_mode,
     )
@@ -942,12 +941,9 @@ def process_raw_predictions(
         instances_dict=preds_instances_dict, new_id=0
     )
 
-    for event_type in config.classes_dict.items():
+    for event_type in preds_instances_dict.keys():
         # Update segmented predicted masks accordingly
-        if event_type in ["ignore", "background"]:
-            continue
-        preds_classes_dict[event_type] = preds_instances_dict[event_type].astype(
-            bool)
+        preds_classes_dict[event_type] = preds_instances_dict[event_type].astype(bool)
 
         # Remove spark peak locations of sparks that have been removed
         if event_type in coords_events.keys():
@@ -959,23 +955,19 @@ def process_raw_predictions(
 
     # Renumber event instances so that each event has a unique ID
     shift_id = 0
-    for event_type in config.classes_dict.items():
-        if event_type in ["ignore", "background"]:
-            continue
-
+    for event_type in preds_instances_dict.keys():
         preds_instances_dict[event_type] = renumber_labelled_mask(
             labelled_mask=preds_instances_dict[event_type], shift_id=shift_id
         )
         shift_id = max(shift_id, np.max(preds_instances_dict[event_type]))
 
     if debug:
-        logger.debug(
-            f"Time for removing small events: {time.time() - start:.2f} s")
+        logger.debug(f"Time for removing small events: {time.time() - start:.2f} s")
 
     return preds_instances_dict, preds_classes_dict, coords_events
 
 
-def preds_dict_to_mask(preds_dict):
+def preds_dict_to_mask(preds_dict: Dict[str, np.ndarray]) -> np.ndarray:
     """
     Convert a dict of binary masks representing a class of calcium release events
     to a single mask with values in their corresponding labels.
@@ -986,17 +978,19 @@ def preds_dict_to_mask(preds_dict):
     Returns:
     - np.ndarray: A mask with values representing different event classes.
     """
-    preds_mask = np.zeros_like(list(preds_dict.values())[0], dtype=int)
+    labels_mask = np.zeros_like(list(preds_dict.values())[0], dtype=int)
     for event_type, event_label in config.classes_dict.items():
-        preds_mask = np.where(preds_dict[event_type], event_label, preds_mask)
-    return preds_mask
+        labels_mask = np.where(preds_dict[event_type], event_label, labels_mask)
+    return labels_mask
 
 
 ##################### Sparks processing in dataset labels ######################
 
 
 # functions based on Miguel's idea (max * std for each pixel)
-def detect_single_roi_peak(movie, roi_mask, max_filter_size=10):
+def detect_single_roi_peak(
+    movie: np.ndarray, roi_mask: np.ndarray, max_filter_size: int = 10
+) -> Tuple[int, int, int]:
     """
     Given a movie and a ROI, extract peak coordinates of the movie inside the ROI.
 
@@ -1025,24 +1019,23 @@ def detect_single_roi_peak(movie, roi_mask, max_filter_size=10):
     argwhere = np.argwhere(argmaxima)
 
     if len(argwhere) != 1:
-        raise ValueError(
-            f"Found more than one peak in ROI: {len(argwhere)} peaks")
+        raise ValueError(f"Found more than one peak in ROI: {len(argwhere)} peaks")
 
     # Find slice t corresponding to max location
     y, x = argwhere[0]
     t = np.argmax(roi_movie[:, y, x])
 
-    return t, y, x
+    return int(t), int(y), int(x)
 
 
 # function based on max in ROI + gaussian smoothing
 def detect_spark_peaks(
-    movie,
-    instances_mask,
-    sigma=2,
-    max_filter_size=10,
-    return_mask=False,
-):
+    movie: np.ndarray,
+    instances_mask: np.ndarray,
+    sigma: int = 2,
+    max_filter_size: int = 10,
+    return_mask: bool = False,
+) -> Union[List[Tuple[int, int, int]], Tuple[List[Tuple[int, int, int]], np.ndarray]]:
     """
     Extract local maxima from input array (t,x,y) such that each ROI contains
     one peak (used for dataset processing, not for U-Net predictions processing).
@@ -1065,7 +1058,7 @@ def detect_spark_peaks(
 
     if sigma > 0:
         # Smooth movie only on (y,x)
-        smooth_movie = ndi.gaussian_filter(movie, sigma=(0, sigma, sigma))
+        smooth_movie = np.array(ndi.gaussian_filter(movie, sigma=(0, sigma, sigma)))
     else:
         smooth_movie = movie
 
@@ -1079,7 +1072,7 @@ def detect_spark_peaks(
             max_filter_size=max_filter_size,
         )
 
-        peaks_coords.append([t, y, x])
+        peaks_coords.append((t, y, x))
 
     if return_mask:
         peaks_mask = np.zeros_like(instances_mask)
@@ -1090,8 +1083,12 @@ def detect_spark_peaks(
 
 
 def simple_nonmaxima_suppression(
-    input_array, mask=None, min_distance=None, return_mask=False, threshold=0.5, sigma=2
-):
+    input_array: np.ndarray,
+    mask: np.ndarray = np.array([]),
+    min_distance: Union[int, np.ndarray] = 0,
+    threshold: float = 0.5,
+    sigma: float = 2.0,
+) -> Tuple[List[Tuple[int, int, int]], np.ndarray]:
     """
     Extract local maxima from an input image.
 
@@ -1100,31 +1097,27 @@ def simple_nonmaxima_suppression(
     - mask (numpy.ndarray, optional): Mask for limiting the search to specific
         regions.
     - min_distance (int, optional): Minimum distance between two peaks.
-    - return_mask (bool, optional): If True, return both masks with maxima and
         locations.
     - threshold (float, optional): Minimum value of maximum points.
     - sigma (float, optional): Sigma parameter of the Gaussian filter.
 
     Returns:
-    - list or tuple: List of peak coordinates if return_mask is False,
-        otherwise, a tuple containing the coordinates and the maxima mask.
+    - tuple containing the peak coordinates and the maxima mask.
     """
     input_array = input_array.astype(np.float64)
 
     # Handle min_distance as a connectivity mask
-    if min_distance is None:
+    if min_distance == 0:
         min_distance = 1
-
-    if np.isscalar(min_distance):
-        c_min_dist = ndi.generate_binary_structure(
-            input_array.ndim, min_distance)
+    elif np.isscalar(min_distance):
+        c_min_dist = ndi.generate_binary_structure(input_array.ndim, min_distance)
     else:
         c_min_dist = np.array(min_distance, bool)
         if c_min_dist.ndim != input_array.ndim:
             raise ValueError("Connectivity dimension must be same as image")
 
     if sigma > 0:
-        if mask is not None:
+        if mask:
             # Keep only the region inside the mask
             masked_img = np.where(mask, input_array, 0.0)
 
@@ -1135,19 +1128,17 @@ def simple_nonmaxima_suppression(
     else:
         smooth_img = input_array
 
-    if mask is not None:
+    if mask:
         # Hypothesis: maxima belong to the maxima mask
         smooth_img = np.where(mask, smooth_img, 0.0)
 
     # Search for local maxima
     dilated = ndi.maximum_filter(smooth_img, footprint=min_distance)
-    is_local_maxima = np.logical_and(
-        smooth_img == dilated, smooth_img > threshold)
+    smooth_img = smooth_img.astype(np.float64)
+    is_local_maxima = np.logical_and(smooth_img == dilated, smooth_img > threshold)
 
-    peak_coordinates = np.argwhere(is_local_maxima).tolist()
-
-    if not return_mask:
-        return peak_coordinates
+    # Get list containing the coordinated of the peaks in is_local_maxima
+    peak_coordinates = list(np.argwhere(is_local_maxima))
 
     return peak_coordinates, is_local_maxima
 
@@ -1159,15 +1150,14 @@ def simple_nonmaxima_suppression(
 
 
 def one_sided_non_inferiority_ttest(
-    sample1, sample2, threshold, increase_is_desirable=True
-):
+    sample1: np.ndarray, sample2: np.ndarray, increase_is_desirable: bool = True
+) -> Tuple[float, float]:
     """
     Perform a one-sided non-inferiority t-test for two independent samples.
 
     Args:
         sample1 (array-like): First sample data.
         sample2 (array-like): Second sample data.
-        threshold (float): Non-inferiority threshold.
         increase_is_desirable (bool): True if an increase in sample2 is considered desirable,
                                       False if a decrease is desirable.
 
@@ -1184,30 +1174,20 @@ def one_sided_non_inferiority_ttest(
     return t_statistic, one_sided_p_value
 
 
-def one_sided_non_inferiority_ttest(group1, group2, increase_good=True):
-    """
-    Perform a one-sided t-test with a non-inferiority threshold for two independent samples.
-    increase_good: if True, Ho: mean2 <= mean1 - threshold. Else Ho: mean2 >= mean1 + threshold.
-    Returns:
-    """
-
-    tstat, pval = ttest_rel(a=group1, b=group2)
-
-    if increase_good:
-        pvalue = pval / 2.0
-    else:
-        pvalue = 1 - pval / 2.0
-
-    return tstat, pvalue
-
-
 ######################### Signal-to-Noise Ratio (SNR) ##########################
 
 
-def get_cell_mask(x, y):
+def get_cell_mask(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """
     Given the original recording and the mask with segmented events,
     return a mask with the cell body.
+
+    Args:
+        x (numpy.ndarray): Original recording.
+        y (numpy.ndarray): Mask with segmented events.
+
+    Returns:
+        numpy.ndarray: Mask with the cell body.
     """
 
     # apply median filter to each frame in x
@@ -1221,7 +1201,7 @@ def get_cell_mask(x, y):
     mean_mask = np.logical_and(y == 0, percentile_mask)
 
     # compute mean of blurred frames
-    x_mean = np.mean(x_median, axis=0, where=mean_mask)
+    x_mean = np.mean(np.array(x_median), axis=0, where=mean_mask)
 
     # fill nan values in x_mean with mean of x_mean
     x_mean[np.isnan(x_mean)] = np.mean(x_mean[~np.isnan(x_mean)])
@@ -1243,7 +1223,7 @@ def get_cell_mask(x, y):
     return threshold_mask
 
 
-def compute_snr(x, y):
+def compute_snr(x: np.ndarray, y: np.ndarray) -> float:
     """
     Compute the signal-to-noise ratio given the original recording and the mask
     with segmented events.
@@ -1261,7 +1241,7 @@ def compute_snr(x, y):
     cell_mask = np.repeat(cell_mask[:, np.newaxis, :], x.shape[0], axis=1)
 
     # Create a mask that includes both the cell body and events
-    cell_and_events_mask = np.logical_or(cell_mask, y)
+    cell_and_events_mask = np.logical_or(cell_mask, y)  # check this!! logical_and
 
     # Calculate the 99th percentile of x within the cell_and_events_mask
     percentile = np.percentile(x[cell_and_events_mask], 99)
@@ -1281,7 +1261,9 @@ def compute_snr(x, y):
 ####################### Other functions (from notebooks) #######################
 
 
-def get_event_parameters(event_mask, simple=True):
+def get_event_parameters(
+    event_mask: np.ndarray, simple: bool = True
+) -> Union[Tuple[int, int, float, float], List[List[List[int]]]]:
     """
     Get event parameters from an event mask.
 
@@ -1305,7 +1287,12 @@ def get_event_parameters(event_mask, simple=True):
         # Calculate center of mass in the first frame
         y_center, x_center = ndi.center_of_mass(event_mask[start_frame])
 
-        return start_frame, end_frame, round(x_center, 2), round(y_center, 2)
+        return (
+            start_frame,
+            end_frame,
+            round(float(x_center), 2),
+            round(float(y_center), 2),
+        )
 
     else:
         # Create a list of lists for each frame
@@ -1319,7 +1306,7 @@ def get_event_parameters(event_mask, simple=True):
         return coord_list
 
 
-def moving_average(movie, k=3):
+def moving_average(movie: np.ndarray, k: int = 3) -> np.ndarray:
     """
     Compute moving average of a movie.
 
@@ -1344,7 +1331,9 @@ def moving_average(movie, k=3):
     return avg_movie
 
 
-def count_classes_in_roi(events_mask, classes_mask, event_id):
+def count_classes_in_roi(
+    events_mask: np.ndarray, classes_mask: np.ndarray, event_id: int
+) -> int:
     """
     Count the number of unique classes within an event in the given masks.
 
@@ -1374,14 +1363,17 @@ def count_classes_in_roi(events_mask, classes_mask, event_id):
 
 
 def compute_filtered_butter(
-    movie_array,
-    min_prominence=2,
-    band_stop_width=2,
-    min_freq=7,
-    filter_order=4,
-    Fs=150,
-    debug=False,
-):
+    movie_array: np.ndarray,
+    min_prominence: int = 2,
+    band_stop_width: int = 2,
+    min_freq: int = 7,
+    filter_order: int = 4,
+    Fs: int = 150,
+    debug: bool = False,
+) -> Union[
+    np.ndarray,
+    Tuple[np.ndarray, np.ndarray, np.ndarray, int, np.ndarray, np.ndarray, np.ndarray],
+]:
     """
     Apply Butterworth filter to input movie.
 
@@ -1407,14 +1399,14 @@ def compute_filtered_butter(
 
     # get noise frequencies
     # compute Fourier transform
-    fft = fftpack.fft(movie_average)
+    fft = np.fft.fft(movie_average)
     # compute two-sided spectrum
     P2 = np.abs(fft / L)
     # compute single-sided spectrum
     P1 = P2[: (L // 2)]
     P1[1:-1] = 2 * P1[1:-1]
 
-    freqs = fftpack.fftfreq(L) * Fs
+    freqs = np.fft.fftfreq(L, d=1 / Fs)
     f = freqs[: L // 2]
 
     # detrend single-sided spectrum
@@ -1457,8 +1449,7 @@ def compute_filtered_butter(
     for i, band in enumerate(bands_freq):
         Wn = band / max(f)
 
-        sos = signal.butter(N=filter_order, Wn=Wn,
-                            btype=filter_type, output="sos")
+        sos = signal.butter(N=filter_order, Wn=Wn, btype=filter_type, output="sos")
 
         filtered = signal.sosfiltfilt(sos, filtered, axis=0)
 
@@ -1468,7 +1459,7 @@ def compute_filtered_butter(
 
         # get frequencies of filtered movie
         # compute Fourier transform
-        filtered_fft = fftpack.fft(filtered_movie_average)
+        filtered_fft = np.fft.fft(filtered_movie_average)
         # compute two-sided spectrum
         filtered_P2 = np.abs(filtered_fft / L)
         # compute single-sided spectrum
@@ -1481,328 +1472,3 @@ def compute_filtered_butter(
         return filtered, movie_average, filtered_movie_average, Fs, f, P1, filtered_P1
 
     return filtered
-
-
-# OLD VERSION: keeping this only to remember used techniques
-# def nonmaxima_suppression(img,maxima_mask=None,
-#                          min_dist_xy=MIN_DIST_XY, min_dist_t=MIN_DIST_T,
-#                          return_mask=False, threshold=0.5, sigma=2,
-#                          annotations=False):
-#    '''
-#    Extract local maxima from input array (t,x,y).
-#    img :           input array
-#    maxima_mask :   if not None, look for local maxima only inside the mask
-#    min_dist_xy :   minimal spatial distance between two maxima
-#    min_dist_t :    minimal temporal distance between two maxima
-#    return_mask :   if True return both masks with maxima and locations, if
-#                    False only returns locations
-#    threshold :     minimal value of maximum points
-#    sigma :         sigma parameter of gaussian filter
-#    annotations:    if true, apply specific processing for raw annotation masks
-#    '''
-#    img = img.astype(np.float64)
-#
-#    # compute shape for maximum filter -> min distance between peaks
-#    #min_dist = ellipsoid(min_dist_t/2, min_dist_xy/2, min_dist_xy/2)
-#    radius = math.ceil(min_dist_xy/2)
-#    y,x = np.ogrid[-radius: radius+1, -radius: radius+1]
-#    disk = x**2+y**2 <= radius**2
-#    min_dist = np.stack([disk]*(min_dist_t+1), axis=0)
-#
-#    if maxima_mask is not None:
-#        # apply butterworth filter along t-axis
-#        filtered_img = compute_filtered_butter(img) # apply butterworth filter
-#
-#        # apply dilation to maxima mask
-#        #min_dist_eroded = ndi.binary_erosion(min_dist)
-#        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, structure=min_dist_eroded)
-#        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=round(sigma))
-#        maxima_mask_dilated = maxima_mask
-#
-#        # mask out region from img with dilated mask
-#        masked_img = np.where(maxima_mask_dilated, filtered_img, 0.)
-#        #imageio.volwrite("TEST_masked_video.tif", masked_img)
-#
-#        # smooth masked input image
-#        smooth_img = ndi.gaussian_filter(masked_img, sigma=sigma)
-#        #imageio.volwrite("TEST_smooth_video.tif", smooth_img)
-#
-#    else:
-#        smooth_img = ndi.gaussian_filter(img, sigma=sigma)
-#
-#    # search for local maxima
-#
-#    dilated = ndi.maximum_filter(smooth_img,
-#                                 footprint=min_dist)
-#    #imageio.volwrite("TEST_dilated.tif", dilated)
-#
-#    if maxima_mask is not None:
-#        # hyp: maxima belong to maxima mask
-#        masked_smooth_img = np.where(maxima_mask, smooth_img, 0.)
-#        argmaxima = np.logical_and(smooth_img == dilated, masked_smooth_img > threshold)
-#    else:
-#        argmaxima = np.logical_and(smooth_img == dilated, smooth_img > threshold)
-#
-#
-#    #imageio.volwrite("TEST_maxima.tif", np.uint8(argmaxima))
-#
-#    # save movie containing ALL local maxima
-#    #dilated_all = ndi.maximum_filter(original_smoothed, footprint=min_dist)
-#    #imageio.volwrite("TEST_all_maxima.tif", np.uint8(original_smoothed == dilated_all))
-#    #imageio.volwrite("TEST_all_video_maxima.tif", np.uint8(np.logical_and(smooth_img == dilated, smooth_img > threshold)))
-#
-#    '''# multiply values of video inside maxima mask
-#    #img = np.where(maxima_mask, img*1.5, img)
-#    imageio.volwrite("TEST_DEBUG.tif", img)
-#
-#    smooth_img = ndi.gaussian_filter(img, sigma=sigma)
-#    imageio.volwrite("TEST_smooth_video.tif", smooth_img)
-#
-#    if maxima_mask is not None:
-#        # apply dilation to mask
-#        #maxima_mask_dilated = ndi.binary_dilation(maxima_mask, iterations=round(sigma))
-#        maxima_mask_dilated = maxima_mask
-#        # set pixels outside maxima_mask to zero
-#        masked_img = np.where(maxima_mask_dilated, smooth_img, 0.)
-#        #masked_img = np.where(maxima_mask, smooth_img, 0.)
-#        imageio.volwrite("TEST_masked_video.tif", masked_img)
-#    else:
-#        masked_img = smooth_img
-#
-#
-#    # compute shape for maximum filter
-#    #min_dist = ellipsoid(min_dist_t/2, min_dist_xy/2, min_dist_xy/2)
-#    radius = round(min_dist_xy/2)
-#    y,x = np.ogrid[-radius: radius+1, -radius: radius+1]
-#    disk = x**2+y**2 <= radius**2
-#    min_dist = np.stack([disk]*min_dist_t, axis=0)
-#
-#    # detect local maxima
-#    dilated = ndi.maximum_filter(smooth_img,
-#                                 footprint=min_dist)
-#    imageio.volwrite("TEST_dilated.tif", dilated)
-#    argmaxima = np.logical_and(smooth_img == dilated, masked_img > threshold)
-#    imageio.volwrite("TEST_maxima.tif", np.uint8(argmaxima))
-#    #imageio.volwrite("TEST_all_video_maxima.tif", np.uint8(np.logical_and(smooth_img == dilated, smooth_img > threshold)))'''
-#
-#    argwhere = np.argwhere(argmaxima)
-#
-#    # DEBUG: compute minimal distance between pair of sparks
-#
-#    argwhere = np.array(argwhere, dtype=np.float)
-#    '''if argwhere.size > 0:
-#        argwhere[:,0] /= min_dist_t
-#        argwhere[:,1] /= min_dist_xy
-#        argwhere[:,2] /= min_dist_xy
-#
-#        w = spatial.distance_matrix(argwhere, argwhere)
-#        w = np.tril(w)
-#        w[w==0.0] = 9999999
-#        min_w = np.min(w)
-#        min_coords = np.argwhere(w==min_w)
-#
-#        argwhere[:,0] *= min_dist_t
-#        argwhere[:,1] *= min_dist_xy
-#        argwhere[:,2] *= min_dist_xy
-#
-#        close_coords = argwhere[min_coords][0]
-#        print(f"Closest coordinates: \n{close_coords}")'''
-#
-#    if not return_mask:
-#        return argwhere
-#
-#    return argwhere, argmaxima
-
-
-# def separate_events(pred, t_detection=0.5, min_radius=4):
-#    '''
-#    Apply threshold to prediction and separate the events (1 event = 1 connected
-#    component).
-#    '''
-#    # apply threshold to prediction
-#    pred_boolean = pred >= t_detection
-#
-#    # clean events
-#    min_size = (2 * min_radius) ** pred.ndim
-#    pred_clean = morphology.remove_small_objects(pred_boolean,
-#                                                 min_size=min_size)
-#    #big_pred = np.where(small_objs_removed, pred, 0)
-#
-#    # separate events
-#    connectivity = 26
-#    labels, n_events = cc3d.connected_components(pred_clean,
-#                                                 connectivity=connectivity,
-#                                                 return_N=True)
-#
-#    return labels, n_events
-
-
-# def process_puff_prediction(pred, t_detection = 0.5,
-#                            min_radius = 4,
-#                            ignore_frames = 0,
-#                            convex_hull = False):
-#    '''
-#    Get binary clean predictions of puffs (remove small preds)
-#
-#    pred :          network's puffs predictions
-#    min_radius :    minimal 'radius' of a valid puff
-#    ignore_frames : set preds in region ignored by loss fct to 0
-#    convex_hull :   if true remove holes inside puffs
-#    '''
-#    # get binary predictions
-#    pred_boolean = pred > t_detection
-#
-#    if convex_hull:
-#        # remove holes inside puffs (compute convex hull)
-#        pred_boolean = binary_dilation(pred_boolean, iterations=5)
-#        pred_boolean = binary_erosion(pred_boolean, iterations=5, border_value=1)
-#
-#    min_size = (2 * min_radius) ** pred.ndim
-#    small_objs_removed = morphology.remove_small_objects(pred_boolean,
-#                                                         min_size=min_size)
-#
-#    # set first and last frames to 0 according to ignore_frames
-#    if ignore_frames != 0:
-#        pred_puffs = empty_marginal_frames(small_objs_removed, ignore_frames)
-#
-#    return pred_puffs
-
-
-# def process_wave_prediction(pred, t_detection = 0.5,
-#                            min_radius = 4,
-#                            ignore_frames = 0):
-#
-#    # for now: do the same as with puffs
-#
-#    return process_puff_prediction(pred, t_detection, min_radius, ignore_frames)
-
-# def filter_nan_gaussian_david(arr, sigma):
-#    # https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
-#    """Allows intensity to leak into the nan area.
-#    According to Davids answer:
-#        https://stackoverflow.com/a/36307291/7128154
-#    """
-#    gauss = arr.copy()
-#    gauss[np.isnan(gauss)] = 0
-#    gauss = ndi.gaussian_filter(
-#            gauss, sigma=sigma, mode='constant', cval=0)
-#
-#    norm = np.ones(shape=arr.shape)
-#    norm[np.isnan(arr)] = 0
-#    norm = ndi.gaussian_filter(
-#            norm, sigma=sigma, mode='constant', cval=0)
-#
-#    # avoid RuntimeWarning: invalid value encountered in true_divide
-#    norm = np.where(norm==0, 1, norm)
-#    gauss = gauss/norm
-#    gauss[np.isnan(arr)] = np.nan
-#    return gauss
-
-# OLD
-# def get_sparks_locations_from_mask(
-#     mask, min_dist_xy=config.min_dist_xy, min_dist_t=config.min_dist_t, ignore_frames=0
-# ):
-#     """
-#     Get sparks coords from annotations mask with spark peaks.
-
-#     mask : annotations mask (values 0,1,2,3,4) where sparks are denoted by PEAKS
-#     ignore_frames: number of frames ignored by loss fct during training
-#     """
-
-#     sparks_mask = np.where(mask == 1, 1.0, 0.0)
-
-#     # sparks_mask = empty_marginal_frames(sparks_mask, ignore_frames)
-#     coords = simple_nonmaxima_suppression(
-#         img=sparks_mask, min_dist=config.conn_mask, threshold=0, sigma=0.5
-#     )
-
-#     # remove first and last frames
-#     if ignore_frames > 0:
-#         mask_duration = mask.shape[0]
-#         coords = exclude_marginal_sparks_coords(
-#             spark_coords=coords,
-#             n_exclude_frames=ignore_frames,
-#             video_duration=mask_duration,
-#         )
-#     return coords
-
-
-# OLD
-# def process_spark_prediction(
-#     pred,
-#     movie=None,
-#     t_detection=0.9,
-#     min_dist_xy=config.min_dist_xy,
-#     min_dist_t=config.min_dist_t,
-#     min_radius=3,
-#     return_mask=False,
-#     return_clean_pred=False,
-#     ignore_frames=0,
-#     sigma=2,
-# ):
-#     """
-#     Get sparks centres from preds: remove small events + nonmaxima suppression
-
-#     pred: network's sparks predictions
-#     movie: original sample movie
-#     t_detection: sparks detection threshold
-#     min_dist_xy : minimal spatial distance between two maxima
-#     min_dist_t : minimal temporal distance between two maxima
-#     min_radius: minimal 'radius' of a valid spark
-#     return_mask: if True return mask and locations of sparks
-#     return_clean_pred: if True only return preds without small events
-#     ignore_frames: set preds in region ignored by loss fct to 0
-#     sigma: sigma value used in gaussian smoothing in nonmaxima suppression
-#     """
-#     # get binary preds
-#     pred_boolean = pred > t_detection
-
-#     # remove small objects and get clean binary preds
-#     if min_radius > 0:
-#         min_size = (2 * min_radius) ** pred.ndim
-#         small_objs_removed = morphology.remove_small_objects(
-#             pred_boolean, min_size=min_size
-#         )
-#     else:
-#         small_objs_removed = pred_boolean
-
-#     # remove first and last object from sparks mask
-#     # small_objs_removed = empty_marginal_frames(small_objs_removed,
-#     #                                           ignore_frames)
-
-#     # imageio.volwrite("TEST_small_objs_removed.tif", np.uint8(small_objs_removed))
-#     # imageio.volwrite("TEST_clean_preds.tif", np.where(small_objs_removed, pred, 0))
-#     if return_clean_pred:
-#         # original movie without small objects:
-#         big_pred = np.where(small_objs_removed, pred, 0)
-#         return big_pred
-
-#     assert movie is not None, "Provide original movie to detect spark peaks"
-
-#     # detect events (nonmaxima suppression)
-#     conn_mask = sparks_connectivity_mask(min_dist_xy, min_dist_t)
-#     argwhere, argmaxima = simple_nonmaxima_suppression(
-#         img=movie,
-#         maxima_mask=small_objs_removed,
-#         min_dist=conn_mask,
-#         return_mask=True,
-#         threshold=0,
-#         sigma=sigma,
-#     )
-
-#     # remove first and last frames
-#     if ignore_frames > 0:
-#         mask_duration = pred.shape[0]
-#         argwhere = exclude_marginal_sparks_coords(
-#             spark_coords=argwhere,
-#             n_exclude_frames=ignore_frames,
-#             video_duration=mask_duration,
-#         )
-
-#     if not return_mask:
-#         return argwhere
-
-#     # set frames ignored by loss fct to 0
-#     argmaxima = trim_and_pad_video(argmaxima, ignore_frames)
-
-#     return argwhere, argmaxima

@@ -2,7 +2,7 @@
 Script with functions to either load data or save data to disc.
 
 Author: Prisca Dotti
-Last modified: 28.09.2023
+Last modified: 12.10.2023
 """
 
 # import csv
@@ -21,14 +21,10 @@ from utils.visualization_tools import (  # add_colored_paired_sparks_to_video,
     add_colored_instances_to_video,
 )
 
-# from config import config
-
 __all__ = [
     "load_movies_ids",
     "load_annotations_ids",
     "load_rgb_annotations_ids",
-    # "load_predictions_ids",
-    # "load_predictions_all_trainings_ids",
     "write_videos_on_disk",
     "write_colored_events_videos_on_disk",
     # "create_csv",
@@ -117,7 +113,9 @@ def load_annotations_ids(
     return ys_all_trainings
 
 
-def load_rgb_annotations_ids(data_folder, ids, mask_names="separated_events"):
+def load_rgb_annotations_ids(
+    data_folder: str, ids: List[str], mask_names: str = "separated_events"
+) -> Dict[str, np.ndarray]:
     """
     Load RGB annotations with separated events for a list of movie IDs.
 
@@ -151,111 +149,17 @@ def load_rgb_annotations_ids(data_folder, ids, mask_names="separated_events"):
     return ys_all_trainings
 
 
-# OLD
-# def load_predictions_ids(training_name, epoch, metrics_folder, ids):
-#     """
-#     Load processed annotations, predicted sparks, puffs, and waves for a given
-#     training.
-
-#     Args:
-#         training_name (str): Saved training name.
-#         epoch (int): Training epoch to load predictions for.
-#         metrics_folder (str): Folder where predictions and annotations are saved.
-#         ids (list): List of movie IDs to be considered.
-
-#     Returns:
-#         Tuple: A tuple containing dictionaries of loaded data for each movie:
-#                (training_ys, training_sparks, training_puffs, training_waves).
-#     """
-#     # Import .tif files as numpy array
-#     base_name = os.path.join(metrics_folder, f"{training_name}_{epoch}_")
-
-#     if "temporal_reduction" in training_name:
-#         logger.warning("Method is using temporal reduction, "
-#                        "processed annotations have a different shape.")
-
-#     # Get predictions and annotations filenames
-#     ys_filenames = sorted([f"{base_name}{sample_id}_ys.tif"
-#                            for sample_id in ids])
-#     sparks_filenames = sorted([f"{base_name}{sample_id}_sparks.tif"
-#                                for sample_id in ids])
-#     puffs_filenames = sorted([f"{base_name}{sample_id}_puffs.tif"
-#                               for sample_id in ids])
-#     waves_filenames = sorted([f"{base_name}{sample_id}_waves.tif"
-#                               for sample_id in ids])
-
-#     # Create dictionaires to store loaded data for each movie
-#     training_ys = {}
-#     training_sparks = {}
-#     training_puffs = {}
-#     training_waves = {}
-
-#     for y, s, p, w in zip(
-#         ys_filenames, sparks_filenames, puffs_filenames, waves_filenames
-#     ):
-#         video_id = os.path.split(y)[1][:2]
-
-#         ys_loaded = np.asarray(imageio.volread(y), dtype=int)
-#         training_ys[video_id] = ys_loaded
-
-#         if "temporal_reduction" in training_name:
-#             logger.info(
-#                 "Training using temporal reduction, extending predictions...")
-#             s_preds = np.asarray(imageio.volread(s))
-#             p_preds = np.asarray(imageio.volread(p))
-#             w_preds = np.asarray(imageio.volread(w))
-
-#             # Repeat predicted frames 4 times
-#             s_preds = np.repeat(s_preds, 4, 0)
-#             p_preds = np.repeat(p_preds, 4, 0)
-#             w_preds = np.repeat(w_preds, 4, 0)
-
-#             training_sparks[video_id] = s_preds
-#             training_puffs[video_id] = p_preds
-#             training_waves[video_id] = w_preds
-#         else:
-#             training_sparks[video_id] = np.asarray(imageio.volread(s))
-#             training_puffs[video_id] = np.asarray(imageio.volread(p))
-#             training_waves[video_id] = np.asarray(imageio.volread(w))
-
-#     return training_ys, training_sparks, training_puffs, training_waves
-
-# OLD
-# def load_predictions_all_trainings_ids(training_names, epochs, metrics_folder, ids):
-#     """
-#     Load processed annotations, predicted sparks, puffs, and waves for a list of
-#     training names.
-
-#     Args:
-#         training_names (list): List of saved training names.
-#         epochs (list): List of training epochs to load predictions for
-#         (corresponding to the training names).
-#         metrics_folder (str): Folder where predictions and annotations are saved.
-#         ids (list): List of movie IDs to be considered.
-
-#     Returns:
-#         Tuple: A tuple containing dictionaries of loaded data for each movie:
-#                (ys, sparks, puffs, waves).
-#     """
-#     ys = {}
-#     s = {}  # sparks
-#     p = {}  # puffs
-#     w = {}  # waves
-
-#     for name, epoch in zip(training_names, epochs):
-#         ys[name], s[name], p[name], w[name] = load_predictions_ids(
-#             name, epoch, metrics_folder, ids
-#         )
-
-#     return ys, s, p, w
-
-
 ####################### Tools for writing videos on disc #######################
 
 
 def write_videos_on_disk(
-    training_name, video_name, path="predictions", xs=None, ys=None, preds=None
-):
+    training_name: str,
+    video_name: str,
+    path: str = "predictions",
+    xs: Optional[np.ndarray] = None,
+    ys: Optional[np.ndarray] = None,
+    preds: Optional[np.ndarray] = None,
+) -> None:
     """
     Write videos to disk.
 
@@ -291,16 +195,16 @@ def write_videos_on_disk(
 
 
 def write_colored_events_videos_on_disk(
-    movie,
-    events_mask,
-    out_dir,
-    movie_fn,
-    transparency=50,
-    ignore_frames=0,
-    white_bg=False,
-    instances=False,
-    label_mask=None,
-):
+    movie: np.ndarray,
+    events_mask: np.ndarray,
+    out_dir: str,
+    movie_fn: str,
+    transparency: int = 50,
+    ignore_frames: int = 0,
+    white_bg: bool = False,
+    instances: bool = False,
+    label_mask: Optional[np.ndarray] = None,
+) -> None:
     """
     Paste colored segmentation on a video and save it on disk.
     Color used:

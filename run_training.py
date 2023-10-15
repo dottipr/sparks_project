@@ -35,9 +35,9 @@ from utils.training_inference_tools import (
 from utils.training_script_utils import (
     init_config_file_path,
     init_criterion,
+    init_dataset,
     init_model,
     init_testing_dataset,
-    init_training_dataset,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,9 +116,9 @@ def main():
         exit()
 
     # Initialize training dataset
-    dataset = init_training_dataset(
+    dataset = init_dataset(
         params=params,
-        train_sample_ids=train_sample_ids,
+        sample_ids=train_sample_ids,
     )
 
     # Initialize testing datasets

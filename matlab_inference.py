@@ -5,6 +5,9 @@ format in Matlab.
 
 TODO: update the code according to the meeting I had with Rado
 and the updated versions of the other scripts.
+
+Author: Prisca Dotti
+Last modified: 14.10.2023
 """
 
 import os
@@ -16,10 +19,7 @@ import torch
 from torch import nn
 
 from config import TrainingConfig, config
-from data.data_processing_tools import preds_dict_to_mask, process_raw_predictions
-from data.datasets import SparkDatasetPath
-from utils.in_out_tools import write_videos_on_disk
-from utils.training_inference_tools import get_preds, get_preds_from_path
+from utils.training_inference_tools import get_preds_from_path
 from utils.training_script_utils import init_model
 from utils.visualization_tools import (
     get_annotations_contour,
@@ -34,7 +34,7 @@ def main():
     # Initialize training-specific parameters
     config_path = os.path.join("config_files", "config_final_model.ini")
     params = TrainingConfig(training_config_file=config_path)
-    params.training_name = "final_model"
+    params.run_name = "final_model"
     model_name = f"network_100000.pth"
 
     assert params.nn_architecture in [
@@ -44,8 +44,7 @@ def main():
     ], f"nn_architecture must be one of 'pablos_unet', 'github_unet', 'openai_unet'"
 
     ### Configure UNet ###
-    params.set_device(
-        device="cuda" if torch.cuda.is_available() else "cpu")
+    params.set_device(device="auto")
 
     network = init_model(params=params)
     network = nn.DataParallel(network).to(params.device)
@@ -53,10 +52,8 @@ def main():
     ### Load UNet model ###
 
     # Path to the saved model checkpoint
-    models_relative_path = os.path.join(config.output_relative_path,
-                                        "saved_models")
-    model_path = os.path.join(models_relative_path,
-                              params.training_name, model_name)
+    models_relative_path = os.path.join(config.output_relative_path, "saved_models")
+    model_path = os.path.join(models_relative_path, params.run_name, model_name)
 
     # Load the model state dictionary
     network.load_state_dict(torch.load(model_path, map_location=params.device))
@@ -65,7 +62,8 @@ def main():
     # Define movie path
     movie_path = os.path.join(
         # r"C:\Users\prisc\Code\sparks_project\data\sparks_dataset\34_video.tif"
-        r"C:\Users\dotti\sparks_project\data\sparks_dataset", "05_video.tif"
+        r"C:\Users\dotti\sparks_project\data\sparks_dataset",
+        "05_video.tif",
     )
 
     ### Get predictions from movie path ###
@@ -87,7 +85,9 @@ def main():
     labels_cmap = get_labels_cmap()
 
     # visualize only border of classes (segmentation array)
-    segmentation_border = get_annotations_contour(segmentation)
+    segmentation_border = get_annotations_contour(
+        annotations=segmentation, contour_val=2
+    )
 
     with napari.gui_qt():
         viewer = napari.Viewer()

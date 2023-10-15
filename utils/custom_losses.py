@@ -2,17 +2,18 @@
 Script containing custom loss functions for training.
 
 Author: Prisca Dotti
-Last modified: 02.10.2023
+Last modified: 12.10.2023
 """
 
 import logging
-from typing import Optional
+from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .LovaszSoftmax import lovasz_losses
+
+from utils.LovaszSoftmax import lovasz_losses
 
 __all__ = [
     "FocalLoss",
@@ -20,7 +21,7 @@ __all__ = [
     "LovaszSoftmax3d",
     "SumFocalLovasz",
     "SoftDiceLoss",
-    "mySoftDiceLoss",
+    "MySoftDiceLoss",
     "Dice_CELoss",
 ]
 
@@ -73,14 +74,12 @@ def one_hot(
     """
     if not isinstance(labels, torch.Tensor):
         raise TypeError(
-            "Input labels type is not a torch.Tensor. Got {}".format(
-                type(labels))
+            "Input labels type is not a torch.Tensor. Got {}".format(type(labels))
         )
 
     if not labels.dtype == torch.int64:
         raise ValueError(
-            "labels must be of the same dtype torch.int64. Got: {}".format(
-                labels.dtype)
+            "labels must be of the same dtype torch.int64. Got: {}".format(labels.dtype)
         )
 
     if num_classes < 1:
@@ -100,7 +99,7 @@ def one_hot(
 def focal_loss(
     input: torch.Tensor,
     target: torch.Tensor,
-    alpha: list = None,
+    alpha: List[float] = [],
     gamma: float = 2.0,
     reduction: str = "none",
     ignore_index: int = 9999,
@@ -120,12 +119,12 @@ def focal_loss(
     Args:
         input (torch.Tensor): logits tensor with shape :math:`(N, C, *)` where C = number of classes.
         target (torch.Tensor): labels tensor with shape :math:`(N, *)` where each value is :math:`0 ≤ targets[i] ≤ C−1`.
-        alpha (float): Weighting factor :math:`\alpha` with shape `(C)`.
+        alpha (list of floats): Weighting factor :math:`\alpha \in [0, 1]` for each class. Default: [] (no alpha weighting).
         gamma (float, optional): Focusing parameter :math:`\gamma >= 0`. Default 2.
         reduction (str, optional): Specifies the reduction to apply to the
-         output: ‘none’ | ‘mean’ | ‘sum’. ‘none’: no reduction will be applied,
-         ‘mean’: the sum of the output will be divided by the number of elements
-         in the output, ‘sum’: the output will be summed. Default: ‘none’.
+         output: 'none' | 'mean' | 'sum'. 'none': no reduction will be applied,
+         'mean': the sum of the output will be divided by the number of elements
+         in the output, 'sum': the output will be summed. Default: 'none'.
         eps (float, optional): Scalar to enforce numerical stabiliy. Default: 1e-8.
 
     Return:
@@ -140,8 +139,7 @@ def focal_loss(
     """
 
     if not isinstance(input, torch.Tensor):
-        raise TypeError(
-            "Input type is not a torch.Tensor. Got {}".format(type(input)))
+        raise TypeError("Input type is not a torch.Tensor. Got {}".format(type(input)))
 
     if not len(input.shape) >= 2:
         raise ValueError(
@@ -178,12 +176,11 @@ def focal_loss(
     target_copy[target_copy == ignore_index] = temp_ignored_index
     num_ignored = torch.count_nonzero(ignore_mask)
 
-    if alpha == None:
-        alpha_mask = 1.0
+    if len(alpha) == 0:
+        alpha_mask = torch.Tensor([1.0] * input.shape[1])
     else:
         # create alpha mask that will multiply focal loss
-        assert len(
-            alpha) == input.shape[1], "alpha does not contain a weight per class"
+        assert len(alpha) == input.shape[1], "alpha does not contain a weight per class"
         alpha_mask = torch.zeros(target.shape)
         for idx, alpha_t in enumerate(alpha):
             alpha_mask[target == idx] = alpha_t
@@ -214,8 +211,7 @@ def focal_loss(
     elif reduction == "sum":
         loss = torch.sum(loss_tmp)
     else:
-        raise NotImplementedError(
-            "Invalid reduction mode: {}".format(reduction))
+        raise NotImplementedError("Invalid reduction mode: {}".format(reduction))
     return loss
 
 
@@ -235,9 +231,9 @@ class FocalLoss(nn.Module):
         alpha (float): Weighting factor :math:`\alpha \in [0, 1]`.
         gamma (float, optional): Focusing parameter :math:`\gamma >= 0`. Default 2.
         reduction (str, optional): Specifies the reduction to apply to the
-         output: ‘none’ | ‘mean’ | ‘sum’. ‘none’: no reduction will be applied,
-         ‘mean’: the sum of the output will be divided by the number of elements
-         in the output, ‘sum’: the output will be summed. Default: ‘none’.
+         output: 'none' | 'mean' | 'sum'. 'none': no reduction will be applied,
+         'mean': the sum of the output will be divided by the number of elements
+         in the output, 'sum': the output will be summed. Default: 'none'.
         eps (float, optional): Scalar to enforce numerical stabiliy. Default: 1e-8.
 
     Shape:
@@ -257,7 +253,7 @@ class FocalLoss(nn.Module):
 
     def __init__(
         self,
-        alpha: list = None,
+        alpha: List[float] = [],
         gamma: float = 2.0,
         reduction: str = "none",
         ignore_index: int = 9999,
@@ -288,7 +284,13 @@ from https://github.com/bermanmaxim/LovaszSoftmax
 """
 
 
-def lovasz_softmax_3d(probas, labels, classes="present", per_image=False, ignore=None):
+def lovasz_softmax_3d(
+    probas: torch.Tensor,
+    labels: torch.Tensor,
+    classes: Union[str, List[int]] = "present",
+    per_image: bool = False,
+    ignore: Union[None, int] = None,
+) -> torch.Tensor:
     """
     Multi-class Lovasz-Softmax loss
       probas: [B, C, D, H, W] Variable, class probabilities at each prediction (between 0 and 1).
@@ -300,16 +302,15 @@ def lovasz_softmax_3d(probas, labels, classes="present", per_image=False, ignore
     """
 
     if per_image:
-        from utils.LovaszSoftmax.lovasz_losses import mean
-
-        loss = mean(
+        loss = lovasz_losses.nanmean(
             lovasz_losses.lovasz_softmax_flat(
-                *flatten_probas_3d(prob.unsqueeze(0),
-                                   lab.unsqueeze(0), ignore),
+                *flatten_probas_3d(prob.unsqueeze(0), lab.unsqueeze(0), ignore),
                 classes=classes
             )
             for prob, lab in zip(probas, labels)
         )
+        # Convert loss to tensor
+        loss = torch.tensor(loss)
     else:
         loss = lovasz_losses.lovasz_softmax_flat(
             *flatten_probas_3d(probas, labels, ignore), classes=classes
@@ -317,7 +318,9 @@ def lovasz_softmax_3d(probas, labels, classes="present", per_image=False, ignore
     return loss
 
 
-def flatten_probas_3d(probas, labels, ignore=None):
+def flatten_probas_3d(
+    probas: torch.Tensor, labels: torch.Tensor, ignore: Union[None, int] = None
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Flattens predictions in the batch
     """
@@ -343,7 +346,12 @@ class LovaszSoftmax3d(nn.Module):
     Criterion that computes Lovasz-Softmax loss on 3-dimensional samples.
     """
 
-    def __init__(self, classes: str = "present", per_image=False, ignore=None):
+    def __init__(
+        self,
+        classes: str = "present",
+        per_image: bool = False,
+        ignore: Optional[int] = None,
+    ) -> None:
         super().__init__()
         self.classes = classes
         self.per_image = per_image
@@ -361,7 +369,12 @@ class LovaszSoftmax(nn.Module):
     Criterion that computes Lovasz-Softmax loss on 2-dimensional samples.
     """
 
-    def __init__(self, classes: str = "present", per_image=False, ignore=None):
+    def __init__(
+        self,
+        classes: str = "present",
+        per_image: bool = False,
+        ignore: Optional[int] = None,
+    ) -> None:
         super().__init__()
         self.classes = classes
         self.per_image = per_image
@@ -389,15 +402,15 @@ class SumFocalLovasz(nn.Module):
 
     def __init__(
         self,
-        classes="present",
-        per_image=False,
-        ignore=None,
-        alpha=None,
-        gamma=2.0,
-        reduction="none",
-        eps=1e-8,
-        w=0.5,
-    ):
+        classes: str = "present",
+        per_image: bool = False,
+        ignore: int = 9999,
+        alpha: List[float] = [],
+        gamma: float = 2.0,
+        reduction: str = "none",
+        eps: float = 1e-8,
+        w: float = 0.5,
+    ) -> None:
         super(SumFocalLovasz, self).__init__()
         self.classes = classes
         self.per_image = per_image
@@ -434,7 +447,9 @@ Code from https://github.com/MIC-DKFZ/nnUNet
 """
 
 
-def sum_tensor(inp, axes, keepdim=False):
+def sum_tensor(
+    inp: torch.Tensor, axes: np.ndarray, keepdim: bool = False
+) -> torch.Tensor:
     axes = np.unique(axes).astype(int)
     if keepdim:
         for ax in axes:
@@ -445,7 +460,13 @@ def sum_tensor(inp, axes, keepdim=False):
     return inp
 
 
-def get_tp_fp_fn_tn(net_output, gt, axes=None, mask=None, square=False):
+def get_tp_fp_fn_tn(
+    net_output: torch.Tensor,
+    gt: torch.Tensor,
+    axes: Sequence[int] = [],
+    mask: Optional[torch.Tensor] = None,
+    square: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     net_output must be (b, c, x, y(, z)))
     gt must be a label map (shape (b, 1, x, y(, z)) OR shape (b, x, y(, z))) or one hot encoding (b, c, x, y(, z))
@@ -457,7 +478,7 @@ def get_tp_fp_fn_tn(net_output, gt, axes=None, mask=None, square=False):
     :param square: if True then fp, tp and fn will be squared before summation
     :return:
     """
-    if axes is None:
+    if len(axes) == 0:
         axes = tuple(range(2, len(net_output.size())))
 
     shp_x = net_output.shape
@@ -501,16 +522,22 @@ def get_tp_fp_fn_tn(net_output, gt, axes=None, mask=None, square=False):
         tn = tn**2
 
     if len(axes) > 0:
-        tp = sum_tensor(tp, axes, keepdim=False)
-        fp = sum_tensor(fp, axes, keepdim=False)
-        fn = sum_tensor(fn, axes, keepdim=False)
-        tn = sum_tensor(tn, axes, keepdim=False)
+        tp = sum_tensor(tp, np.array(axes), keepdim=False)
+        fp = sum_tensor(fp, np.array(axes), keepdim=False)
+        fn = sum_tensor(fn, np.array(axes), keepdim=False)
+        tn = sum_tensor(tn, np.array(axes), keepdim=False)
 
     return tp, fp, fn, tn
 
 
 class SoftDiceLoss(nn.Module):
-    def __init__(self, apply_nonlin=None, batch_dice=False, do_bg=True, smooth=1.0):
+    def __init__(
+        self,
+        apply_nonlin: Optional[nn.Module] = None,
+        batch_dice: bool = False,
+        do_bg: bool = True,
+        smooth: float = 1.0,
+    ) -> None:
         """ """
         super(SoftDiceLoss, self).__init__()
 
@@ -519,7 +546,9 @@ class SoftDiceLoss(nn.Module):
         self.apply_nonlin = apply_nonlin
         self.smooth = smooth
 
-    def forward(self, x, y, loss_mask=None):
+    def forward(
+        self, x: torch.Tensor, y: torch.Tensor, loss_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         shp_x = x.shape
 
         if self.batch_dice:
@@ -547,8 +576,10 @@ class SoftDiceLoss(nn.Module):
         return -dc
 
 
-class mySoftDiceLoss(SoftDiceLoss):
-    def forward(self, x, y, loss_mask=None):
+class MySoftDiceLoss(SoftDiceLoss):
+    def forward(
+        self, x: torch.Tensor, y: torch.Tensor, loss_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         return 1 + super().forward(x, y, loss_mask)
 
 
@@ -566,10 +597,10 @@ Created on Thu Dec 24 16:39:03 2020
 class Dice_CELoss(nn.Module):
     def __init__(
         self,
-        weight,
-        ignore_index=0,
+        weight: Optional[torch.Tensor],
+        ignore_index: int = 0,
         #  ignore_first=True,  apply_softmax=True
-    ):
+    ) -> None:
         super(Dice_CELoss, self).__init__()
         self.eps = 1
         # self.ignore_first = ignore_first
@@ -581,7 +612,7 @@ class Dice_CELoss(nn.Module):
             weight=weight,  # .to(device, non_blocking=True)
         )
 
-    def forward(self, input, target):
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         # CE_loss = self.CE(input, target)
         CE_loss = self.NLLLoss(input, target)
 
@@ -595,8 +626,7 @@ class Dice_CELoss(nn.Module):
         # for all 4 classes in the input, set values where target == ignore_index to 0
         input_clean = torch.zeros_like(input)
         for i in range(input.shape[1]):
-            input_clean[:, i] = torch.where(
-                target == self.ignore_index, 0, input[:, i])
+            input_clean[:, i] = torch.where(target == self.ignore_index, 0, input[:, i])
 
         # remove ignored ROIs from target
         target_clean = torch.where(target == self.ignore_index, 0, target)
@@ -656,9 +686,9 @@ class Dice_CELoss(nn.Module):
 #         alpha (float): Weighting factor :math:`\alpha \in [0, 1]`.
 #         gamma (float, optional): Focusing parameter :math:`\gamma >= 0`. Default 2.
 #         reduction (str, optional): Specifies the reduction to apply to the
-#          output: ‘none’ | ‘mean’ | ‘sum’. ‘none’: no reduction will be applied,
-#          ‘mean’: the sum of the output will be divided by the number of elements
-#          in the output, ‘sum’: the output will be summed. Default: ‘none’.
+#          output: 'none' | 'mean' | 'sum'. 'none': no reduction will be applied,
+#          'mean': the sum of the output will be divided by the number of elements
+#          in the output, 'sum': the output will be summed. Default: 'none'.
 #         eps (float, optional): Scalar to enforce numerical stabiliy. Default: 1e-8.
 
 #     Return:
@@ -736,9 +766,9 @@ class Dice_CELoss(nn.Module):
 #         alpha (float): Weighting factor :math:`\alpha \in [0, 1]`.
 #         gamma (float, optional): Focusing parameter :math:`\gamma >= 0`. Default 2.
 #         reduction (str, optional): Specifies the reduction to apply to the
-#          output: ‘none’ | ‘mean’ | ‘sum’. ‘none’: no reduction will be applied,
-#          ‘mean’: the sum of the output will be divided by the number of elements
-#          in the output, ‘sum’: the output will be summed. Default: ‘none’.
+#          output: 'none' | 'mean' | 'sum'. 'none': no reduction will be applied,
+#          'mean': the sum of the output will be divided by the number of elements
+#          in the output, 'sum': the output will be summed. Default: 'none'.
 #         eps (float, optional): Scalar to enforce numerical stabiliy. Default: 1e-8.
 
 #     Shape:
@@ -850,9 +880,9 @@ class Dice_CELoss(nn.Module):
 #         alpha (float): Weighting factor for the rare class :math:`\alpha \in [0, 1]`.
 #         gamma (float): Focusing parameter :math:`\gamma >= 0`.
 #         reduction (str, optional): Specifies the reduction to apply to the
-#          output: ‘none’ | ‘mean’ | ‘sum’. ‘none’: no reduction will be applied,
-#          ‘mean’: the sum of the output will be divided by the number of elements
-#          in the output, ‘sum’: the output will be summed. Default: ‘none’.
+#          output: 'none' | 'mean' | 'sum'. 'none': no reduction will be applied,
+#          'mean': the sum of the output will be divided by the number of elements
+#          in the output, 'sum': the output will be summed. Default: 'none'.
 
 #     Shape:
 #         - Input: :math:`(N, 1, *)`.

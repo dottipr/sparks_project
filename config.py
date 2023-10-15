@@ -8,7 +8,7 @@ Classes:
                     logging.
 
 Author: Prisca Dotti
-Last modified: 03.10.2023
+Last modified: 13.10.2023
 """
 
 
@@ -17,10 +17,10 @@ import math
 import os
 import sys
 from configparser import ConfigParser
+from logging.handlers import RotatingFileHandler
 
 import numpy as np
 import torch
-
 import wandb
 
 __all__ = ["config", "TrainingConfig"]
@@ -55,7 +55,12 @@ class ProjectConfig:
         self.pixel_size = 0.2  # 1 pixel = 0.2 um x 0.2 um
         self.time_frame = 6.8  # 1 frame = 6.8 ms
 
-        self.classes_dict = {"background": 0, "sparks": 1, "waves": 2, "puffs": 3}
+        self.classes_dict: dict[str, int] = {
+            "background": 0,
+            "sparks": 1,
+            "waves": 2,
+            "puffs": 3,
+        }
         # note: the class values have to be consecutive
 
         self.num_classes = len(self.classes_dict)
@@ -130,12 +135,20 @@ config = ProjectConfig()
 
 
 class TrainingConfig:
-    def __init__(self, training_config_file):
+    def __init__(self, training_config_file: str = ""):
         """
         Initialize the training configuration object.
         A configuration manager for loading settings from a configuration file,
         initializing parameters, and configuring WandB (Weights and Biases)
         logging, if wandb_project_name is not None.
+
+        If training_config_file is not provided, create a TrainingConfig object
+        where default values are used. These corresponds to the training
+        configuration of config_final_model.ini.
+
+        WandB logging is disabled by default. To enable it, provide
+        training_config_file and set wandb_enable to True in the file.
+
 
         Parameters:
         training_config_file : str
@@ -201,13 +214,14 @@ class TrainingConfig:
         # Load configuration parameters here...
         self.load_training_params()
         self.load_dataset_params()
+        self.load_inference_params()
         self.load_unet_params()
 
         # Configure WandB
         self.configure_wandb()
 
         # Set the device to use for training
-        self.set_device(device="cuda" if torch.cuda.is_available() else "cpu")
+        self.set_device(device="params")
 
     def configure_logging(self):
         # Define a mapping of verbosity levels
@@ -239,26 +253,27 @@ class TrainingConfig:
         )
 
     def configure_file_logging(self, log_handlers):
-        # Add file logging handler if a logfile is provided
-        log_dir = os.path.basename(config.logfile)
-        if not os.path.isdir(log_dir):
-            logger.info("Creating parent directory for logs")
-            os.mkdir(log_dir)
+        if config.logfile:
+            # Add file logging handler if a logfile is provided
+            log_dir = os.path.basename(config.logfile)
+            if not os.path.isdir(log_dir):
+                logger.info("Creating parent directory for logs")
+                os.mkdir(log_dir)
 
-        if os.path.isdir(config.logfile):
-            logfile_path = os.path.abspath(
-                os.path.join(config.logfile, f"{__name__}.log")
+            if os.path.isdir(config.logfile):
+                logfile_path = os.path.abspath(
+                    os.path.join(config.logfile, f"{__name__}.log")
+                )
+            else:
+                logfile_path = os.path.abspath(config.logfile)
+
+            logger.info(f"Storing logs in {logfile_path}")
+            file_handler = RotatingFileHandler(
+                filename=logfile_path,
+                maxBytes=(1024 * 1024 * 8),  # 8 MB
+                backupCount=4,
             )
-        else:
-            logfile_path = os.path.abspath(config.logfile)
-
-        logger.info(f"Storing logs in {logfile_path}")
-        file_handler = logging.RotatingFileHandler(
-            filename=logfile_path,
-            maxBytes=(1024 * 1024 * 8),  # 8 MB
-            backupCount=4,
-        )
-        log_handlers += (file_handler,)
+            log_handlers += (file_handler,)
 
     def load_configuration_file(self):
         # Initialize the ConfigParser
@@ -274,66 +289,145 @@ class TrainingConfig:
             )
 
     def load_training_params(self):
-        # Load training parameters
-        training_section = self.c["training"]
+        # Create dict of fallback values
+        fallback_training_section = {
+            "run_name": "final_model",
+            "load_run_name": "",
+            "load_epoch": "0",
+            "train_epochs": "5000",
+            "criterion": "nll_loss",
+            "lr_start": "1e-4",
+            "ignore_frames_loss": "6",
+            "gamma": "2.0",
+            "w": "0.5",
+            "cuda": "True",
+            "scheduler": None,
+            "scheduler_step_size": "0",
+            "scheduler_gamma": "0.1",
+            "optimizer": "adam",
+        }
 
-        self.run_name = training_section.get("run_name", fallback="TEST")
-        self.load_run_name = training_section.get("load_run_name", fallback=None)
-        self.load_epoch = training_section.getint("load_epoch", fallback=0)
-        self.train_epochs = training_section.getint("train_epochs", fallback=5000)
-        self.criterion = training_section.get("criterion", fallback="nll_loss")
-        self.lr_start = training_section.getfloat("lr_start", fallback=1e-4)
-        self.ignore_frames_loss = training_section.getint(
-            "ignore_frames_loss", fallback=0
+        # Load training parameters
+        training_section = (
+            self.c["training"] if "training" in self.c else fallback_training_section
         )
+
+        self.run_name = training_section.get("run_name", "final_model")
+        self.load_run_name = training_section.get("load_run_name", "")
+        self.load_epoch = int(training_section.get("load_epoch", "0"))
+        self.train_epochs = int(training_section.get("train_epochs", "5000"))
+        self.criterion = training_section.get("criterion", "nll_loss")
+        self.lr_start = float(training_section.get("lr_start", "1e-4"))
+        self.ignore_frames_loss = int(training_section.get("ignore_frames_loss", "6"))
         if (self.criterion == "focal_loss") or (self.criterion == "sum_losses"):
-            self.gamma = training_section.getfloat("gamma", fallback=2.0)
+            self.gamma = float(training_section.get("gamma", "2.0"))
         if self.criterion == "sum_losses":
-            self.w = training_section.getfloat("w", fallback=0.5)
-        self.cuda = training_section.getboolean("cuda")
-        self.scheduler = training_section.get("scheduler", fallback=None)
+            self.w = float(training_section.get("w", "0.5"))
+        self.cuda = bool(training_section.get("cuda", "True"))
+        self.scheduler = training_section.get("scheduler")
         if self.scheduler == "step":
-            self.scheduler_step_size = training_section.getint("step_size")
-            self.scheduler_gamma = training_section.getfloat("gamma")
-        self.optimizer = training_section.get("optimizer", fallback="adam")
+            self.scheduler_step_size = int(training_section.get("step_size", "0"))
+            self.scheduler_gamma = float(training_section.get("gamma", "0.1"))
+        self.optimizer = training_section.get("optimizer", "adam")
 
     def load_dataset_params(self):
-        # Load dataset parameters
-        dataset_section = self.c["dataset"]
+        # Create dict of fallback values
+        fallback_dataset_section = {
+            "relative_path": "data/sparks_dataset",
+            "dataset_size": "full",
+            "batch_size": "4",
+            "num_workers": "1",
+            "data_duration": "256",
+            "data_stride": "32",
+            "data_smoothing": "no",
+            "norm_video": "abs_max",
+            "remove_background": "no",
+            # "only_sparks": "", # not used anymore
+            "noise_data_augmentation": "",
+            "sparks_type": "raw",
+            "new_fps": "0",
+        }
 
-        self.dataset_path = dataset_section.get("relative_path")
-        self.dataset_size = dataset_section.get("dataset_size", fallback="full")
-        self.batch_size = dataset_section.getint("batch_size", fallback=1)
-        # dataset_section.getint("num_workers", fallback=1)
+        # Load dataset parameters
+        dataset_section = (
+            self.c["dataset"] if "dataset" in self.c else fallback_dataset_section
+        )
+
+        self.dataset_path = dataset_section.get("relative_path", "data/sparks_dataset")
+        self.dataset_size = dataset_section.get("dataset_size", "full")
+        self.batch_size = int(dataset_section.get("batch_size", "4"))
+        # self.num_workers = dataset_section.getint("num_workers", 1)
         self.num_workers = 0
-        self.data_duration = dataset_section.getint("data_duration")
-        self.data_stride = dataset_section.getint("data_stride", fallback=1)
-        self.testing_data_stride = self.c.getint(
-            "testing", "data_stride", fallback=self.data_stride
-        )
-        self.data_smoothing = dataset_section.get("data_smoothing", fallback="2d")
-        self.norm_video = dataset_section.get("norm_video", fallback="chunk")
-        self.remove_background = dataset_section.get(
-            "remove_background", fallback="average"
-        )
+        self.data_duration = int(dataset_section.get("data_duration", "256"))
+        self.data_stride = int(dataset_section.get("data_stride", "32"))
+        self.data_smoothing = dataset_section.get("data_smoothing", "no")
+        self.norm_video = dataset_section.get("norm_video", "abs_max")
+        self.remove_background = dataset_section.get("remove_background", "no")
         # self.only_sparks = dataset_section.getboolean(
-        #     "only_sparks", fallback=False) # not used anymore
-        self.noise_data_augmentation = dataset_section.getboolean(
-            "noise_data_augmentation", fallback=False
+        #     "only_sparks", ) # not used anymore
+        self.noise_data_augmentation = bool(
+            dataset_section.get("noise_data_augmentation", "")
         )
-        self.sparks_type = dataset_section.get("sparks_type", fallback="peaks")
-        self.inference = dataset_section.get("inference", fallback="overlap")
-        self.new_fps = dataset_section.getint(
-            "new_fps", fallback=0
+        self.sparks_type = dataset_section.get("sparks_type", "raw")
+        self.new_fps = int(
+            dataset_section.get("new_fps", "0")
         )  # can be implemented later
 
-    def load_unet_params(self):
-        # Load UNet parameters
-        network_section = self.c["network"]
+    def load_inference_params(self):
+        fallback_inference_section = {
+            "inference_data_duration": self.data_duration,
+            "inference_data_stride": self.data_stride,
+            "inference": "overlap",
+            "inference_load_epoch": "100000",
+            "inference_batch_size": "4",
+            "inference_dataset_size": "full",
+        }
 
-        self.nn_architecture = network_section.get(
-            "nn_architecture", fallback="pablos_unet"
+        # Load inference parameters
+        inference_section = (
+            self.c["inference"] if "inference" in self.c else fallback_inference_section
         )
+
+        self.inference_data_duration = int(
+            inference_section.get("inference_data_duration", "256")
+        )
+        self.inference_data_stride = int(
+            inference_section.get("inference_data_stride", "32")
+        )
+        self.inference = inference_section.get("inference", "overlap")
+        self.inference_load_epoch = int(
+            inference_section.get("inference_load_epoch", "100000")
+        )
+        self.inference_batch_size = int(
+            inference_section.get("inference_batch_size", "4")
+        )
+        self.inference_dataset_size = inference_section.get(
+            "inference_dataset_size", "full"
+        )
+
+    def load_unet_params(self):
+        # Create dict of fallback values
+        fallback_network_section = {
+            "nn_architecture": "pablos_unet",
+            "unet_steps": "6",
+            "first_layer_channels": "8",
+            "num_channels": "1",
+            "dilation": "",
+            "border_mode": "same",
+            "batch_normalization": "none",
+            "temporal_reduction": "",
+            "initialize_weights": "",
+            "attention": "",
+            "up_mode": "transpose",
+            "num_res_blocks": "1",
+        }
+
+        # Load UNet parameters
+        network_section = (
+            self.c["network"] if "network" in self.c else fallback_network_section
+        )
+
+        self.nn_architecture = network_section.get("nn_architecture", "pablos_unet")
         assert self.nn_architecture in [
             "pablos_unet",
             "github_unet",
@@ -341,26 +435,22 @@ class TrainingConfig:
         ], f"nn_architecture must be one of 'pablos_unet', 'github_unet', 'openai_unet'"
 
         if self.nn_architecture == "unet_lstm":
-            self.bidirectional = network_section.getboolean("bidirectional")
-        self.unet_steps = network_section.getint("unet_steps")
-        self.first_layer_channels = network_section.getint("first_layer_channels")
-        self.num_channels = network_section.getint("num_channels", fallback=1)
-        self.dilation = network_section.getboolean("dilation", fallback=1)
-        self.border_mode = network_section.get("border_mode")
-        self.batch_normalization = network_section.get(
-            "batch_normalization", fallback="none"
+            self.bidirectional = bool(network_section.get("bidirectional"))
+        self.unet_steps = int(network_section.get("unet_steps", "6"))
+        self.first_layer_channels = int(
+            network_section.get("first_layer_channels", "8")
         )
-        self.temporal_reduction = network_section.getboolean(
-            "temporal_reduction", fallback=False
-        )
-        self.initialize_weights = network_section.getboolean(
-            "initialize_weights", fallback=False
-        )
+        self.num_channels = int(network_section.get("num_channels", "1"))
+        self.dilation = bool(network_section.get("dilation", "1"))
+        self.border_mode = network_section.get("border_mode", "same")
+        self.batch_normalization = network_section.get("batch_normalization", "none")
+        self.temporal_reduction = bool(network_section.get("temporal_reduction", ""))
+        self.initialize_weights = bool(network_section.get("initialize_weights", ""))
         if self.nn_architecture == "github_unet":
-            self.attention = network_section.getboolean("attention")
-            self.up_mode = network_section.get("up_mode")
+            self.attention = bool(network_section.get("attention", ""))
+            self.up_mode = network_section.get("up_mode", "transpose")
         if self.nn_architecture == "openai_unet":
-            self.num_res_blocks = network_section.getint("num_res_blocks")
+            self.num_res_blocks = int(network_section.get("num_res_blocks", "1"))
 
     def initialize_wandb(self):
         # Only resume when loading the same saved model
@@ -390,15 +480,24 @@ class TrainingConfig:
         if self.wandb_log:
             self.initialize_wandb()
 
-    def set_device(self, device):
+    def set_device(self, device: str = "auto"):
         # Set the device to use for training
-        self.device = torch.device(device)
         if device == "cuda":
+            self.device = torch.device("cuda")
             self.pin_memory = True
         elif device == "cpu":
+            self.device = torch.device("cpu")
             self.pin_memory = False
+        elif device == "params":
+            self.device = torch.device("cuda" if self.cuda else "cpu")
+            self.pin_memory = True if self.device else False
+        elif device == "auto":
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.pin_memory = True if torch.cuda.is_available() else False
         else:
-            raise ValueError(f"Device is {device} but is should be 'cuda' or 'cpu'.")
+            raise ValueError(
+                f"Device is {device} but is should be 'cuda', 'cpu', or 'auto."
+            )
 
         self.n_gpus = torch.cuda.device_count()
 

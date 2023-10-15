@@ -11,6 +11,7 @@ Last modified: 28.09.2023
 """
 
 import logging
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -40,7 +41,7 @@ __all__ = [
 ################################ Generic utils #################################
 
 
-def list_difference(l1, l2):
+def list_difference(l1: List, l2: List) -> List:
     """
     Compute the difference between two lists, l1 - l2.
 
@@ -58,8 +59,14 @@ def list_difference(l1, l2):
 
 
 def get_metrics_from_summary(
-    tot_preds, tp_preds, ignored_preds, unlabeled_preds, tot_ys, tp_ys, undetected_ys
-):
+    tot_preds: dict,
+    tp_preds: dict,
+    ignored_preds: dict,
+    unlabeled_preds: dict,
+    tot_ys: dict,
+    tp_ys: dict,
+    undetected_ys: dict,
+) -> dict:
     """
     Compute instance-based metrics from matched events summary.
 
@@ -117,7 +124,12 @@ def get_metrics_from_summary(
     return metrics
 
 
-def compute_iou(ys_roi, preds_roi, ignore_mask=None, debug=False):
+def compute_iou(
+    ys_roi: np.ndarray,
+    preds_roi: np.ndarray,
+    ignore_mask: np.ndarray = np.array([]),
+    debug: bool = False,
+) -> float:
     """
     Compute Intersection over Union (IoU) for given single annotated and predicted
     events.
@@ -134,7 +146,7 @@ def compute_iou(ys_roi, preds_roi, ignore_mask=None, debug=False):
         float: The computed IoU value.
     """
     # Define a mask where pixels aren't ignored by the loss function
-    if ignore_mask is not None:
+    if ignore_mask.any():
         compute_mask = np.logical_not(ignore_mask)
         preds_roi_real = np.logical_and(preds_roi, compute_mask)
     else:
@@ -155,7 +167,9 @@ def compute_iou(ys_roi, preds_roi, ignore_mask=None, debug=False):
     return iou
 
 
-def compute_inter_min(ys_roi, preds_roi, ignore_mask=None):
+def compute_inter_min(
+    ys_roi: np.ndarray, preds_roi: np.ndarray, ignore_mask: np.ndarray = np.array([])
+) -> float:
     """
     Compute Intersection over Minimum Area for given single annotated and predicted
     events.
@@ -170,7 +184,7 @@ def compute_inter_min(ys_roi, preds_roi, ignore_mask=None):
         float: The computed Intersection over Minimum Area (IoMin) value.
     """
     # Define a mask where pixels aren't ignored by the loss function
-    if ignore_mask is not None:
+    if ignore_mask.any():
         compute_mask = np.logical_not(ignore_mask)
         preds_roi_real = np.logical_and(preds_roi, compute_mask)
     else:
@@ -190,7 +204,9 @@ def compute_inter_min(ys_roi, preds_roi, ignore_mask=None):
     return iomin
 
 
-def compute_iomin_one_hot(y_vector, preds_array):
+def compute_iomin_one_hot(
+    y_vector: sparse.csr_matrix, preds_array: sparse.csr_matrix
+) -> np.ndarray:
     """
     Compute Intersection over Minimum Score for a given single annotated event and
     all predicted events.
@@ -207,7 +223,7 @@ def compute_iomin_one_hot(y_vector, preds_array):
         numpy.ndarray: List of IoMin scores for each predicted event.
     """
     # Check that y_vector is not empty
-    assert y_vector.count_nonzero != 0, "y_vector is empty"
+    assert y_vector.count_nonzero() != 0, "y_vector is empty"
 
     # Compute the intersection of CSR matrix y_vector with each row of CSR matrix
     # preds_array
@@ -246,7 +262,7 @@ Utils for computing metrics related to sparks, e.g.
 """
 
 
-def compute_f_score(precision, recall, beta=1):
+def compute_f_score(precision: float, recall: float, beta: float = 1) -> float:
     """
     Compute the F-beta score given precision and recall.
 
@@ -275,7 +291,7 @@ def compute_f_score(precision, recall, beta=1):
 ########################### Instances-based metrics ############################
 
 
-def _get_sparse_binary_encoded_mask(mask):
+def _get_sparse_binary_encoded_mask(mask: np.ndarray) -> sparse.csr_matrix:
     """
     Create a sparse binary encoded mask from an array with labeled event instances.
 
@@ -302,7 +318,11 @@ def _get_sparse_binary_encoded_mask(mask):
     return sparse_v
 
 
-def get_score_matrix(ys_instances, preds_instances, ignore_mask=None):
+def get_score_matrix(
+    ys_instances: Dict[str, np.ndarray],
+    preds_instances: Dict[str, np.ndarray],
+    ignore_mask: np.ndarray = np.array([]),
+) -> np.ndarray:
     """
     Compute pairwise IoMin scores between annotated event instances and predicted
     event instances.
@@ -320,11 +340,11 @@ def get_score_matrix(ys_instances, preds_instances, ignore_mask=None):
         pairwise scores.
     """
     # Compute matrices with all separated events summed
-    ys_all_events = sum(ys_instances.values())
-    preds_all_events = sum(preds_instances.values())
+    ys_all_events = np.sum(list(ys_instances.values()), axis=0)
+    preds_all_events = np.sum(list(preds_instances.values()), axis=0)
 
-    # Intersect predicted events with the negation of the ignore mask
-    if ignore_mask is not None:
+    # Intersect predicted events with the negation of the ignore mas
+    if ignore_mask.any():
         preds_all_events = np.logical_and(preds_all_events, np.logical_not(ignore_mask))
 
     # Convert to one-hot encoding and transpose matrices
@@ -344,7 +364,12 @@ def get_score_matrix(ys_instances, preds_instances, ignore_mask=None):
     return scores
 
 
-def get_matches_summary(ys_instances, preds_instances, scores, ignore_mask):
+def get_matches_summary(
+    ys_instances: Dict[str, np.ndarray],
+    preds_instances: Dict[str, np.ndarray],
+    scores: np.ndarray,
+    ignore_mask: np.ndarray,
+) -> Tuple[Dict[str, Dict[str, set]], Dict[str, Dict[str, set]]]:
     """
     Analyze matched predicted events with annotated events and categorize them.
 
@@ -358,18 +383,14 @@ def get_matches_summary(ys_instances, preds_instances, scores, ignore_mask):
         Tuple: A tuple containing matched_ys_ids (annotated events summary) and
         matched_preds_ids (predicted events summary).
     """
+    # Get list of class names
+    ca_classes = list(preds_instances.keys())  # sparks, puffs, waves
+
     # Initialize dicts that summarize the results
-    matched_ys_ids = {
-        ca_class: {} for ca_class in config.classes_dict.keys() if ca_class != "ignore"
-    }
-    matched_preds_ids = {
-        ca_class: {} for ca_class in config.classes_dict.keys() if ca_class != "ignore"
-    }
+    matched_ys_ids = {ca_class: {} for ca_class in ca_classes}
+    matched_preds_ids = {ca_class: {} for ca_class in ca_classes}
 
-    for ca_class in config.classes_dict.keys():
-        if ca_class in ["background", "ignore"]:
-            continue
-
+    for ca_class in ca_classes:
         # Get set of IDs of all annotated events
         ys_ids = set(np.unique(ys_instances[ca_class])) - {0}
         matched_ys_ids[ca_class]["tot"] = ys_ids.copy()
@@ -378,8 +399,8 @@ def get_matches_summary(ys_instances, preds_instances, scores, ignore_mask):
         preds_ids = set(np.unique(preds_instances[ca_class])) - {0}
         matched_preds_ids[ca_class]["tot"] = preds_ids.copy()
 
-        for other_class in config.classes_dict.keys():
-            if other_class in ["ignore", "background", ca_class]:
+        for other_class in ca_classes:
+            if other_class == ca_class:
                 continue
 
             # Initialize mispredicted events (in annotations and predictions)
@@ -389,10 +410,7 @@ def get_matches_summary(ys_instances, preds_instances, scores, ignore_mask):
         # Initialize undetected annotated events
         matched_ys_ids[ca_class]["undetected"] = ys_ids.copy()
 
-    for ca_class in config.classes_dict.keys():
-        if ca_class == "ignore":
-            continue
-
+    for ca_class in ca_classes:
         # Initialize sets of correctly matched annotations and predictions
         matched_preds_ids[ca_class]["tp"] = set()
         matched_ys_ids[ca_class]["tp"] = set()
@@ -425,8 +443,8 @@ def get_matches_summary(ys_instances, preds_instances, scores, ignore_mask):
 
             # Otherwise, pred_id matches with at least one labelled event
             else:
-                for other_class in config.classes_dict.keys():
-                    if other_class in ["background", "ignore"]:
+                for other_class in ca_classes:
+                    if other_class:
                         continue
 
                     # Check if pred_id matched with an event of the other class
@@ -454,11 +472,11 @@ def get_matches_summary(ys_instances, preds_instances, scores, ignore_mask):
 
 
 def get_df_summary_events(
-    inference_type,
-    matched_ids,
-    matched_percent,
-    is_detected=True,
-):
+    inference_type: str,
+    matched_ids: Dict[str, Dict[str, int]],
+    matched_percent: Dict[str, Dict[str, float]],
+    is_detected: bool = True,
+) -> pd.DataFrame:
     """
     Create a summary DataFrame of detected or labeled events for a given
     inference type, where columns are event types and index are metrics (tp,
@@ -479,8 +497,8 @@ def get_df_summary_events(
     event_type_label = "Detected" if is_detected else "Labeled"
 
     # Create DataFrames from matched_ids and matched_percent
-    df_ids = pd.DataFrame(matched_ids[inference_type]["sum"])
-    df_percent = pd.DataFrame(matched_percent[inference_type])
+    df_ids = pd.DataFrame([matched_ids[inference_type]["sum"]])
+    df_percent = pd.DataFrame([matched_percent[inference_type]])
 
     # Exclude "background" and "ignore" keys from config.classes_dict
     event_types = [
@@ -519,15 +537,13 @@ def get_df_summary_events(
 
     # Define data types for the DataFrame
     convert_dict = {event_type: int for event_type in event_types}
-    df = df.astype(convert_dict)
 
-    # Format the DataFrame
-    df = df.style.format(precision=2, na_rep="N/A")
-
-    return df
+    return df.astype(convert_dict)
 
 
-def get_df_metrics(inference_type, metrics_all):
+def get_df_metrics(
+    inference_type: str, metrics_all: Dict[str, Dict[str, float]]
+) -> pd.DataFrame:
     """
     Create a DataFrame of metrics for the specified inference type.
 
@@ -563,133 +579,4 @@ def get_df_metrics(inference_type, metrics_all):
 
     # Create a DataFrame where index is event types and columns are metrics
     df = pd.DataFrame(df_data).T
-
-    # Set the display precision to 2 decimal places
-    pd.set_option("display.precision", 2)
-
-    # Format the DataFrame
-    df = df.style.format(precision=2)
-
     return df
-
-
-############################### Old functions ##################################
-
-
-# OLD
-# def correspondences_precision_recall(
-#     coords_real,
-#     coords_pred,
-#     return_pairs_coords=False,
-#     return_nb_results=False,
-# ):
-#     """
-#     Compute best matches given two sets of coordinates, one from the
-#     ground-truth and another one from the network predictions. A match is
-#     considered correct if the Euclidean distance between coordinates is smaller
-#     than `match_distance`. With the computed matches, it estimates the precision
-#     and recall of the prediction.
-
-#     Args:
-#         coords_real (numpy.ndarray): Array of real coordinates.
-#         coords_pred (numpy.ndarray): Array of predicted coordinates.
-#         return_pairs_coords (bool): Whether to return paired coordinates.
-#         return_nb_results (bool): Whether to return only TP, TP+FP, TP+FN as a dict.
-
-#     Returns:
-#         tuple or dict: Precision, recall, F1-score, TP, TP+FP, TP+FN, paired real,
-#             paired pred, false positives, and false negatives based on function
-#             arguments.
-#     """
-#     # Divide temporal and spatial coordinates by match distances
-#     if coords_real.size > 0:
-#         coords_real[:, 0] /= config.min_dist_t
-#         coords_real[:, 1] /= config.min_dist_xy
-#         coords_real[:, 2] /= config.min_dist_xy
-
-#     if coords_pred.size > 0:
-#         coords_pred[:, 0] /= config.min_dist_t
-#         coords_pred[:, 1] /= config.min_dist_xy
-#         coords_pred[:, 2] /= config.min_dist_xy
-
-#     if coords_real.size and coords_pred.size > 0:
-#         w = spatial.distance_matrix(coords_real, coords_pred)
-#         w[w > 1] = 9999999  # Set a high value for distances greater than 1
-#         row_ind, col_ind = optimize.linear_sum_assignment(w)
-
-#     if return_pairs_coords:
-#         # Multiply coordinates by match distances
-#         if coords_real.size > 0:
-#             coords_real[:, 0] *= config.min_dist_t
-#             coords_real[:, 1] *= config.min_dist_xy
-#             coords_real[:, 2] *= config.min_dist_xy
-
-#         if coords_pred.size > 0:
-#             coords_pred[:, 0] *= config.min_dist_t
-#             coords_pred[:, 1] *= config.min_dist_xy
-#             coords_pred[:, 2] *= config.min_dist_xy
-
-#         if coords_real.size and coords_pred.size > 0:
-#             # True positive pairs:
-#             paired_real = [
-#                 coords_real[i].tolist()
-#                 for i, j in zip(row_ind, col_ind)
-#                 if w[i, j] <= 1
-#             ]
-#             paired_pred = [
-#                 coords_pred[j].tolist()
-#                 for i, j in zip(row_ind, col_ind)
-#                 if w[i, j] <= 1
-#             ]
-
-#             # False positive (predictions):
-#             false_positives = list_difference(coords_pred, paired_pred)
-
-#             # False negative (annotations):
-#             false_negatives = list_difference(coords_real, paired_real)
-
-#             if return_nb_results:
-#                 tp = np.count_nonzero(w[row_ind, col_ind] <= 1)
-#                 tp_fp = len(coords_pred)
-#                 tp_fn = len(coords_real)
-
-#                 res = {"tp": tp, "tp_fp": tp_fp, "tp_fn": tp_fn}
-#                 return res, paired_real, paired_pred, false_positives, false_negatives
-#             else:
-#                 return paired_real, paired_pred, false_positives, false_negatives
-#         else:
-#             if return_nb_results:
-#                 tp = 0
-#                 tp_fp = len(coords_pred)
-#                 tp_fn = len(coords_real)
-
-#                 res = {"tp": tp, "tp_fp": tp_fp, "tp_fn": tp_fn}
-#                 return res, [], [], coords_pred, coords_real
-#             else:
-#                 return [], [], coords_pred, coords_real
-
-#     else:
-#         if (coords_real.size > 0) and (coords_pred.size > 0):
-#             tp = np.count_nonzero(w[row_ind, col_ind] <= 1)
-#         else:
-#             tp = 0
-
-#         tp_fp = len(coords_pred)
-#         tp_fn = len(coords_real)
-
-#         if return_nb_results:
-#             return {"tp": tp, "tp_fp": tp_fp, "tp_fn": tp_fn}
-
-#         if tp_fp > 0:
-#             precision = tp / tp_fp
-#         else:
-#             precision = 1.0
-
-#         if tp_fn > 0:
-#             recall = tp / tp_fn
-#         else:
-#             recall = 1.0
-
-#         f1_score = compute_f_score(precision, recall)
-
-#         return precision, recall, f1_score, tp, tp_fp, tp_fn

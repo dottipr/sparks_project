@@ -2,42 +2,31 @@
 Functions that are used during the training of the neural network model.
 
 Author: Prisca Dotti
-Last modified: 28.09.202              
+Last modified: 13.10.2023
 """
 
 import logging
-import os
 import time
 from collections import defaultdict
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.utils.data
 import wandb
 from scipy import ndimage as ndi
-from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 from torch import nn
 
-from config import config
-from data.data_processing_tools import (
-    masks_to_instances_dict,
-    preds_dict_to_mask,
-    process_raw_predictions,
-    trim_and_pad_video,
-)
-from data.datasets import SparkDatasetPath
-from evaluation.metrics_tools import (
-    compute_iou,
-    get_matches_summary,
-    get_metrics_from_summary,
-    get_score_matrix,
-)
+from config import TrainingConfig, config
+from data.data_processing_tools import process_raw_predictions
+from data.datasets import SparkDataset, SparkDatasetInference
 from models.UNet import unet
 from models.UNet.unet.trainer import _write_results
-from utils.in_out_tools import write_videos_on_disk
 
 __all__ = [
     "MyTrainingManager",
+    "TransformedSparkDataset",
     "training_step",
     "sampler",
     "random_flip",
@@ -46,8 +35,7 @@ __all__ = [
     "compute_class_weights_instances",
     "weights_init",
     "do_inference",
-    "get_preds",
-    # "run_samples_in_model",
+    "get_raw_preds_dict",
     "test_function",
     "get_preds_from_path",
 ]
@@ -55,181 +43,31 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-########################### Custom training manager ############################
-
-
-class MyTrainingManager(unet.TrainingManager):
-    """
-    Custom training manager for deep learning training.
-    """
-
-    def run_validation(self, wandb_log=False):
-        """
-        Run validation on the network and log the results.
-
-        Args:
-            wandb_log (bool, optional): Whether to log results to WandB.
-                    Defaults to False.
-        """
-
-        if self.test_function is None:
-            return
-
-        logger.info(f"Validating network at iteration {self.iter}...")
-
-        test_output = self.test_function(self.iter)
-
-        if wandb_log:
-            self.log_test_metrics_to_wandb(test_output)
-
-        self.log_metrics(test_output, "Metrics:")
-
-        _write_results(self.summary, "testing", test_output, self.iter)
-
-    def train(self, num_iters, print_every=0, maxtime=np.inf, wandb_log=False):
-        """
-        Train the deep learning model.
-
-        Args:
-            num_iters (int): Number of training iterations.
-            print_every (int, optional): Print training information every
-                'print_every' iterations. Defaults to 0.
-            maxtime (float, optional): Maximum training time in seconds.
-                Defaults to np.inf.
-            wandb_log (bool, optional): Whether to log results to WandB.
-                Defaults to False.
-        """
-        tic = time.process_time()
-        time_elapsed = 0
-
-        if wandb_log:
-            loss_sum = 0
-
-        for _ in range(num_iters):
-            step_output = self.training_step(self.iter)
-
-            if wandb_log:
-                loss_sum += step_output["loss"]
-
-            time_elapsed = time.process_time() - tic
-
-            if print_every and self.iter % print_every == 0:
-                self.log_training_info(step_output, time_elapsed)
-
-                # Log to wandb
-                if wandb_log:
-                    wandb.log(
-                        {
-                            "U-Net training loss": loss_sum.item() / print_every
-                            if self.iter > 0
-                            else loss_sum.item()
-                        },
-                        step=self.iter,
-                    )
-                    loss_sum = 0
-
-            self.iter += 1
-
-            # Validation
-            if self.test_every and self.iter % self.test_every == 0:
-                self.run_validation(wandb_log=wandb_log)
-
-            # Plot
-            if (
-                self.plot_function
-                and self.plot_every
-                and self.iter % self.plot_every == 0
-            ):
-                self.plot_function(self.iter, self.summary)
-
-            # Save model and solver
-            if self.save_every and self.iter % self.save_every == 0:
-                self.save()
-
-            if time_elapsed > maxtime:
-                logger.info("Maximum time reached!")
-                break
-
-    def log_test_metrics_to_wandb(self, test_output):
-        """
-        Log test metrics to WandB.
-
-        Args:
-            test_output (dict): Dictionary of test metrics.
-        """
-        wandb.log(
-            {m: val for m, val in test_output.items() if "confusion_matrix" not in m},
-            step=self.iter,
-        )
-        # wandb.log({'Step_val': self.iter}, step=self.iter)
-
-    def log_metrics(self, metrics_dict, header="Metrics:"):
-        """
-        Log metrics to the logger.
-
-        Args:
-            metrics_dict (dict): Dictionary of metrics.
-            header (str, optional): Header for the metrics section.
-                Defaults to "Metrics:".
-        """
-        logger.info(header)
-        for metric_name, metric_value in metrics_dict.items():
-            if "confusion_matrix" in metric_name:
-                with np.printoptions(precision=0, suppress=True):
-                    logger.info(f"\t{metric_name}:\n{metric_value:}")
-            else:
-                logger.info(f"\t{metric_name}: {metric_value:.4g}")
-
-    def log_training_info(self, step_output, time_elapsed):
-        """
-        Log training information to the logger.
-
-        Args:
-            step_output (dict): Output from the training step.
-            time_elapsed (float): Elapsed time for the current iteration.
-        """
-        # Move loss value to cpu
-        step_output["loss"] = step_output["loss"].item()
-        # Register data
-        _write_results(self.summary, "training", step_output, self.iter)
-        loss = step_output["loss"]
-
-        # Check for nan
-        if np.any(np.isnan(loss)):
-            logger.error("Last loss is nan! Training diverged!")
-            return
-
-        # Log training loss
-        logger.info(f"Iteration {self.iter}...")
-        logger.info(f"\tTraining loss: {loss:.4g}")
-        logger.info(f"\tTime elapsed: {time_elapsed:.2f}s")
-
-
 ################################ Training step #################################
 
 
 # Make one step of the training (update parameters and compute loss)
 def training_step(
-    sampler,
-    network,
-    optimizer,
-    # scaler,
-    scheduler,
-    criterion,
-    dataset_loader,
-    params,
-):
+    dataset_loader: torch.utils.data.DataLoader,
+    params: TrainingConfig,
+    sampler: Callable[[torch.utils.data.DataLoader], dict],
+    network: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    criterion: torch.nn.Module,
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+    # scaler: torch.cuda.amp.GradScaler,
+) -> Dict[str, torch.Tensor]:
     """
     Perform one training step.
 
     Args:
+        dataset_loader (DataLoader): DataLoader for the training dataset.
+        params (TrainingConfig): A TrainingConfig containing various parameters.
         sampler (callable): Function to sample data from the dataset.
         network (nn.Module): The neural network model.
         optimizer (torch.optim.Optimizer): The optimizer.
-        scheduler (torch.optim.lr_scheduler._LRScheduler): Learning rate scheduler.
         criterion (nn.Module): The loss function.
-        dataset_loader (DataLoader): DataLoader for the training dataset.
-        params (TrainingConfig): A TrainingConfig containing various parameters.
+        scheduler (torch.optim.lr_scheduler._LRScheduler): Learning rate scheduler.
 
     Returns:
         dict: A dictionary containing the training loss.
@@ -237,21 +75,23 @@ def training_step(
     network.train()
 
     # Sample data from the dataset
-    x, y = sampler(dataset_loader)
+    sample = sampler(dataset_loader)
+    x = sample["data"]
+    y = sample["labels"]
+
     x = x.to(params.device, non_blocking=True)  # [b, d, 64, 512]
     # [b, d, 64, 512] or [b, 64, 512]
     y = y.to(params.device, non_blocking=True)
 
     # Calculate padding for height and width
     _, _, h, w = x.shape
-    net_steps = network.module.config.steps
+    net_steps = params.unet_steps
     h_pad = max(2**net_steps - h % 2**net_steps, 0)
     w_pad = max(2**net_steps - w % 2**net_steps, 0)
 
     # Pad the input tensor
     x = F.pad(
-        x, (w_pad // 2, w_pad // 2 + w_pad %
-            2, h_pad // 2, h_pad // 2 + h_pad % 2)
+        x, (w_pad // 2, w_pad // 2 + w_pad % 2, h_pad // 2, h_pad // 2 + h_pad % 2)
     )
 
     # Forward pass
@@ -266,9 +106,9 @@ def training_step(
     y_pred = y_pred[:, :, :, crop_h_start:crop_h_end, crop_w_start:crop_w_end]
 
     # Remove frames that must be ignored by the loss function
-    if params.ignore_frames != 0:
-        y_pred = y_pred[:, :, params.ignore_frames: -params.ignore_frames]
-        y = y[:, params.ignore_frames: -params.ignore_frames]
+    if params.ignore_frames_loss != 0:
+        y_pred = y_pred[:, :, params.ignore_frames_loss : -params.ignore_frames_loss]
+        y = y[:, params.ignore_frames_loss : -params.ignore_frames_loss]
 
     # Handle specific loss functions
     if params.criterion == "dice_loss":
@@ -308,23 +148,39 @@ def training_step(
 
 
 # Iterator (?) over the dataset
-def mycycle(dataset_loader):
+def mycycle(dataset_loader: torch.utils.data.DataLoader) -> Iterator:
     while True:
-        for x in dataset_loader:
-            yield x
+        for sample in dataset_loader:
+            yield sample
 
 
 # _cycle = mycycle(dataset_loader)
 
 
-def sampler(dataset_loader):
+def sampler(dataset_loader: torch.utils.data.DataLoader) -> dict:
     return next(mycycle(dataset_loader))  # (_cycle)
 
 
 ####################### Functions for data augmentation ########################
 
 
-def random_flip(x, y):
+class TransformedSparkDataset(unet.TransformedDataset):
+    def __getitem__(self, idx: int) -> dict:
+        value_dict = self.source_dataset[idx]  # dict with keys 'data', 'labels', etc.
+        x = value_dict["data"]
+        y = value_dict["labels"]
+
+        # Apply transformations
+        x, y = self.transform(x, y)
+
+        # Assign transformed data to the dictionary
+        value_dict["data"] = x
+        value_dict["labels"] = y
+
+        return value_dict
+
+
+def random_flip(x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Randomly flip the input and target tensors along both horizontal and
     vertical axes.
@@ -349,7 +205,9 @@ def random_flip(x, y):
     return x, y
 
 
-def random_flip_noise(x, y):
+def random_flip_noise(
+    x: torch.Tensor, y: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Apply random flips and noise to input and target tensors.
 
@@ -376,32 +234,36 @@ def random_flip_noise(x, y):
     # Denoise input with a 50% chance
     if torch.rand(1).item() > 0.5:
         # 50/50 of gaussian filtering or median filtering
+        # Convert to numpy array
+        x_numpy = x.numpy()
         if torch.rand(1).item() > 0.5:
-            x = ndi.gaussian_filter(x, sigma=1)
+            # Apply gaussian filter
+            x_numpy = ndi.gaussian_filter(x_numpy, sigma=1)
         else:
-            x = ndi.median_filter(x, size=2)
+            x_numpy = ndi.median_filter(x_numpy, size=2)
+        # Convert to tensor
+        x = torch.as_tensor(x_numpy)
 
-    return torch.as_tensor(x), torch.as_tensor(y)
+    return x, y
 
 
 ################## Functions related to UNet and loss weights ##################
 
 
-def compute_class_weights(dataset, weights=None):
+def compute_class_weights(
+    dataset: torch.utils.data.Dataset, weights: List[float] = []
+) -> torch.Tensor:
     """
     Compute class weights for a dataset based on class frequencies.
 
     Args:
-        dataset (Iterable): Dataset containing input-target pairs.
+        dataset (Dataset): Dataset containing input-target pairs.
         w (list of floats): List of weights for each class.
 
     Returns:
         Tensor: Class weights as a tensor.
     """
-    class_counts = [0] * config.num_classes
-
-    if weights is None:
-        weights = [1.0] * config.num_classes
+    class_counts = torch.Tensor([0] * config.num_classes)
 
     with torch.no_grad():
         for _, y in dataset:
@@ -410,17 +272,23 @@ def compute_class_weights(dataset, weights=None):
 
     total_samples = sum(class_counts)
 
-    weights = torch.zeros(config.num_classes)
+    dataset_weights = torch.zeros(config.num_classes, dtype=torch.float32)
 
-    for w in weights:
+    if len(weights) == 0:
+        weights = [1.0] * config.num_classes
+
+    for c in range(config.num_classes):
         if class_counts[c] != 0:
-            weights[c] = w * total_samples / \
-                (config.num_classes * class_counts[c])
+            dataset_weights[c] = (
+                weights[c] * total_samples / (config.num_classes * class_counts[c])
+            )
 
-    return weights
+    return dataset_weights
 
 
-def compute_class_weights_instances(ys, ys_events):
+def compute_class_weights_instances(
+    ys: List[np.ndarray], ys_events: List[np.ndarray]
+) -> Dict[str, float]:
     """
     Compute class weights for event types (sparks, puffs, waves) based on
     annotation masks and event masks.
@@ -470,7 +338,7 @@ def compute_class_weights_instances(ys, ys_events):
     return class_weights
 
 
-def weights_init(m):
+def weights_init(m: nn.Module) -> None:
     """
     Initialize weights of Conv2d and ConvTranspose2d layers using a specific method.
 
@@ -479,13 +347,13 @@ def weights_init(m):
     """
     if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
         stdv = np.sqrt(2 / m.weight.size(1))
-        m.weight.data.normal_(m.weight, std=stdv)
+        m.weight.data.normal_(mean=float(m.weight), std=stdv)
 
 
 ############################### Inference tools ################################
 
 
-def detect_nan_sample(x, y):
+def detect_nan_sample(x: torch.Tensor, y: torch.Tensor) -> None:
     """
     Detect NaN values in input tensors (x) and annotation tensors (y).
 
@@ -496,8 +364,7 @@ def detect_nan_sample(x, y):
     if torch.isnan(x).any() or torch.isnan(y).any():
         if torch.isnan(x).any() or torch.isnan(y).any():
             logger.warning(
-                "Detect NaN in network input (test): {}".format(
-                    torch.isnan(x).any())
+                "Detect NaN in network input (test): {}".format(torch.isnan(x).any())
             )
             logger.warning(
                 "Detect NaN in network annotation (test): {}".format(
@@ -506,7 +373,7 @@ def detect_nan_sample(x, y):
             )
 
 
-def gaussian(n_chunks):
+def gaussian(n_chunks: int) -> torch.Tensor:
     """
     Generate a normalized Gaussian function with standard deviation 3.
 
@@ -527,40 +394,24 @@ def gaussian(n_chunks):
 
 @torch.no_grad()
 def do_inference(
-    network,
-    params,
-    test_dataloader,
-    device,
-    compute_loss=False,
-    inference_types=None,
-    return_dict=False,
-):
+    network: nn.Module,
+    params: TrainingConfig,
+    test_dataloader: torch.utils.data.DataLoader,
+    device: torch.device,
+    compute_loss: bool = False,
+    inference_types: List[str] = [],
+    return_dict: bool = False,
+) -> torch.Tensor:
     """
-    Perform inference on a test dataset using a network model.
+    Given a trained network and a dataloader, run the data through the network
+    and perform inference.
 
-    Args:
-    - network (nn.Module): The network model.
-    - params (TrainingConfig): A TrainingConfig containing various parameters.
-    - test_dataloader (DataLoader): DataLoader for the test dataset.
-    - device (torch.device): The device to perform inference on.
-    - compute_loss (bool): Flag to compute the loss.
-    - inference_types (list): List of inference types.
-        If None, use the inference type defined in the test dataset.
-        Otherwise, use the inference types provided in the list.
-    - return_dict (bool): Flag to return a dictionary with inference type as
-        key and predictions as value, or a single tensor of predictions.
-
-    Returns:
-    - preds: Predictions based on the specified inference type(s).
-        If inference_types is None, preds is a tensor of shape
-        num_classes x movie duration x 64 x 512.
-        Otherwise, preds is a dictionary with inference type as key and
-        predictions as value.
+    TODO
     """
 
     chunk_idx = 0
 
-    if inference_types is None:
+    if len(inference_types) == 0:
         inference_types = [params.inference]
 
     # Move network to device
@@ -594,7 +445,7 @@ def do_inference(
             half_overlap_mask = half_overlap
 
         preds["overlap"] = []
-        n_chunks = len(params)
+        n_chunks = len(test_dataloader)
 
     if (
         "average" in inference_types
@@ -605,17 +456,10 @@ def do_inference(
 
         # Initialize dict with list of predictions for each frame
         output_frames = {idx: [] for idx in range(movie_duration)}
-        chunks = params.get_chunks(
-            params.lengths[0], params.step, params.duration)
+        chunks = params.get_chunks(params.lengths[0], params.step, params.duration)
 
-    for x in test_dataloader:
-        # If ground truth is available, x is a tuple (x, y)
-        if isinstance(x, tuple):
-            # x is a tuple
-            x, _ = x
-        else:
-            # x is not a tuple
-            pass
+    for sample in test_dataloader:
+        x = sample["data"]
 
         # Calculate the required padding for both height and width:
         _, _, h, w = x.shape
@@ -625,8 +469,7 @@ def do_inference(
 
         # Pad the input tensor once with calculated padding values
         x = F.pad(
-            x, (w_pad // 2, w_pad // 2 + w_pad %
-                2, h_pad // 2, h_pad // 2 + h_pad % 2)
+            x, (w_pad // 2, w_pad // 2 + w_pad % 2, h_pad // 2, h_pad // 2 + h_pad % 2)
         )
 
         # Send input tensor to the specified device
@@ -742,16 +585,13 @@ def do_inference(
 
 # function to run a test sample (i.e., a test dataset) in the UNet
 @torch.no_grad()
-def get_preds(
-    model,
-    params,
-    test_dataset,
-    return_dict=False,
-    criterion=None,
-    detect_nan=False,
-    test_dataloader=None,
-    inference_types=None,
-):
+def get_raw_preds_dict(
+    model: torch.nn.Module,
+    params: TrainingConfig,
+    test_dataset: torch.utils.data.Dataset,
+    criterion: Optional[torch.nn.Module] = None,
+    inference_types: Optional[List[str]] = None,
+):  # TODO
     """
     Given a trained model and a test sample (i.e., a test dataset), run the
     sample in the model and return the predictions.
@@ -759,55 +599,38 @@ def get_preds(
     Args:
         model (torch.nn.Module): The trained neural network model.
         test_dataset (torch.utils.data.Dataset): The test dataset containing the
-            sample.
+            sample(s).
         params (TrainingConfig): A TrainingConfig containing various parameters.
         criterion (torch.nn.Module, optional): If provided, the loss criterion
             for computing loss.
-        detect_nan (bool, optional): Whether to detect NaN values in input and
-            annotation tensors.
-        test_dataloader (torch.utils.data.DataLoader, optional): An existing
-            dataloader for the test dataset.
         inference_types (list of str, optional): List of inference types to use,
             or None to use the default type.
-        return_dict (bool, optional): Whether to return a dictionary with inference
-            type as key and predictions as value, or a single tensor of predictions.
-            Defaults to False.
 
     Returns:
-        xs (numpy.ndarray): The original movie data as a numpy array of shape
-            (movie duration x 64 x 512).
-        ys (numpy.ndarray or None): The original annotations as a numpy array, if
-            available.
-        preds (numpy.ndarray or dict): The predictions, either as a numpy array of
-            shape (4 x movie duration x 64 x 512) if `inference_types` is None, or
-            as a dictionary with inference type as the key and predictions as the
-            value.
-        loss (float or None): The loss value if `compute_loss` is True, otherwise
-            None.
+    TODO
     """
     if inference_types is None:
-        assert test_dataset.inference in [
+        assert params.inference in [
             "overlap",
             "average",
             "gaussian",
             "max",
-        ], f"inference type '{test_dataset.inference}' not implemented yet"
-        inference_types = [test_dataset.inference]
+        ], f"inference type '{params.inference}' not implemented yet"
+        inference_types = [params.inference]
 
     else:
         assert all(
             i in ["overlap", "average", "gaussian", "max"] for i in inference_types
         ), "Unsupported inference type."
 
-    # Create a dataloader if not provided
-    if test_dataloader is None:
-        test_dataloader = torch.utils.data.DataLoader(
-            test_dataset,
-            batch_size=params.batch_size,
-            shuffle=False,
-            num_workers=0,
-            pin_memory=True,
-        )
+    # Create a dataloader
+    test_dataloader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=params.batch_size,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True,
+    )
 
     # Run movie in the network and perform inference
     preds = do_inference(
@@ -851,8 +674,7 @@ def get_preds(
                     }
             else:
                 if not return_dict:
-                    preds = {i: p[:, start_pad:end_pad]
-                             for i, p in preds.items()}
+                    preds = {i: p[:, start_pad:end_pad] for i, p in preds.items()}
                 else:
                     for i, preds_dict in preds.items():
                         preds[i] = {
@@ -903,7 +725,7 @@ def get_preds(
         if ys.ndim == 3:
             if len(inference_types) == 1 and not return_dict:
                 preds_loss = preds[
-                    :, test_dataset.ignore_frames: -test_dataset.ignore_frames
+                    :, test_dataset.ignore_frames : -test_dataset.ignore_frames
                 ]
             else:
                 raise NotImplementedError
@@ -912,8 +734,7 @@ def get_preds(
                 # training, and therefore inference_types should be None.
                 # Similarly, return_dict should be False.
 
-            ys_loss = ys[test_dataset.ignore_frames: -
-                         test_dataset.ignore_frames]
+            ys_loss = ys[test_dataset.ignore_frames : -test_dataset.ignore_frames]
         else:
             raise NotImplementedError
 
@@ -939,8 +760,7 @@ def get_preds(
             if not return_dict:
                 preds = preds.numpy()
             else:
-                preds = {event_type: pred.numpy()
-                         for event_type, pred in preds.items()}
+                preds = {event_type: pred.numpy() for event_type, pred in preds.items()}
         else:
             if not return_dict:
                 preds = {i: p.numpy() for i, p in preds.items()}
@@ -955,7 +775,12 @@ def get_preds(
 
 
 @torch.no_grad()
-def get_preds_from_path(model, params, movie_path, return_dict=False, output_dir=None):
+def get_preds_from_path(  # TODO: vedere se si può eliminare e tenere solo get_preds
+    model: nn.Module,
+    params: TrainingConfig,
+    movie_path: str,
+    output_dir: Optional[str] = None,
+) -> [Tuple[torch.Tensor, torch.Tensor]]:
     """
     Function to get predictions from a movie path.
 
@@ -975,7 +800,7 @@ def get_preds_from_path(model, params, movie_path, return_dict=False, output_dir
     """
 
     ### Get sample as dataset ###
-    sample_dataset = SparkDatasetPath(
+    sample_dataset = SparkDatasetInference(
         sample_path=movie_path,
         params=params,
         # resampling=False, # It could be implemented later
@@ -1032,73 +857,20 @@ def get_preds_from_path(model, params, movie_path, return_dict=False, output_dir
         return preds_segmentation, preds_instances
 
 
-# def run_samples_in_model(network, device, datasets):
-#     """
-#     Process all movies in the UNet and get predictions and movies as numpy arrays.
-
-#     Args:
-#         network (torch.nn.Module): The trained neural network model.
-#         device (str): The device (e.g., 'cuda' or 'cpu') to run the model on.
-#         datasets (list): A list of test datasets to process.
-
-#     Returns:
-#         xs_all_videos (dict or list): A dictionary of movie data (numpy arrays) with
-#             video names as keys, or a list of movie data if no video names are
-#             available.
-#         ys_all_videos (dict or list): A dictionary of annotation data (numpy arrays)
-#             with video names as keys, or a list of annotation data if no video names
-#             are available.
-#         preds_all_videos (dict or list): A dictionary of predictions (numpy arrays)
-#             with video names as keys, or a list of predictions if no video names are
-#             available.
-#     """
-#     network.eval()
-
-#     if hasattr(datasets[0], "video_name"):
-#         xs_all_videos = {}
-#         ys_all_videos = {}
-#         preds_all_videos = {}
-#     else:
-#         xs_all_videos = []
-#         ys_all_videos = []
-#         preds_all_videos = []
-
-#     for test_dataset in datasets:
-#         # Run sample in UNet and get predictions
-#         xs, ys, preds = get_preds(
-#             network=network,
-#             test_dataset=test_dataset,
-#             device=device,
-#         )
-
-#         # Store results in dictionaries if dataset has a video_name attribute
-#         if hasattr(test_dataset, "video_name"):
-#             xs_all_videos[test_dataset.video_name] = xs
-#             ys_all_videos[test_dataset.video_name] = ys
-#             preds_all_videos[test_dataset.video_name] = preds
-#         else:
-#             # Append results to lists if no video names are available
-#             xs_all_videos.append(xs)
-#             ys_all_videos.append(ys)
-#             preds_all_videos.append(preds)
-
-#     return xs_all_videos, ys_all_videos, preds_all_videos
-
-
 ################################ Test function #################################
 
 
-def test_function(
-    network,
-    device,
-    criterion,
-    params,
-    testing_datasets,
-    training_name,
-    output_dir,
-    training_mode=True,
-    debug=False,
-):
+def test_function(  # da aggiornare in base alla nuova definizione dei datasets
+    network: nn.Module,
+    device: torch.device,
+    criterion: nn.Module,
+    params: TrainingConfig,
+    testing_datasets: List[SparkDataset],
+    training_name: str,
+    output_dir: str,
+    training_mode: bool = True,
+    debug: bool = False,
+) -> None:
     """
     Validate UNet during training.
     Output segmentation is computed using argmax values and Otsu threshold (to
@@ -1188,8 +960,7 @@ def test_function(
         # TODO: remove ignored frames as well?
         ignore_mask = np.where(ys == config.ignore_index, 1, 0)
 
-        logger.debug(
-            f"Time to re-organise annotations: {time.time() - start:.2f} s")
+        logger.debug(f"Time to re-organise annotations: {time.time() - start:.2f} s")
 
         ######################### Get processed output #########################
 
@@ -1214,8 +985,7 @@ def test_function(
 
         # Stack annotations and remove marginal frames
         ys_concat.append(
-            trim_and_pad_video(
-                video=ys, n_margin_frames=params.ignore_frames_loss)
+            trim_and_pad_video(video=ys, n_margin_frames=params.ignore_frames_loss)
         )
 
         # Stack preds and remove marginal frames
@@ -1230,8 +1000,7 @@ def test_function(
             )
         )
 
-        logger.debug(
-            f"Time to process predictions: {time.time() - start:.2f} s")
+        logger.debug(f"Time to process predictions: {time.time() - start:.2f} s")
 
         ############### Compute pairwise scores (based on IoMin) ###############
 
@@ -1264,8 +1033,7 @@ def test_function(
             score="iomin",
         )
 
-        logger.debug(
-            f"Time to compute pairwise scores: {time.time() - start:.2f} s")
+        logger.debug(f"Time to compute pairwise scores: {time.time() - start:.2f} s")
 
         ####################### Get matches summary #######################
 
@@ -1286,18 +1054,14 @@ def test_function(
                 continue
             tot_preds[ca_event] += len(matched_preds_ids[ca_event]["tot"])
             tp_preds[ca_event] += len(matched_preds_ids[ca_event]["tp"])
-            ignored_preds[ca_event] += len(
-                matched_preds_ids[ca_event]["ignored"])
-            unlabeled_preds[ca_event] += len(
-                matched_preds_ids[ca_event]["unlabeled"])
+            ignored_preds[ca_event] += len(matched_preds_ids[ca_event]["ignored"])
+            unlabeled_preds[ca_event] += len(matched_preds_ids[ca_event]["unlabeled"])
 
             tot_ys[ca_event] += len(matched_ys_ids[ca_event]["tot"])
             tp_ys[ca_event] += len(matched_ys_ids[ca_event]["tp"])
-            undetected_ys[ca_event] += len(matched_ys_ids[ca_event]
-                                           ["undetected"])
+            undetected_ys[ca_event] += len(matched_ys_ids[ca_event]["undetected"])
 
-        logger.debug(
-            f"Time to get matches summary: {time.time() - start:.2f} s")
+        logger.debug(f"Time to get matches summary: {time.time() - start:.2f} s")
 
     ############################## Reduce metrics ##############################
 
@@ -1383,3 +1147,159 @@ def test_function(
     logger.debug(f"Time to reduce metrics: {time.time() - start:.2f} s")
 
     return metrics
+
+
+########################### Custom training manager ############################
+
+
+class MyTrainingManager(unet.TrainingManager):
+    """
+    Custom training manager for deep learning training.
+    """
+
+    def run_validation(self, wandb_log: bool = False) -> None:
+        """
+        Run validation on the network and log the results.
+
+        Args:
+            wandb_log (bool, optional): Whether to log results to WandB.
+                    Defaults to False.
+        """
+
+        if self.test_function is None:
+            return
+
+        logger.info(f"Validating network at iteration {self.iter}...")
+
+        test_output = self.test_function(self.iter)
+
+        if wandb_log:
+            self.log_test_metrics_to_wandb(test_output)
+
+        self.log_metrics(test_output, "Metrics:")
+
+        _write_results(self.summary, "testing", test_output, self.iter)
+
+    def train(
+        self,
+        num_iters: int,
+        print_every: int = 0,
+        maxtime: float = np.inf,
+        wandb_log: bool = False,
+    ) -> None:
+        """
+        Train the deep learning model.
+
+        Args:
+            num_iters (int): Number of training iterations.
+            print_every (int, optional): Print training information every
+                'print_every' iterations. Defaults to 0.
+            maxtime (float, optional): Maximum training time in seconds.
+                Defaults to np.inf.
+            wandb_log (bool, optional): Whether to log results to WandB.
+                Defaults to False.
+        """
+        tic = time.process_time()
+        time_elapsed = 0
+
+        loss_sum = 0  # for wandb
+
+        for _ in range(num_iters):
+            step_output = self.training_step(self.iter)
+
+            if wandb_log:
+                loss_sum += step_output["loss"].item()
+
+            time_elapsed = time.process_time() - tic
+
+            if print_every and self.iter % print_every == 0:
+                self.log_training_info(step_output, time_elapsed)
+
+                # Log to wandb
+                if wandb_log:
+                    wandb.log(
+                        {
+                            "U-Net training loss": loss_sum / print_every
+                            if self.iter > 0
+                            else loss_sum
+                        },
+                        step=self.iter,
+                    )
+                    loss_sum = 0
+
+            self.iter += 1
+
+            # Validation
+            if self.test_every and self.iter % self.test_every == 0:
+                self.run_validation(wandb_log=wandb_log)
+
+            # Plot
+            if (
+                self.plot_function
+                and self.plot_every
+                and self.iter % self.plot_every == 0
+            ):
+                self.plot_function(self.iter, self.summary)
+
+            # Save model and solver
+            if self.save_every and self.iter % self.save_every == 0:
+                self.save()
+
+            if time_elapsed > maxtime:
+                logger.info("Maximum time reached!")
+                break
+
+    def log_test_metrics_to_wandb(self, test_output: Dict[str, float]) -> None:
+        """
+        Log test metrics to WandB.
+
+        Args:
+            test_output (dict): Dictionary of test metrics.
+        """
+        wandb.log(
+            {m: val for m, val in test_output.items() if "confusion_matrix" not in m},
+            step=self.iter,
+        )
+
+    def log_metrics(
+        self, metrics_dict: Dict[str, float], header: str = "Metrics:"
+    ) -> None:
+        """
+        Log metrics to the logger.
+
+        Args:
+            metrics_dict (dict): Dictionary of metrics.
+            header (str, optional): Header for the metrics section.
+                Defaults to "Metrics:".
+        """
+        logger.info(header)
+        for metric_name, metric_value in metrics_dict.items():
+            if "confusion_matrix" in metric_name:
+                with np.printoptions(precision=0, suppress=True):
+                    logger.info(f"\t{metric_name}:\n{metric_value:}")
+            else:
+                logger.info(f"\t{metric_name}: {metric_value:.4g}")
+
+    def log_training_info(
+        self, step_output: Dict[str, torch.Tensor], time_elapsed: float
+    ) -> None:
+        """
+        Log training information to the logger.
+
+        Args:
+            step_output (dict): Output from the training step.
+            time_elapsed (float): Elapsed time for the current iteration.
+        """
+        # Register data
+        _write_results(self.summary, "training", step_output, self.iter)
+        loss = step_output["loss"].item()  # Move loss value to cpu
+
+        # Check for nan
+        if np.any(np.isnan(loss)):
+            logger.error("Last loss is nan! Training diverged!")
+            return
+
+        # Log training loss
+        logger.info(f"Iteration {self.iter}...")
+        logger.info(f"\tTraining loss: {loss:.4g}")
+        logger.info(f"\tTime elapsed: {time_elapsed:.2f}s")

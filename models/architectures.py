@@ -2,17 +2,18 @@
 Script containing the architectures tried in the experiments.
 
 Author: Prisca Dotti
-Last modified: 02.10.2023
+Last modified: 11.10.2023
 """
 
 import logging
+from typing import List, Tuple, Type, Union
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from . import UNet as unet
-from .UNet.unet.network import crop_and_merge
+from models import UNet as unet
+from models.UNet.unet.network import crop_and_merge
 
 ### temporal reducion unet ###
 
@@ -22,7 +23,7 @@ __all__ = ["TempRedUNet", "UNetConvLSTM", "ConvLSTM", "ConvLSTMCell"]
 
 
 class TempRedUNet(nn.Module):
-    def __init__(self, unet_config):
+    def __init__(self, unet_config: unet.UNetConfig) -> None:
         super().__init__()
 
         padding = {"valid": 0, "same": unet_config.dilation}[unet_config.border_mode]
@@ -53,14 +54,11 @@ class TempRedUNet(nn.Module):
 
         self.unet = unet.UNetClassifier(unet_config)
 
-    def forward(self, x):
-        # print("input shape", x.shape)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = self.conv3(x)
-        # print("unet input shape", x.shape)
         x = self.unet(x)
-        # print("output shape", x.shape)
         return x
 
 
@@ -69,7 +67,13 @@ class TempRedUNet(nn.Module):
 
 # define convLSTM
 class ConvLSTMCell(nn.Module):
-    def __init__(self, input_channels, hidden_channels, kernel_size, bias):
+    def __init__(
+        self,
+        input_channels: int,
+        hidden_channels: int,
+        kernel_size: Union[int, Tuple[int, int]],
+        bias: bool = True,
+    ) -> None:
         super().__init__()
 
         if isinstance(kernel_size, int):
@@ -98,7 +102,11 @@ class ConvLSTMCell(nn.Module):
 
         # self.conv.weight.data.normal_(0, 0.01)
 
-    def forward(self, input, hidden_state):
+    def forward(
+        self,
+        input: torch.Tensor,
+        hidden_state: Tuple[torch.Tensor, torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         hidden, cell = hidden_state
 
         # concatenate along channel axis
@@ -118,7 +126,9 @@ class ConvLSTMCell(nn.Module):
 
         return hidden, cell
 
-    def _init_hidden(self, batch_size, image_size):
+    def _init_hidden(
+        self, batch_size: int, image_size: Tuple[int, int]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         height, width = image_size
         return (
             torch.zeros(
@@ -137,7 +147,7 @@ class ConvLSTMCell(nn.Module):
             ),
         )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "ConvLSTMCell(input_channels={}, hidden_channels={}, kernel_size={})".format(
             self.input_channels, self.hidden_channels, self.kernel_size
         )
@@ -173,13 +183,13 @@ class ConvLSTM(nn.Module):
 
     def __init__(
         self,
-        input_channels,
-        hidden_channels,
-        kernel_size,
-        num_layers,
-        batch_first=False,
-        bias=True,
-    ):
+        input_channels: int,
+        hidden_channels: List[int],
+        kernel_size: Union[int, Tuple[int, int]],
+        num_layers: int,
+        batch_first: bool = False,
+        bias: bool = True,
+    ) -> None:
         super().__init__()
 
         self._check_kernel_size_consistency(kernel_size)
@@ -212,7 +222,11 @@ class ConvLSTM(nn.Module):
 
         self.cell_list = nn.ModuleList(cell_list)
 
-    def forward(self, input_tensor, hidden_state=None):
+    def forward(
+        self,
+        input_tensor: torch.Tensor,
+        hidden_state: List[Tuple[torch.Tensor, torch.Tensor]] = [],
+    ) -> Tuple[List[torch.Tensor], List[Tuple[torch.Tensor, torch.Tensor]]]:
         """
 
         Parameters
@@ -233,7 +247,7 @@ class ConvLSTM(nn.Module):
         b, _, _, h, w = input_tensor.size()
 
         # Implement stateful ConvLSTM
-        if hidden_state is None:
+        if len(hidden_state) == 0:
             # Since the init is done in forward. Can send image size here
             hidden_state = self._init_hidden(batch_size=b, image_size=(h, w))
 
@@ -274,14 +288,18 @@ class ConvLSTM(nn.Module):
 
         return layer_output, last_state_list
 
-    def _init_hidden(self, batch_size, image_size):
+    def _init_hidden(
+        self, batch_size: int, image_size: Tuple[int, int]
+    ) -> List[Tuple[torch.Tensor, torch.Tensor]]:
         init_states = []
         for i in range(self.num_layers):
             init_states.append(self.cell_list[i]._init_hidden(batch_size, image_size))
         return init_states
 
     @staticmethod
-    def _check_kernel_size_consistency(kernel_size):
+    def _check_kernel_size_consistency(
+        kernel_size: Union[int, Tuple[int, int]]
+    ) -> None:
         if not (
             isinstance(kernel_size, tuple)
             or (
@@ -292,7 +310,9 @@ class ConvLSTM(nn.Module):
             raise ValueError("`kernel_size` must be tuple or list of tuples")
 
     @staticmethod
-    def _extend_for_multilayer(param, num_layers):
+    def _extend_for_multilayer(
+        param: Union[int, List[int]], num_layers: int
+    ) -> List[int]:
         if not isinstance(param, list):
             param = [param] * num_layers
         return param
@@ -300,7 +320,7 @@ class ConvLSTM(nn.Module):
 
 class UNetConvLSTM(unet.UNet):
     # for the moment just copy the parent class
-    def __init__(self, config, bidirectional=False):
+    def __init__(self, config: unet.UNetConfig, bidirectional: bool = False) -> None:
         super().__init__(config)
 
         # check that the number of dimensions is 3
@@ -343,7 +363,9 @@ class UNetConvLSTM(unet.UNet):
 
     # define wrappers to compute 2D layers on each timestep of the 3D input
 
-    def _wrapper_conv_layer(self, layer, x):
+    def _wrapper_conv_layer(
+        self, layer: Type[nn.Module], x: torch.Tensor
+    ) -> torch.Tensor:
         b, _, t, h, w = x.shape
         out_shape = (b, layer.layers[0].out_channels, t, h, w)
         output = torch.zeros(out_shape, device=x.device)
@@ -353,7 +375,7 @@ class UNetConvLSTM(unet.UNet):
 
         return output
 
-    def _wrapper_down_maxpool(self, x):
+    def _wrapper_down_maxpool(self, x: torch.Tensor) -> torch.Tensor:
         b, c, t, h, w = x.shape
         denom = self.max_pool.kernel_size
         out_shape = (b, c, t, h // denom, w // denom)
@@ -364,7 +386,9 @@ class UNetConvLSTM(unet.UNet):
 
         return output
 
-    def _wrapper_upconv_layer(self, layer, x):
+    def _wrapper_upconv_layer(
+        self, layer: Type[nn.Module], x: torch.Tensor
+    ) -> torch.Tensor:
         b, _, t, h, w = x.shape
         coeff = layer.stride[0]
         out_shape = (b, layer.out_channels, t, h * coeff, w * coeff)
@@ -375,7 +399,7 @@ class UNetConvLSTM(unet.UNet):
 
         return output
 
-    def _wrapper_conv_bidirectional(self, x):
+    def _wrapper_conv_bidirectional(self, x: torch.Tensor) -> torch.Tensor:
         b, _, t, h, w = x.shape
         out_shape = (b, self.conv_bidirectional.out_channels, t, h, w)
         output = torch.zeros(out_shape, device=x.device)
@@ -387,8 +411,8 @@ class UNetConvLSTM(unet.UNet):
 
     def forward(
         self,
-        x,
-    ):
+        x: torch.Tensor,
+    ) -> torch.Tensor:
         # x is B 1 T H W
         x = self._wrapper_conv_layer(self.down_path[0], x)
 
