@@ -2,7 +2,7 @@
 Functions that are used during the training of the neural network model.
 
 Author: Prisca Dotti
-Last modified: 13.10.2023
+Last modified: 17.10.2023
 """
 
 import logging
@@ -14,12 +14,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.data
+import wandb
 from scipy import ndimage as ndi
 from torch import nn
 
-import wandb
 from config import TrainingConfig, config
-from data.data_processing_tools import process_raw_predictions
+from data.data_processing_tools import process_raw_predictions, remove_padding
 from data.datasets import SparkDataset, SparkDatasetInference
 from models.UNet import unet
 from models.UNet.unet.trainer import _write_results
@@ -34,7 +34,14 @@ __all__ = [
     "compute_class_weights",
     "compute_class_weights_instances",
     "weights_init",
+    "run_dataloader_in_network",
     "do_inference",
+    "max_inference",
+    "gaussian_inference",
+    "average_inference",
+    "from_chunks_to_frames",
+    "get_half_overlap",
+    "overlap_inference",
     "get_raw_preds_dict",
     "test_function",
     "get_preds_from_path",
@@ -164,7 +171,7 @@ def sampler(dataset_loader: torch.utils.data.DataLoader) -> dict:
 ####################### Functions for data augmentation ########################
 
 
-class TransformedSparkDataset(unet.TransformedDataset):
+class TransformedSparkDataset(unet.TransformedDataset, SparkDataset):
     def __getitem__(self, idx: int) -> dict:
         value_dict = self.source_dataset[idx]  # dict with keys 'data', 'labels', etc.
         x = value_dict["data"]
@@ -353,6 +360,165 @@ def weights_init(m: nn.Module) -> None:
 ############################### Inference tools ################################
 
 
+@torch.no_grad()
+def do_inference(
+    network: nn.Module,
+    params: TrainingConfig,
+    dataloader: torch.utils.data.DataLoader,
+    device: torch.device,
+    compute_loss: bool = False,
+    inference_types: List[str] = [],
+) -> Dict[int, Dict[str, np.ndarray]]:
+    """
+    Given a trained network and a dataloader, run the data through the network
+    and perform inference. The inference is done using different methods, which
+    are specified in the inference_types list. The returned predictions are also
+    cropped to the original duration of the movie.
+
+
+    Args:
+        network (nn.Module): The trained neural network model.
+        params (TrainingConfig): Configuration parameters for the selected
+            model/training.
+        dataloader (torch.utils.data.DataLoader): Dataloader for input data.
+        device (torch.device): The device on which to perform inference.
+        compute_loss (bool, optional): If True, get the logit values instead of
+            the probabilities. Defaults to False.
+        inference_types (List[str], optional): List of inference types to apply.
+
+    Returns:
+        Dict[int, Dict[str, np.ndarray]]: A dictionary mapping movie IDs to
+        dictionaries of inference type to predictions.
+    """
+    if len(inference_types) == 0:
+        inference_types = [params.inference]
+
+    # Loop over batches and store results and original duration for each movie
+    preds_per_movie, original_duration_per_movie = run_dataloader_in_network(
+        network=network,
+        dataloader=dataloader,
+        device=device,
+        compute_loss=compute_loss,
+    )
+
+    # Loop over movies and compute the predictions for each inference type
+    preds_all_movies_all_inferences = {}
+    for movie_id in preds_per_movie.keys():
+        # Initialize dict for storing the predictions for each inference type
+        preds_all_inferences = {}
+
+        # Concatenate the predictions for each movie using different types of inference
+        for inference_type in inference_types:
+            if inference_type == "overlap":
+                # This is the default inference type used in training, it works
+                # better than the others.
+
+                half_overlap = get_half_overlap(
+                    data_duration=params.data_duration,
+                    data_stride=params.data_stride,
+                    temporal_reduction=params.temporal_reduction,
+                    num_channels=params.num_channels,
+                )
+
+                combined_preds = overlap_inference(
+                    movie_preds=preds_per_movie[movie_id],
+                    half_overlap=half_overlap,
+                )
+            else:
+                # For the other inference types (average, gaussian, max), we
+                # need to keep track of the predictions corresponding to each
+                # frame in the movie.
+
+                frame_predictions = from_chunks_to_frames(
+                    prediction_chunks=preds_per_movie[movie_id],
+                    data_stride=params.data_stride,
+                )
+
+                if inference_type == "average":
+                    combined_preds = average_inference(frame_preds=frame_predictions)
+                elif inference_type == "gaussian":
+                    combined_preds = gaussian_inference(frame_preds=frame_predictions)
+                elif inference_type == "max":
+                    combined_preds = max_inference(frame_preds=frame_predictions)
+                else:
+                    raise ValueError(f"Unsupported inference type: {inference_type}")
+
+            # Crop the predictions to the original duration of the movie
+            combined_preds = remove_padding(
+                preds=combined_preds,
+                original_duration=original_duration_per_movie[movie_id],
+            )
+
+            # Convert the predictions to a numpy array
+            combined_preds = combined_preds.cpu().numpy()
+
+            preds_all_inferences[inference_type] = combined_preds
+
+        # Store the predictions for the movie
+        preds_all_movies_all_inferences[movie_id] = preds_all_inferences
+
+    return preds_all_movies_all_inferences
+
+
+@torch.no_grad()
+def run_dataloader_in_network(
+    network: nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    device: torch.device,
+    compute_loss: bool = False,
+) -> Tuple[Dict[int, List[torch.Tensor]], Dict[int, int]]:
+    """
+    Run the data through the network using the specified dataloader.
+
+    Args:
+        network (nn.Module): The neural network model.
+        dataloader (torch.utils.data.DataLoader): Dataloader for input data.
+        device (torch.device): The device on which to perform inference.
+        compute_loss (bool, optional): If True, get the logit values instead of
+            the probabilities. Defaults to False.
+
+    Returns:
+        Tuple[Dict[str, torch.Tensor], Dict[str, int]]: A tuple containing two
+        dictionaries:
+        - predictions_per_movie: A dictionary mapping movie IDs to lists of
+            predictions (per chunk).
+        - original_duration_per_movie: A dictionary mapping movie IDs to their
+            original durations.
+    """
+    network.to(device)
+    network.eval()
+
+    # Loop over batches and store results and original duration for each movie
+    predictions_per_movie = {}
+    original_duration_per_movie = {}
+
+    for batch in dataloader:
+        batch_movie_ids = batch["movie_id"]
+        batch_data = batch["data"].to(device, non_blocking=True)
+
+        # Run the network on the batch
+        batch_preds = network(batch_data[:, None])
+
+        if not compute_loss:
+            # If computing loss, use logit values; otherwise, compute
+            # probabilities because it reduces the errors due to floating point
+            # precision.
+            batch_preds = torch.exp(batch_preds)
+
+        # Add each movie_id in the batch to the dict if not already present
+        for i, movie_id in enumerate(batch_movie_ids):
+            movie_id = movie_id.item()
+            if movie_id not in predictions_per_movie.keys():
+                predictions_per_movie[movie_id] = []
+                original_duration_per_movie[movie_id] = batch["original_duration"][
+                    i
+                ].item()
+
+            predictions_per_movie[movie_id].append(batch_preds[i])
+
+    return predictions_per_movie, original_duration_per_movie
+
+
 def detect_nan_sample(x: torch.Tensor, y: torch.Tensor) -> None:
     """
     Detect NaN values in input tensors (x) and annotation tensors (y).
@@ -371,6 +537,166 @@ def detect_nan_sample(x: torch.Tensor, y: torch.Tensor) -> None:
                     torch.isnan(y).any()
                 )
             )
+
+
+def from_chunks_to_frames(
+    prediction_chunks: List[torch.Tensor], data_stride: int
+) -> List[List[torch.Tensor]]:
+    """
+    Convert chunk predictions to frame predictions (for the inference types
+    average, gaussian, and max we need to keep track of the predictions
+    corresponding to each frame in the movie.)
+
+    Args:
+        prediction_chunks (List[torch.Tensor]): List of chunk predictions.
+        data_stride (int): Stride between chunks.
+
+    Returns:
+        List[List[torch.Tensor]]: Frame predictions for each frame in the movie.
+    """
+    n_chunks = len(prediction_chunks)
+    window_size = prediction_chunks[0].size(1)
+
+    # Calculate the total number of frames in the movie
+    total_frames = window_size + (n_chunks - 1) * data_stride
+
+    # Initialize an empty list to store predictions associated with each frame
+    frame_predictions: List[List[torch.Tensor]] = [[] for _ in range(total_frames)]
+
+    # Loop through the list of prediction chunks
+    for chunk_id, chunk in enumerate(prediction_chunks):
+        # chunk has shape (n_classes, window_size, height, width)
+
+        # Calculate the start index in the movie
+        start_frame = chunk_id * data_stride
+
+        # Loop through the frames in the chunk and append them to the list
+        for frame_id in range(window_size):
+            # Calculate the frame index in the movie
+            frame_index = start_frame + frame_id
+
+            # Get the prediction for the frame
+            frame_prediction = chunk[:, frame_id]
+
+            # Append the prediction to the list
+            frame_predictions[frame_index].append(frame_prediction)
+
+    return frame_predictions
+
+
+def overlap_inference(
+    movie_preds: List[torch.Tensor], half_overlap: int
+) -> torch.Tensor:
+    """
+    Perform overlap inference on a list of chunk predictions.
+
+    Args:
+        movie_preds (List[torch.Tensor]): List of chunk predictions.
+        half_overlap (int): The half overlap value.
+
+    Returns:
+        torch.Tensor: Combined predictions after overlap inference.
+    """
+    n_chunks = len(movie_preds)
+
+    # Loop over chunks
+    preds_list = []
+    for i, chunk_pred in enumerate(movie_preds):
+        # Define start and end of used frames in chunks
+        start_mask = 0 if i == 0 else half_overlap
+        end_mask = None if i + 1 == n_chunks else -half_overlap
+
+        if chunk_pred.ndim == 4:
+            preds_list.append(chunk_pred[:, start_mask:end_mask])
+        else:
+            preds_list.append(chunk_pred[:, None])
+
+    # Concatenate the tensors of the predictions
+    concatenated_preds = torch.cat(preds_list, dim=1)
+
+    return concatenated_preds
+
+
+def get_half_overlap(
+    data_duration: int,
+    data_stride: int,
+    temporal_reduction: bool = False,
+    num_channels: int = 0,
+) -> int:
+    """
+    Calculate the half overlap value for overlap inference.
+
+    Args:
+        data_duration (int): Duration of the input data.
+        data_stride (int): Stride between chunks.
+        temporal_reduction (bool, optional): Whether temporal reduction is used.
+        num_channels (int, optional): Number of channels in the input data (only
+            used with temporal reduction).
+
+    Returns:
+        int: The half overlap value.
+    """
+    # Check and set up overlap inference
+    if (data_duration - data_stride) % 2 == 0:
+        half_overlap = (data_duration - data_stride) // 2
+    else:
+        raise ValueError(
+            "data_duration - data_stride must be even for overlap inference."
+        )
+
+    # Adapt half_overlap duration if using temporal reduction
+    if temporal_reduction:
+        if half_overlap % num_channels == 0:
+            half_overlap_mask = half_overlap // num_channels
+        else:
+            raise ValueError(
+                "half_overlap must be divisible by num_channels for temporal reduction."
+            )
+    else:
+        half_overlap_mask = half_overlap
+
+    return half_overlap_mask
+
+
+def average_inference(frame_preds: List[List[torch.Tensor]]) -> torch.Tensor:
+    """
+    Combine frame predictions using the average method.
+
+    Args:
+        frame_preds (List[List[torch.Tensor]]): List of frame predictions.
+
+    Returns:
+        torch.Tensor: Averaged frame predictions.
+    """
+    averaged_preds = [torch.stack(p).mean(dim=0) for p in frame_preds]
+
+    # Convert the list to a tensor
+    averaged_preds = torch.stack(averaged_preds)
+    averaged_preds = averaged_preds.swapaxes(0, 1)
+
+    return averaged_preds
+
+
+def gaussian_inference(frame_preds: List[List[torch.Tensor]]) -> torch.Tensor:
+    """
+    Combine frame predictions using the Gaussian method.
+
+    Args:
+        frame_preds (List[List[torch.Tensor]]): List of frame predictions.
+
+    Returns:
+        torch.Tensor: Gaussian-combined frame predictions.
+    """
+    gaussian_preds = [
+        (torch.stack(p) * gaussian(len(p)).view(-1, 1, 1, 1)).sum(dim=0)
+        for p in frame_preds
+    ]
+
+    # Convert the list to a tensor
+    gaussian_preds = torch.stack(gaussian_preds)
+    gaussian_preds = gaussian_preds.swapaxes(0, 1)
+
+    return gaussian_preds
 
 
 def gaussian(n_chunks: int) -> torch.Tensor:
@@ -392,195 +718,39 @@ def gaussian(n_chunks: int) -> torch.Tensor:
     return torch.as_tensor(res / res.sum())
 
 
-@torch.no_grad()
-def do_inference(
-    network: nn.Module,
-    params: TrainingConfig,
-    test_dataloader: torch.utils.data.DataLoader,
-    device: torch.device,
-    compute_loss: bool = False,
-    inference_types: List[str] = [],
-    return_dict: bool = False,
-) -> torch.Tensor:
+def max_inference(frame_preds: List[List[torch.Tensor]]) -> torch.Tensor:
     """
-    Given a trained network and a dataloader, run the data through the network
-    and perform inference.
+    Combine frame predictions using the max method, keeping the class with the
+    highest probability per pixel.
 
-    TODO
+    Args:
+        frame_preds (List[List[torch.Tensor]]): List of frame predictions.
+
+    Returns:
+        torch.Tensor: Max-combined frame predictions.
     """
+    max_preds = []
+    for p in frame_preds:
+        p = torch.stack(p)
 
-    chunk_idx = 0
+        # Get the max probability for each pixel
+        max_ids = p.max(dim=1)[0].max(dim=0)[1]
+        # View as a list of pixels and expand to frame size
+        max_ids = max_ids.view(-1)[None, None, :].expand(p.size(0), p.size(1), -1)
 
-    if len(inference_types) == 0:
-        inference_types = [params.inference]
-
-    # Move network to device
-    network.to(device)
-
-    # Set network to evaluation mode
-    network.eval()
-
-    # Initialize dictionary with predictions
-    preds = {i: [] for i in inference_types}
-
-    if "overlap" in inference_types:
-        # This is the default inference type used in training, it works
-        # better than the others.
-
-        # Check and set up overlap inference
-        assert (
-            params.data_duration - params.data_stride
-        ) % 2 == 0, "(duration-step) is not even in overlap inference"
-        half_overlap = (params.data_duration - params.data_stride) // 2
-
-        # Adapt half_overlap duration if using temporal reduction
-        if params.temporal_reduction:
-            assert half_overlap % params.num_channels == 0, (
-                "With temporal reduction half_overlap must be "
-                "a multiple of num_channels"
-            )
-
-            half_overlap_mask = half_overlap // params.num_channels
-        else:
-            half_overlap_mask = half_overlap
-
-        preds["overlap"] = []
-        n_chunks = len(test_dataloader)
-
-    if (
-        "average" in inference_types
-        or "max" in inference_types
-        or "gaussian" in inference_types
-    ):
-        movie_duration = params.data[0].shape[0]
-
-        # Initialize dict with list of predictions for each frame
-        output_frames = {idx: [] for idx in range(movie_duration)}
-        chunks = params.get_chunks(params.lengths[0], params.step, params.duration)
-
-    for sample in test_dataloader:
-        x = sample["data"]
-
-        # Calculate the required padding for both height and width:
-        _, _, h, w = x.shape
-        net_steps = network.module.config.steps
-        h_pad = max(2**net_steps - h % 2**net_steps, 0)
-        w_pad = max(2**net_steps - w % 2**net_steps, 0)
-
-        # Pad the input tensor once with calculated padding values
-        x = F.pad(
-            x, (w_pad // 2, w_pad // 2 + w_pad % 2, h_pad // 2, h_pad // 2 + h_pad % 2)
+        # View p as a list of pixels and gather predictions for each pixel
+        # according to the chunk with the highest probability
+        max_preds.append(
+            p.view(p.size(0), p.size(1), -1)
+            .gather(dim=0, index=max_ids)
+            .view(*p.size())[0]
         )
 
-        # Send input tensor to the specified device
-        x = x.to(device, non_blocking=True)
-        batch_preds = network(x[:, None]).cpu()
-        # b x 4 x d x 64 x 512 with 3D-UNet
-        # b x 4 x 64 x 512 with LSTM-UNet -> not implemented yet
+    # Convert the list to a tensor
+    max_preds = torch.stack(max_preds)
+    max_preds = max_preds.swapaxes(0, 1)
 
-        # Crop the output tensor based on the padding
-        crop_h_start = h_pad // 2
-        crop_h_end = -(h_pad // 2 + h_pad % 2) if h_pad > 0 else None
-        crop_w_start = w_pad // 2
-        crop_w_end = -(w_pad // 2 + w_pad % 2) if w_pad > 0 else None
-        batch_preds = batch_preds[
-            :, :, :, crop_h_start:crop_h_end, crop_w_start:crop_w_end
-        ]
-
-        if not compute_loss:
-            # If computing loss, use logit values; otherwise, compute probabilities
-            # because it reduces the errors due to floating point precision
-            batch_preds = torch.exp(batch_preds)  # Convert to probabilities
-
-        for pred in batch_preds:
-            if "overlap" in inference_types:
-                # Define start and end of used frames in chunks
-                start_mask = 0 if chunk_idx == 0 else half_overlap_mask
-                end_mask = None if chunk_idx + 1 == n_chunks else -half_overlap_mask
-
-                if pred.ndim == 4:
-                    preds["overlap"].append(pred[:, start_mask:end_mask])
-                else:
-                    preds["overlap"].append(pred[:, None])
-
-            if (
-                "average" in inference_types
-                or "max" in inference_types
-                or "gaussian" in inference_types
-            ):
-                # List of movie frame IDs in the chunk
-                chunk_frames = chunks[chunk_idx].tolist()
-
-                for idx, frame_idx in enumerate(chunk_frames):
-                    # idx: index of the frame in the chunk
-                    # frame_idx: index of the frame in the movie
-                    output_frames[frame_idx].append(pred[:, idx])
-
-            chunk_idx += 1
-
-    if "overlap" in inference_types:
-        # Concatenate predictions for a single video
-        preds["overlap"] = torch.cat(preds["overlap"], dim=1)
-
-    if (
-        "average" in inference_types
-        or "max" in inference_types
-        or "gaussian" in inference_types
-    ):
-        # Combine predictions from all chunks for each frame
-
-        if "average" in inference_types:
-            # Average predictions from all chunks
-            preds["average"] = [
-                torch.stack(p).mean(dim=0) for p in output_frames.values()
-            ]
-
-        if "max" in inference_types:
-            # Keep the class with the highest probability for each pixel
-            preds["max"] = []
-            for p in output_frames.values():
-                p = torch.stack(p)
-
-                # Get the max probability for each pixel
-                max_ids = p.max(dim=1)[0].max(dim=0)[1]
-                # View as a list of pixels and expand to frame size
-                max_ids = max_ids.view(-1)[None, None, :].expand(
-                    p.size(0), p.size(1), -1
-                )
-
-                # View p as a list of pixels and gather predictions for each pixel
-                # according to the chunk with the highest probability
-                preds["max"].append(
-                    p.view(p.size(0), p.size(1), -1)
-                    .gather(dim=0, index=max_ids)
-                    .view(*p.size())[0]
-                )
-
-        if "gaussian" in inference_types:
-            # Combine predictions using a Gaussian function
-            preds["gaussian"] = [
-                (torch.stack(p) * gaussian(len(p)).view(-1, 1, 1, 1)).sum(dim=0)
-                for p in output_frames.values()
-            ]
-
-    for i, p in preds.items():
-        if i != "overlap":
-            p = torch.stack(p)
-            p = p.swapaxes(0, 1)
-            preds[i] = p
-
-        # If return_dict is True, return a dictionary with inference type as key
-        # and predictions as value
-        if return_dict:
-            preds_dict = {}
-            for event_type, event_label in config.classes_dict.items():
-                preds_dict[event_type] = p[event_label]
-            preds[i] = preds_dict
-
-    if len(inference_types) == 1:
-        preds = preds[inference_types[0]]
-
-    return preds
+    return max_preds
 
 
 # function to run a test sample (i.e., a test dataset) in the UNet
@@ -653,8 +823,6 @@ def get_raw_preds_dict(
     if pad > 0:
         start_pad = pad // 2
         end_pad = -(pad // 2 + pad % 2)
-        xs = xs[start_pad:end_pad]
-
         xs = xs[start_pad:end_pad]
 
         if test_dataset.temporal_reduction:
@@ -860,6 +1028,9 @@ def get_preds_from_path(  # TODO: vedere se si può eliminare e tenere solo get_
 ################################ Test function #################################
 
 
+# TODO: ormai anche per i test datasets si usa la stessa classe che per il
+# training, quindi devo aggiornare il loop che dalla lista dei datasets
+# andrà a far passare direttamente i vari video contenuti nell'unico dataset.
 def test_function(  # da aggiornare in base alla nuova definizione dei datasets
     network: nn.Module,
     device: torch.device,

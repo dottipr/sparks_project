@@ -2,7 +2,7 @@
 Classes to create training and testing datasets
 
 Author: Prisca Dotti
-Last modified: 10.10.2023
+Last modified: 17.10.2023
 """
 
 import logging
@@ -21,7 +21,7 @@ from torch.utils.data import Dataset
 from torchvision.transforms import GaussianBlur
 
 from config import TrainingConfig, config
-from data.data_processing_tools import detect_spark_peaks
+from data.data_processing_tools import detect_spark_peaks, remove_padding
 from utils.in_out_tools import load_annotations_ids, load_movies_ids
 
 __all__ = [
@@ -112,10 +112,10 @@ class SparkDataset(Dataset):
             load_instances: bool = kwargs.get("load_instances", False)
 
             ### Get video samples and ground truth ###
-            movies = self._get_movies()  # dict of numpy arrays
-            labels = self._get_labels()  # list of numpy arrays
+            movies = self._load_movies()  # dict of numpy arrays
+            labels = self._load_labels()  # list of numpy arrays
             instances = (
-                self._get_instances() if load_instances else []
+                self._load_instances() if load_instances else []
             )  # list of numpy arrays
 
         elif movies:
@@ -199,9 +199,52 @@ class SparkDataset(Dataset):
 
         return sample_dict
 
+    def get_movies(self) -> Dict[int, np.ndarray]:
+        """
+        Returns the processed movies as a dictionary.
+
+        Returns:
+            dict: A dictionary containing the movies used as input to the model.
+        """
+        # Remove padding from the movies
+        movies_numpy = {
+            i: remove_padding(movie, self.original_durations[i]).numpy()
+            for i, movie in enumerate(self.movies)
+        }
+        return movies_numpy
+
+    def get_labels(self) -> Dict[int, np.ndarray]:
+        """
+        Returns the labels as a dictionary.
+
+        Returns:
+            dict: A dictionary containing the original labels used for training
+            and testing.
+        """
+        # Remove padding from the labels
+        labels_numpy = {
+            i: remove_padding(label, self.original_durations[i]).numpy()
+            for i, label in enumerate(self.labels)
+        }
+        return labels_numpy
+
+    def get_instances(self) -> Dict[int, np.ndarray]:
+        """
+        Returns the instances as a dictionary.
+
+        Returns:
+            dict: A dictionary containing the original instances used for
+            training and testing.
+        """
+        # Remove padding from the instances
+        instances_numpy = {
+            i: instance.numpy() for i, instance in enumerate(self.instances)
+        }
+        return instances_numpy
+
     ############################## Private methods #############################
 
-    def _get_movies(self) -> List[np.ndarray]:
+    def _load_movies(self) -> List[np.ndarray]:
         # Load movie data for each sample ID
         movies = load_movies_ids(
             data_folder=self.base_path,
@@ -215,7 +258,7 @@ class SparkDataset(Dataset):
 
         return movies
 
-    def _get_labels(self) -> List[np.ndarray]:
+    def _load_labels(self) -> List[np.ndarray]:
         # preprocess annotations if necessary
         if self.params.sparks_type == "raw":
             mask_names = "class_label"
@@ -240,7 +283,7 @@ class SparkDataset(Dataset):
 
         return labels
 
-    def _get_instances(self) -> List[np.ndarray]:
+    def _load_instances(self) -> List[np.ndarray]:
         # Load single event instances for each sample ID
         instances = load_annotations_ids(
             data_folder=self.base_path,
@@ -354,56 +397,14 @@ class SparkDataset(Dataset):
         return movie
 
     def _adjust_videos_shape(self) -> None:
-        # Pad videos shorter than chunk duration with zeros on both sides
-        self.movies = [self._pad_short_video(video) for video in self.movies]
-        if self.gt_available:
-            self.labels = [
-                self._pad_short_video(mask, padding_value=config.ignore_index)
-                for mask in self.labels
-            ]
-
-        # Pad videos whose length does not match with chunks_duration and
-        # stride params
+        # Pad videos whose length does not match with chunks_duration and stride
+        # params.
         self.movies = [self._pad_extremities_of_video(video) for video in self.movies]
         if self.gt_available:
             self.labels = [
                 self._pad_extremities_of_video(mask, padding_value=config.ignore_index)
                 for mask in self.labels
             ]
-
-    def _pad_short_video(
-        self, video: torch.Tensor, padding_value: int = 0
-    ) -> torch.Tensor:
-        """
-        Pads a video tensor with zeros on both sides if its length is shorter
-        than the specified chunk duration.
-
-        Args:
-            video (torch.Tensor): The video tensor to pad.
-            padding_value (int, optional): The value to use for padding.
-                Defaults to 0.
-
-        Returns:
-            torch.Tensor: The padded video tensor.
-        """
-        padding_length = self.params.data_duration - video.shape[0]
-        if padding_length > 0:
-            video = F.pad(
-                video,
-                (
-                    0,
-                    0,
-                    0,
-                    0,
-                    padding_length // 2,
-                    padding_length // 2 + padding_length % 2,
-                ),
-                "constant",
-                value=padding_value,
-            )
-            assert video.shape[0] == self.params.data_duration, "Padding is wrong"
-            # logger.debug("Added padding to short video")
-        return video
 
     def _pad_extremities_of_video(
         self, video: torch.Tensor, padding_value: int = 0
@@ -419,11 +420,18 @@ class SparkDataset(Dataset):
         Returns:
         - The padded video.
         """
+        video_duration = video.shape[0]
+        chunk_duration = self.params.data_duration
+        stride = self.params.data_stride
 
-        length = video.shape[0]
-        padding_length = self.params.data_stride * math.ceil(
-            (length - self.params.data_duration) / self.params.data_stride
-        ) - (length - self.params.data_duration)
+        # Check if length is shorter than data_duration
+        if video_duration < chunk_duration:
+            padding_length = chunk_duration - video_duration
+        else:
+            padding_length = stride * math.ceil(
+                (video_duration - chunk_duration) / stride
+            ) - (video_duration - chunk_duration)
+
         if padding_length > 0:
             video = F.pad(
                 video,
@@ -438,15 +446,11 @@ class SparkDataset(Dataset):
                 "constant",
                 value=padding_value,
             )
-            length = video.shape[0]
-            # if not mask:
-            #     logger.debug(
-            #         f"Added padding of {padding_length} frames to video with unsuitable duration"
-            #     )
+            video_duration = video.shape[0]
 
         assert (
-            (length - self.params.data_duration) / self.params.data_stride
-        ) % 1 == 0, "padding at end of video is wrong"
+            (video_duration - chunk_duration) / stride
+        ) % 1 == 0, "Padding at end of video is wrong."
 
         return video
 

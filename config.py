@@ -8,7 +8,7 @@ Classes:
                     logging.
 
 Author: Prisca Dotti
-Last modified: 13.10.2023
+Last modified: 15.10.2023
 """
 
 
@@ -21,7 +21,6 @@ from logging.handlers import RotatingFileHandler
 
 import numpy as np
 import torch
-
 import wandb
 
 __all__ = ["config", "TrainingConfig"]
@@ -63,6 +62,7 @@ class ProjectConfig:
             "puffs": 3,
         }
         # note: the class values have to be consecutive
+        self.classes_names = ["sparks", "waves", "puffs"]
 
         self.num_classes = len(self.classes_dict)
         self.ignore_index = self.num_classes + 1  # Label ignored during training
@@ -413,7 +413,7 @@ class TrainingConfig:
             "unet_steps": "6",
             "first_layer_channels": "8",
             "num_channels": "1",
-            "dilation": "",
+            "dilation": "1",
             "border_mode": "same",
             "batch_normalization": "none",
             "temporal_reduction": "",
@@ -442,7 +442,7 @@ class TrainingConfig:
             network_section.get("first_layer_channels", "8")
         )
         self.num_channels = int(network_section.get("num_channels", "1"))
-        self.dilation = bool(network_section.get("dilation", "1"))
+        self.dilation = int(network_section.get("dilation", "1"))
         self.border_mode = network_section.get("border_mode", "same")
         self.batch_normalization = network_section.get("batch_normalization", "none")
         self.temporal_reduction = bool(network_section.get("temporal_reduction", ""))

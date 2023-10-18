@@ -9,24 +9,23 @@ Predictions are saved as:
           results.
 
 Author: Prisca Dotti
-Last modified: 14.10.2023
+Last modified: 18.10.2023
 """
 
 import logging
 import os
-import time
 
 import torch
 from torch import nn
+from torch.utils.data import DataLoader
 
 from config import TrainingConfig, config
-from data import datasets
 from data.data_processing_tools import masks_to_instances_dict, process_raw_predictions
 from utils.in_out_tools import write_videos_on_disk
 
 # from torch.cuda.amp import GradScaler
-from utils.training_inference_tools import get_raw_preds_dict
-from utils.training_script_utils import init_model
+from utils.training_inference_tools import do_inference
+from utils.training_script_utils import init_dataset, init_model
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +33,9 @@ logger = logging.getLogger(__name__)
 def main():
     config.verbosity = 3  # To get debug messages
 
-    ####################### Get training-specific parameters #######################
+    ##################### Get training-specific parameters #####################
 
-    training_name = "final_model"
+    run_name = "final_model"
     config_filename = "config_final_model.ini"
     load_epoch = 100000
 
@@ -52,8 +51,9 @@ def main():
     params = TrainingConfig(
         training_config_file=os.path.join("config_files", config_filename)
     )
-    params.training_name = training_name
-    model_name = f"network_{load_epoch::06d}.pth"
+    if run_name:
+        params.run_name = run_name
+    model_name = f"network_{load_epoch:06d}.pth"
 
     # Print parameters to console if needed
     # params.print_params()
@@ -61,19 +61,20 @@ def main():
     if testing:
         get_final_pred = True
 
-    if get_final_pred:
-        debug = True
+    debug = True if config.verbosity == 3 else False
 
-    ########################### Configure output folder ############################
+    ######################### Configure output folder ##########################
 
-    output_folder = "trainings_validation"  # Same folder for train and test preds
+    output_folder = os.path.join(
+        "evaluation", "inference_script"
+    )  # Same folder for train and test preds
     os.makedirs(output_folder, exist_ok=True)
 
     # Subdirectory of output_folder where predictions are saved.
     # Change this to save results for same model with different inference
     # approaches.
     # output_name = training_name + "_step=2"
-    output_name = params.training_name
+    output_name = params.run_name
 
     save_folder = os.path.join(output_folder, output_name)
     os.makedirs(save_folder, exist_ok=True)
@@ -81,14 +82,14 @@ def main():
         f"Annotations and predictions will be saved on '{save_folder} + inference_type'"
     )
 
-    ########################### Detect GPU, if available ###########################
+    ######################### Detect GPU, if available #########################
 
     params.set_device(device="auto")
     params.display_device_info()
 
-    ######################## Config dataset and UNet model #########################
+    ###################### Config dataset and UNet model #######################
 
-    logger.info(f"Processing training '{params.training_name}'...")
+    logger.info(f"Processing training '{params.run_name}'...")
 
     # Define the sample IDs based on dataset size and usage
     if use_train_data:
@@ -132,12 +133,22 @@ def main():
             ]
         elif params.dataset_size == "minimal":
             sample_ids = ["01"]
+        else:
+            raise ValueError(
+                f"Unknown dataset size '{params.dataset_size}'. "
+                f"Choose between 'full' and 'minimal'."
+            )
     else:
         logger.info("Predicting outputs for testing data")
         if params.dataset_size == "full":
             sample_ids = ["05", "10", "15", "20", "25", "32", "34", "40", "45"]
         elif params.dataset_size == "minimal":
             sample_ids = ["34"]
+        else:
+            raise ValueError(
+                f"Unknown dataset size '{params.dataset_size}'. "
+                f"Choose between 'full' and 'minimal'."
+            )
 
     # Check if the specified dataset path is a directory
     assert os.path.isdir(
@@ -145,6 +156,23 @@ def main():
     ), f'"{params.dataset_path}" is not a directory'
 
     logger.info(f"Using {params.dataset_path} as dataset root path")
+
+    # Create dataset
+    dataset = init_dataset(
+        params=params,
+        sample_ids=sample_ids,
+        inference_dataset=True,
+        print_dataset_info=True,
+    )
+
+    # Create a dataloader
+    dataset_loader = DataLoader(
+        dataset,
+        batch_size=params.inference_batch_size,
+        shuffle=False,
+        num_workers=params.num_workers,
+        pin_memory=params.pin_memory,
+    )
 
     ### Configure UNet ###
 
@@ -154,152 +182,112 @@ def main():
     ### Load UNet model ###
 
     # Path to the saved model checkpoint
-    models_relative_path = "runs/"
-    model_path = os.path.join(models_relative_path, params.training_name, model_name)
+    models_relative_path = os.path.join("models", "saved_models")
+    model_path = os.path.join(models_relative_path, params.run_name, model_name)
 
     # Load the model state dictionary
-    logger.info(f"Loading trained model '{training_name}' at epoch {load_epoch}...")
+    logger.info(f"Loading trained model '{run_name}' at epoch {load_epoch}...")
     network.load_state_dict(torch.load(model_path, map_location=params.device))
     network.eval()
 
-    ############################# Run samples in UNet ##############################
+    ########################### Run samples in UNet ############################
 
-    ############################# Run samples in UNet ##############################
+    if inference_types is None:
+        inference_types = [params.inference]
 
-    input_movies = {}
-    ys = {}
-    ys_instances = {}
-    preds_dict = {}
-    if get_final_pred:
-        preds_instances = {}
-        preds_segmentation = {}
+    # get U-Net's raw predictions
+    raw_preds = do_inference(
+        network=network,
+        params=params,
+        dataloader=dataset_loader,
+        device=params.device,
+        compute_loss=False,
+        inference_types=inference_types,
+    )
 
-    for sample_id in sample_ids:
-        logger.debug(f"Processing sample {sample_id}...")
-        start = time.time()
-        ### Create dataset ###
-        testing_dataset = SparkDataset(
-            base_path=params.dataset_path,
-            sample_ids=[sample_id],
-            testing=testing,
-            params=params,
-            gt_available=True,
-            inference=params.inference,
-        )
+    ############# Get movies and labels (and instances if testing) #############
 
-        logger.info(
-            f"\tTesting dataset of movie {testing_dataset.video_name} "
-            f"contains {len(testing_dataset)} samples."
-        )
+    xs = dataset.get_movies()
+    ys = dataset.get_labels()
 
-        logger.info(f"\tProcessing samples in UNet...")
-        # ys and preds are numpy arrays
-        (
-            input_movies[sample_id],
-            ys[sample_id],
-            preds_dict[sample_id],
-        ) = get_raw_preds_dict(
-            model=network,
-            test_dataset=testing_dataset,
-            params=params,
-            inference_types=inference_types,
-            return_dict=True,
-        )
+    if testing:
+        ys_instances = dataset.get_instances()
 
-        if testing:
-            # get labelled event instances, for validation
-            # ys_instances is a dict with classified event instances, for each class
-            ys_instances[sample_id] = masks_to_instances_dict(
-                instances_mask=testing_dataset.events,
-                labels_mask=ys[sample_id],
+        # convert instance masks to dictionaries
+        ys_instances = {
+            i: masks_to_instances_dict(
+                instances_mask=instances_mask,
+                labels_mask=ys[i],
                 shift_ids=True,
             )
-            # remove ignored events entry from ys_instances
-            ys_instances[sample_id].pop("ignore", None)
+            for i, instances_mask in ys_instances.items()
+        }
 
-            # get pixels labelled with 4
-            # ignore_mask = np.where(ys == 4, 1, 0)
+        # remove ignored events entry from ys_instances
+        for inference in ys_instances:
+            ys_instances[inference].pop("ignore", None)
 
-        if get_final_pred:
-            ######################### get processed output #########################
+    #################### Get processed output (if required) ####################
 
-            logger.debug("Getting processed output (segmentation and instances)")
+    if get_final_pred:
+        logger.debug("Getting processed output (segmentation and instances)")
 
-            # get predicted segmentation and event instances
-            if inference_types is None or len(inference_types) == 1:
-                (
-                    preds_instances[sample_id],
-                    preds_segmentation[sample_id],
-                    _,
-                ) = process_raw_predictions(
-                    raw_preds_dict=preds_dict[sample_id],
-                    input_movie=input_movies[sample_id],
+        final_segmentation_dict = {}
+        final_instances_dict = {}
+        for i in range(len(sample_ids)):
+            movie_segmentation = {}
+            movie_instances = {}
+
+            for inference in inference_types:
+                # transform raw predictions into a dictionary
+                raw_preds_dict = {
+                    event_type: raw_preds[i][inference][event_label]
+                    for event_type, event_label in config.classes_dict
+                }
+
+                preds_instances, preds_segmentation, _ = process_raw_predictions(
+                    raw_preds_dict=raw_preds_dict,
+                    input_movie=xs[i],
                     training_mode=False,
                     debug=debug,
                 )
+
+                movie_segmentation[inference] = preds_segmentation
+                movie_instances[inference] = preds_instances
+
+            final_segmentation_dict[sample_ids[i]] = movie_segmentation
+            final_instances_dict[sample_ids[i]] = movie_instances
+
+    else:
+        final_segmentation_dict = {}
+        final_instances_dict = {}
+
+    ############################ Save preds on disk ############################
+
+    logger.info(f"\tSaving annotations and predictions...")
+
+    for i, sample_id in enumerate(sample_ids):
+        for inference in inference_types:
+            video_name = f"{str(params.load_epoch)}_{sample_id}_{inference}"
+
+            raw_preds_movie = raw_preds[i][inference]
+            if get_final_pred:
+                segmented_preds_movie = final_segmentation_dict[sample_id][inference]
+                instances_preds_movie = final_instances_dict[sample_id][inference]
             else:
-                # initialize empty dicts what will be indexed by inference type
-                preds_instances[sample_id], preds_segmentation[sample_id] = {}, {}
+                segmented_preds_movie = None
+                instances_preds_movie = None
 
-                for i in inference_types:
-                    logger.debug(f"\tProcessing inference type {i}...")
-                    raw_preds_dict = {
-                        "sparks": preds_dict[sample_id][i][1],
-                        "puffs": preds_dict[sample_id][i][3],
-                        "waves": preds_dict[sample_id][i][2],
-                    }
-                    (
-                        preds_instances[sample_id][i],
-                        preds_segmentation[sample_id][i],
-                        _,
-                    ) = process_raw_predictions(
-                        preds_dict=raw_preds_dict,
-                        input_movie=input_movies[sample_id],
-                        training_mode=False,
-                        debug=debug,
-                    )
-
-        if not get_final_pred:
-            logger.info(
-                f"\tTime to process sample {sample_id} in UNet: {time.time() - start:.2f} seconds."
-            )
-        else:
-            logger.info(
-                f"\tTime to process sample {sample_id} in UNet + post-processing: {time.time() - start:.2f} seconds."
-            )
-
-        ### Save preds on disk ###
-        logger.info(f"\tSaving annotations and predictions...")
-
-        video_name = f"{str(params['load_epoch'])}_{testing_dataset.video_name}"
-
-        if inference_types is None or len(inference_types) == 1:
             write_videos_on_disk(
                 training_name=output_name,
                 video_name=video_name,
-                path=save_folder,
-                preds=[
-                    None,
-                    preds_dict[sample_id]["sparks"],
-                    preds_dict[sample_id]["waves"],
-                    preds_dict[sample_id]["puffs"],
-                ],
-                ys=ys[sample_id],
+                path=os.path.join(save_folder, "inference_" + inference),
+                xs=xs[i],
+                ys=ys[i],
+                raw_preds=raw_preds_movie,
+                segmented_preds=segmented_preds_movie,
+                instances_preds=instances_preds_movie,
             )
-        else:
-            for i in inference_types:
-                write_videos_on_disk(
-                    training_name=output_name,
-                    video_name=video_name,
-                    path=os.path.join(save_folder, "inference_" + i),
-                    preds=[
-                        None,
-                        preds_dict[sample_id][i]["sparks"],
-                        preds_dict[sample_id][i]["waves"],
-                        preds_dict[sample_id][i]["puffs"],
-                    ],
-                    ys=ys[sample_id],
-                )
 
     logger.info(f"DONE")
 

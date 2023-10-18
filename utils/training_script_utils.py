@@ -10,7 +10,7 @@ Functions:
     init_criterion: Initialize loss function.
 
 Author: Prisca Dotti
-Last modified: 12.10.2023
+Last modified: 18.10.2023
 """
 import argparse
 import logging
@@ -18,6 +18,7 @@ import os
 from typing import List, Union
 
 from torch import nn
+from torch.utils.data import Dataset
 
 import models.UNet as unet
 import models.unetOpenAI as unet_openai
@@ -28,7 +29,7 @@ from data.datasets import (
     SparkDatasetResampled,
     SparkDatasetTemporalReduction,
 )
-from models.architectures import TempRedUNet, UNetConvLSTM
+from models.architectures import TempRedUNet, UNetConvLSTM, UNetPadWrapper
 from models.new_unet import UNet
 from utils.custom_losses import (
     Dice_CELoss,
@@ -82,15 +83,20 @@ def init_config_file_path() -> str:
 
 
 def init_dataset(
-    params: TrainingConfig, sample_ids: List[str], print_dataset_info: bool = True
-) -> TransformedSparkDataset:
+    params: TrainingConfig,
+    sample_ids: List[str],
+    inference_dataset: bool,
+    print_dataset_info: bool = True,
+) -> SparkDataset:
     """
     Initialize the dataset based on provided parameters and sample IDs.
 
     Args:
         params (TrainingConfig): TrainingConfig instance containing configuration
             parameters.
-        train_sample_ids (list): List of sample IDs for training.
+        sample_ids (list): List of sample IDs for training.
+        inference_dataset (bool): Whether the dataset is for training or not.
+            If False, apply data augmentation to the samples.
         print_dataset_info (bool, optional): Whether to print dataset information.
             Default is True.
 
@@ -123,10 +129,13 @@ def init_dataset(
         logger.error(f"{params.nn_architecture} is not a valid nn architecture.")
         exit()
 
-    # Apply transforms based on noise_data_augmentation setting
-    # (transforms are applied when getting a sample from the dataset)
-    transforms = random_flip_noise if params.noise_data_augmentation else random_flip
-    dataset = TransformedSparkDataset(dataset, transforms)
+    if not inference_dataset:
+        # Apply transforms based on noise_data_augmentation setting
+        # (transforms are applied when getting a sample from the dataset)
+        transforms = (
+            random_flip_noise if params.noise_data_augmentation else random_flip
+        )
+        dataset = TransformedSparkDataset(dataset, transforms)
 
     if print_dataset_info:
         logger.info(f"Samples in training dataset: {len(dataset)}")
@@ -134,6 +143,7 @@ def init_dataset(
     return dataset
 
 
+# TODO: rimuovere da tutti gli scripts che lo usano e correggerli
 def init_testing_dataset(
     params: TrainingConfig, test_sample_ids: List[str], print_dataset_info: bool = True
 ) -> List:
@@ -176,7 +186,7 @@ def init_testing_dataset(
 
     for sample_id in test_sample_ids:
         dataset = DatasetClass(
-            **dataset_args, sample_ids=[sample_id]
+            **dataset_args,
         )  # TODO: aggiornare secondo il nuovo SparkDataset
         testing_datasets.append(dataset)
 
@@ -221,6 +231,9 @@ def init_model(params: TrainingConfig) -> nn.Module:
             ), "using temporal reduction chunks_duration must be a multiple of num_channels"
             network = TempRedUNet(unet_config)
 
+        # Wrap the network so that it can be used with inputs of any frame shape
+        network = UNetPadWrapper(base_model=network, params=params)
+
     elif params.nn_architecture == "github_unet":
         network = UNet(
             in_channels=params.num_channels,
@@ -259,6 +272,9 @@ def init_model(params: TrainingConfig) -> nn.Module:
         )
 
         network = UNetConvLSTM(unet_config, bidirectional=params.bidirectional)
+
+        # Wrap the network so that it can be used with inputs of any frame shape
+        network = UNetPadWrapper(base_model=network, params=params)
 
     elif params.nn_architecture == "openai_unet":
         if params.unet_steps == 4:

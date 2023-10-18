@@ -16,6 +16,7 @@ from typing import Dict, List, Tuple, Union
 
 import cc3d
 import numpy as np
+import torch
 from scipy import ndimage as ndi
 from scipy import signal, spatial
 from scipy.ndimage import binary_fill_holes, median_filter
@@ -35,6 +36,7 @@ __all__ = [
     "annotate_sparks_with_peaks",
     "apply_ignore_regions_to_events",
     "trim_and_pad_video",
+    "remove_padding",
     "exclude_marginal_sparks_coords",
     "get_convex_hull",
     "get_smallest_event",
@@ -337,6 +339,26 @@ def trim_and_pad_video(
     assert np.shape(video) == np.shape(trimmed_video)
 
     return trimmed_video
+
+
+def remove_padding(preds: torch.Tensor, original_duration: int) -> torch.Tensor:
+    """
+    Remove padding from the predictions to match the original duration.
+
+    Args:
+        preds (torch.Tensor): Predictions with padding.
+        original_duration (int): Original duration to crop to.
+
+    Returns:
+        torch.Tensor: Cropped predictions without padding.
+    """
+    pad = preds.size(1) - original_duration
+    if pad > 0:
+        start_pad = pad // 2
+        end_pad = -(pad // 2 + pad % 2)
+        preds = preds[:, start_pad:end_pad]
+
+    return preds
 
 
 def exclude_marginal_sparks_coords(
@@ -741,7 +763,7 @@ def renumber_labelled_mask(labelled_mask: np.ndarray, shift_id: int = 0) -> np.n
 
 def masks_to_instances_dict(
     instances_mask: np.ndarray, labels_mask: np.ndarray, shift_ids: bool = False
-) -> Dict[int, np.ndarray]:
+) -> Dict[str, np.ndarray]:
     """
     Given two integer masks, one with event labels and one with event instances,
     get a dictionary indexed by event labels with values containing the mask of

@@ -2,7 +2,7 @@
 Script containing the architectures tried in the experiments.
 
 Author: Prisca Dotti
-Last modified: 11.10.2023
+Last modified: 16.10.2023
 """
 
 import logging
@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from config import TrainingConfig
 from models import UNet as unet
 from models.UNet.unet.network import crop_and_merge
 
@@ -19,10 +20,43 @@ from models.UNet.unet.network import crop_and_merge
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["TempRedUNet", "UNetConvLSTM", "ConvLSTM", "ConvLSTMCell"]
+__all__ = ["TempRedUNet", "UNetConvLSTM", "ConvLSTM", "ConvLSTMCell", "UNetPadWrapper"]
 
 
-class TempRedUNet(nn.Module):
+class UNetPadWrapper(nn.Module):
+    def __init__(self, base_model: unet.UNet, params: TrainingConfig) -> None:
+        super().__init__()
+        self.base_model = base_model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x.shape[-2]
+        w = x.shape[-1]
+        steps = self.base_model.config.steps
+
+        # Calculate the required padding for both height and width:
+        h_pad = 2**steps - h % 2**steps if h % 2**steps != 0 else 0
+        w_pad = 2**steps - w % 2**steps if w % 2**steps != 0 else 0
+
+        # Pad the input tensor:
+        x = F.pad(
+            x,
+            (w_pad // 2, w_pad // 2 + w_pad % 2, h_pad // 2, h_pad // 2 + h_pad % 2),
+        )
+
+        # Apply the forward pass:
+        x = self.base_model(x)
+
+        # Remove the padding:
+        crop_h_start = h_pad // 2
+        crop_h_end = -(h_pad // 2 + h_pad % 2) if h_pad > 0 else None
+        crop_w_start = w_pad // 2
+        crop_w_end = -(w_pad // 2 + w_pad % 2) if w_pad > 0 else None
+        x = x[..., crop_h_start:crop_h_end, crop_w_start:crop_w_end]
+
+        return x
+
+
+class TempRedUNet(unet.UNet):
     def __init__(self, unet_config: unet.UNetConfig) -> None:
         super().__init__()
 

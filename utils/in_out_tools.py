@@ -156,9 +156,12 @@ def write_videos_on_disk(
     training_name: str,
     video_name: str,
     path: str = "predictions",
+    class_names: List[str] = ["sparks", "waves", "puffs"],
     xs: Optional[np.ndarray] = None,
     ys: Optional[np.ndarray] = None,
-    preds: Optional[np.ndarray] = None,
+    raw_preds: Optional[np.ndarray] = None,
+    segmented_preds: Optional[Dict[int, np.ndarray]] = None,
+    instances_preds: Optional[Dict[int, np.ndarray]] = None,
 ) -> None:
     """
     Write videos to disk.
@@ -167,19 +170,25 @@ def write_videos_on_disk(
         training_name (str): Training name.
         video_name (str): Video name.
         path (str): Output directory path.
+        class_names (list, optional): List of class names.
         xs (numpy.ndarray, optional): Input video used by the network.
-        ys (numpy.ndarray, optional): Segmentation video used in the loss function.
-        preds (list of numpy.ndarray, optional): All U-Net predictions
-            [bg preds, sparks preds, puffs preds, waves preds] (should already be
-            normalized between 0 and 1).
+        ys (numpy.ndarray, optional): Segmentation video used in the loss
+            function.
+        raw_preds (list of numpy.ndarray, optional): All U-Net predictions
+            [bg preds, sparks preds, puffs preds, waves preds] (should already
+            be normalized between 0 and 1).
+        segmented_preds (dict of numpy.ndarray, optional): Segmentated
+            predictions corresponding to raw_preds.
+        instances_preds (dict of numpy.ndarray, optional): Instances predictions
+            corresponding to raw_preds.
 
     Returns:
         None
     """
     if training_name is not None:
-        out_name_root = f"{training_name}_{video_name}_"
+        out_name_root = f"{training_name}_{video_name}"
     else:
-        out_name_root = f"{video_name}_"
+        out_name_root = f"{video_name}"
 
     logger.debug(f"Writing videos on directory {os.path.abspath(path)} ..")
     os.makedirs(os.path.abspath(path), exist_ok=True)
@@ -188,10 +197,24 @@ def write_videos_on_disk(
         imageio.volwrite(os.path.join(path, out_name_root + "xs.tif"), xs)
     if ys is not None:
         imageio.volwrite(os.path.join(path, out_name_root + "ys.tif"), np.uint8(ys))
-    if preds is not None:
-        imageio.volwrite(os.path.join(path, out_name_root + "sparks.tif"), preds[1])
-        imageio.volwrite(os.path.join(path, out_name_root + "waves.tif"), preds[2])
-        imageio.volwrite(os.path.join(path, out_name_root + "puffs.tif"), preds[3])
+    if raw_preds is not None:
+        for i, class_name in enumerate(class_names):
+            imageio.volwrite(
+                os.path.join(path, f"{out_name_root}_raw_{class_name}.tif"),
+                raw_preds[i + 1],
+            )
+    if segmented_preds is not None:
+        for class_name in class_names:
+            imageio.volwrite(
+                os.path.join(path, f"{out_name_root}_segmented_{class_name}.tif"),
+                np.uint8(segmented_preds[class_name]),
+            )
+    if instances_preds is not None:
+        for class_name in class_names:
+            imageio.volwrite(
+                os.path.join(path, f"{out_name_root}_instances_{class_name}.tif"),
+                np.uint8(instances_preds[class_name]),
+            )
 
 
 def write_colored_events_videos_on_disk(
