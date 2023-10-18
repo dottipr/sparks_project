@@ -78,9 +78,7 @@ def main():
 
     save_folder = os.path.join(output_folder, output_name)
     os.makedirs(save_folder, exist_ok=True)
-    logger.info(
-        f"Annotations and predictions will be saved on '{save_folder} + inference_type'"
-    )
+    logger.info(f"Annotations and predictions will be saved on '{save_folder}'")
 
     ######################### Detect GPU, if available #########################
 

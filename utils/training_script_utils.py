@@ -224,15 +224,12 @@ def init_model(params: TrainingConfig) -> nn.Module:
         )
 
         if not params.temporal_reduction:
-            network = unet.UNetClassifier(unet_config)
+            network = UNetPadWrapper(unet_config)
         else:
             assert (
                 params.data_duration % params.num_channels == 0
             ), "using temporal reduction chunks_duration must be a multiple of num_channels"
             network = TempRedUNet(unet_config)
-
-        # Wrap the network so that it can be used with inputs of any frame shape
-        network = UNetPadWrapper(base_model=network, params=params)
 
     elif params.nn_architecture == "github_unet":
         network = UNet(

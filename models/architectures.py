@@ -23,15 +23,14 @@ logger = logging.getLogger(__name__)
 __all__ = ["TempRedUNet", "UNetConvLSTM", "ConvLSTM", "ConvLSTMCell", "UNetPadWrapper"]
 
 
-class UNetPadWrapper(nn.Module):
-    def __init__(self, base_model: unet.UNet, params: TrainingConfig) -> None:
+class UNetPadWrapper(unet.UNetClassifier):
+    def __init__(self, config: unet.UNetConfig) -> None:
         super().__init__()
-        self.base_model = base_model
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = x.shape[-2]
         w = x.shape[-1]
-        steps = self.base_model.config.steps
+        steps = super().config.steps
 
         # Calculate the required padding for both height and width:
         h_pad = 2**steps - h % 2**steps if h % 2**steps != 0 else 0
@@ -44,7 +43,7 @@ class UNetPadWrapper(nn.Module):
         )
 
         # Apply the forward pass:
-        x = self.base_model(x)
+        x = super().forward(x)
 
         # Remove the padding:
         crop_h_start = h_pad // 2
@@ -89,10 +88,33 @@ class TempRedUNet(unet.UNet):
         self.unet = unet.UNetClassifier(unet_config)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x.shape[-2]
+        w = x.shape[-1]
+        steps = super().config.steps
+
+        # Calculate the required padding for both height and width:
+        h_pad = 2**steps - h % 2**steps if h % 2**steps != 0 else 0
+        w_pad = 2**steps - w % 2**steps if w % 2**steps != 0 else 0
+
+        # Pad the input tensor:
+        x = F.pad(
+            x,
+            (w_pad // 2, w_pad // 2 + w_pad % 2, h_pad // 2, h_pad // 2 + h_pad % 2),
+        )
+
+        # Apply the forward pass:
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = self.conv3(x)
         x = self.unet(x)
+
+        # Remove the padding:
+        crop_h_start = h_pad // 2
+        crop_h_end = -(h_pad // 2 + h_pad % 2) if h_pad > 0 else None
+        crop_w_start = w_pad // 2
+        crop_w_end = -(w_pad // 2 + w_pad % 2) if w_pad > 0 else None
+        x = x[..., crop_h_start:crop_h_end, crop_w_start:crop_w_end]
+
         return x
 
 
