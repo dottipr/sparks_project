@@ -49,6 +49,7 @@ from utils.training_inference_tools import (
 __all__ = [
     "init_config_file_path",
     "init_dataset",
+    "get_sample_ids",
     "init_testing_dataset",
     "init_model",
     "init_criterion",
@@ -103,15 +104,9 @@ def init_dataset(
     Returns:
         SparkDataset or SparkDatasetLSTM: Initialized training dataset.
     """
-
-    # Define dataset path
-    dataset_path = os.path.realpath(f"{config.basedir}/{params.dataset_path}")
-
-    assert os.path.isdir(dataset_path), f'"{dataset_path}" is not a directory'
-
     dataset_args = {
         "params": params,
-        "base_path": dataset_path,
+        "base_path": params.dataset_dir,
         "sample_ids": sample_ids,
         "inference": None,
     }
@@ -143,6 +138,69 @@ def init_dataset(
     return dataset
 
 
+def get_sample_ids(train_data=False, dataset_size="full", custom_ids=[]):
+    if len(custom_ids) == 0:
+        if train_data:
+            if dataset_size == "full":
+                sample_ids = [
+                    "01",
+                    "02",
+                    "03",
+                    "04",
+                    "06",
+                    "07",
+                    "08",
+                    "09",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "16",
+                    "17",
+                    "18",
+                    "19",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "27",
+                    "28",
+                    "29",
+                    "30",
+                    "33",
+                    "35",
+                    "36",
+                    "38",
+                    "39",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "46",
+                ]
+            elif dataset_size == "minimal":
+                sample_ids = ["01"]
+            else:
+                raise ValueError(
+                    f"Unknown dataset size '{dataset_size}'. "
+                    f"Choose between 'full' and 'minimal'."
+                )
+        else:
+            if dataset_size == "full":
+                sample_ids = ["05", "10", "15", "20", "25", "32", "34", "40", "45"]
+            elif dataset_size == "minimal":
+                sample_ids = ["34"]
+            else:
+                raise ValueError(
+                    f"Unknown dataset size '{dataset_size}'. "
+                    f"Choose between 'full' and 'minimal'."
+                )
+    else:
+        sample_ids = custom_ids
+
+    return sample_ids
+
+
 # TODO: rimuovere da tutti gli scripts che lo usano e correggerli
 def init_testing_dataset(
     params: TrainingConfig, test_sample_ids: List[str], print_dataset_info: bool = True
@@ -162,7 +220,7 @@ def init_testing_dataset(
     """
 
     # Define dataset path
-    dataset_path = os.path.realpath(f"{config.basedir}/{params.dataset_path}")
+    dataset_path = os.path.realpath(f"{config.basedir}/{params.dataset_dir}")
 
     assert os.path.isdir(dataset_path), f'"{dataset_path}" is not a directory'
 
@@ -224,7 +282,8 @@ def init_model(params: TrainingConfig) -> nn.Module:
         )
 
         if not params.temporal_reduction:
-            network = UNetPadWrapper(unet_config)
+            network = unet.UNetClassifier(unet_config)  # TEMP
+            # network = UNetPadWrapper(unet_config)
         else:
             assert (
                 params.data_duration % params.num_channels == 0
@@ -269,9 +328,6 @@ def init_model(params: TrainingConfig) -> nn.Module:
         )
 
         network = UNetConvLSTM(unet_config, bidirectional=params.bidirectional)
-
-        # Wrap the network so that it can be used with inputs of any frame shape
-        network = UNetPadWrapper(base_model=network, params=params)
 
     elif params.nn_architecture == "openai_unet":
         if params.unet_steps == 4:

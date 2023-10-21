@@ -52,7 +52,7 @@ def main():
     ### Load UNet model ###
 
     # Path to the saved model checkpoint
-    models_relative_path = os.path.join(config.output_relative_path, "saved_models")
+    models_relative_path = os.path.join(config.output_relative_dir, "saved_models")
     model_path = os.path.join(models_relative_path, params.run_name, model_name)
 
     # Load the model state dictionary

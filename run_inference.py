@@ -150,10 +150,10 @@ def main():
 
     # Check if the specified dataset path is a directory
     assert os.path.isdir(
-        params.dataset_path
-    ), f'"{params.dataset_path}" is not a directory'
+        params.dataset_dir
+    ), f'"{params.dataset_dir}" is not a directory'
 
-    logger.info(f"Using {params.dataset_path} as dataset root path")
+    logger.info(f"Using {params.dataset_dir} as dataset root path")
 
     # Create dataset
     dataset = init_dataset(

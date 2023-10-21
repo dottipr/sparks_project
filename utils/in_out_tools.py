@@ -2,7 +2,7 @@
 Script with functions to either load data or save data to disc.
 
 Author: Prisca Dotti
-Last modified: 12.10.2023
+Last modified: 18.10.2023
 """
 
 # import csv
@@ -160,8 +160,8 @@ def write_videos_on_disk(
     xs: Optional[np.ndarray] = None,
     ys: Optional[np.ndarray] = None,
     raw_preds: Optional[np.ndarray] = None,
-    segmented_preds: Optional[Dict[int, np.ndarray]] = None,
-    instances_preds: Optional[Dict[int, np.ndarray]] = None,
+    segmented_preds: Optional[Dict[str, np.ndarray]] = None,
+    instances_preds: Optional[Dict[str, np.ndarray]] = None,
 ) -> None:
     """
     Write videos to disk.

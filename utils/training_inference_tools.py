@@ -375,7 +375,6 @@ def do_inference(
     are specified in the inference_types list. The returned predictions are also
     cropped to the original duration of the movie.
 
-
     Args:
         network (nn.Module): The trained neural network model.
         params (TrainingConfig): Configuration parameters for the selected

@@ -47,7 +47,10 @@ class ProjectConfig:
         # wandb_project_name = "TEST"
         self.wandb_project_name = "sparks2"
         # Directory where output, saved parameters, and testing results are saved
-        self.output_relative_path = os.path.join("models", "saved_models")
+        self.output_relative_dir = os.path.join("models", "saved_models")
+        self.output_dir = os.path.realpath(
+            os.path.join(self.basedir, self.output_relative_dir)
+        )
 
         ### Dataset parameters ###
 
@@ -354,7 +357,15 @@ class TrainingConfig:
             self.c["dataset"] if "dataset" in self.c else fallback_dataset_section
         )
 
-        self.dataset_path = dataset_section.get("relative_path", "data/sparks_dataset")
+        self.dataset_dir = dataset_section.get("relative_path", "data/sparks_dataset")
+        # get dataset's absolute path
+        self.dataset_dir = os.path.realpath(
+            os.path.join(config.basedir, self.dataset_dir)
+        )
+        assert os.path.isdir(
+            self.dataset_dir
+        ), f'"{self.dataset_dir}" is not a directory'
+
         self.dataset_size = dataset_section.get("dataset_size", "full")
         self.batch_size = int(dataset_section.get("batch_size", "4"))
         # self.num_workers = dataset_section.getint("num_workers", 1)
