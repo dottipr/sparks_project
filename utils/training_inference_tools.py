@@ -2,49 +2,63 @@
 Functions that are used during the training of the neural network model.
 
 Author: Prisca Dotti
-Last modified: 17.10.2023
+Last modified: 24.10.2023
 """
 
 import logging
 import time
 from collections import defaultdict
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.utils.data
-import wandb
 from scipy import ndimage as ndi
+from sklearn.metrics import confusion_matrix
 from torch import nn
+from torch.utils.data import DataLoader
 
+import wandb
 from config import TrainingConfig, config
-from data.data_processing_tools import process_raw_predictions, remove_padding
+from data.data_processing_tools import (
+    masks_to_instances_dict,
+    preds_dict_to_mask,
+    process_raw_predictions,
+    remove_padding,
+)
 from data.datasets import SparkDataset, SparkDatasetInference
+from evaluation.metrics_tools import (
+    compute_iou,
+    get_matches_summary,
+    get_metrics_from_summary,
+    get_score_matrix,
+)
 from models.UNet import unet
 from models.UNet.unet.trainer import _write_results
+from utils.custom_losses import MySoftDiceLoss
+from utils.in_out_tools import write_videos_on_disk
 
 __all__ = [
-    "MyTrainingManager",
-    "TransformedSparkDataset",
-    "training_step",
-    "sampler",
-    "random_flip",
-    "random_flip_noise",
-    "compute_class_weights",
-    "compute_class_weights_instances",
-    "weights_init",
-    "run_dataloader_in_network",
-    "do_inference",
-    "max_inference",
-    "gaussian_inference",
-    "average_inference",
-    "from_chunks_to_frames",
-    "get_half_overlap",
-    "overlap_inference",
-    "get_raw_preds_dict",
-    "test_function",
-    "get_preds_from_path",
+    "MyTrainingManager",  # training
+    "TransformedSparkDataset",  # training
+    "training_step",  # training
+    "sampler",  # training
+    "random_flip",  # training/data processing
+    "random_flip_noise",  # training/data processing
+    "compute_class_weights",  # training
+    "compute_class_weights_instances",  # training
+    "compute_loss",  # training
+    "weights_init",  # training
+    "run_dataloader_in_network",  # inference
+    "do_inference",  # inference
+    "max_inference",  # inference
+    "gaussian_inference",  # inference
+    "average_inference",  # inference
+    "from_chunks_to_frames",  # inference
+    "get_half_overlap",  # inference
+    "overlap_inference",  # inference
+    "test_function",  # testing
+    "get_final_preds",  # inference
 ]
 
 logger = logging.getLogger(__name__)
@@ -61,7 +75,7 @@ def training_step(
     network: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     criterion: torch.nn.Module,
-    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
     # scaler: torch.cuda.amp.GradScaler,
 ) -> Dict[str, torch.Tensor]:
     """
@@ -90,46 +104,32 @@ def training_step(
     # [b, d, 64, 512] or [b, 64, 512]
     y = y.to(params.device, non_blocking=True)
 
-    # Calculate padding for height and width
-    _, _, h, w = x.shape
-    net_steps = params.unet_steps
-    h_pad = max(2**net_steps - h % 2**net_steps, 0)
-    w_pad = max(2**net_steps - w % 2**net_steps, 0)
-
-    # Pad the input tensor
-    x = F.pad(
-        x, (w_pad // 2, w_pad // 2 + w_pad % 2, h_pad // 2, h_pad // 2 + h_pad % 2)
-    )
-
     # Forward pass
     # with torch.cuda.amp.autocast():  # to use mixed precision (not working)
     y_pred = network(x[:, None])  # [b, 4, d, 64, 512] or [b, 4, 64, 512]
 
-    # Crop the output tensor based on the padding
-    crop_h_start = h_pad // 2
-    crop_h_end = -(h_pad // 2 + h_pad % 2) if h_pad > 0 else None
-    crop_w_start = w_pad // 2
-    crop_w_end = -(w_pad // 2 + w_pad % 2) if w_pad > 0 else None
-    y_pred = y_pred[:, :, :, crop_h_start:crop_h_end, crop_w_start:crop_w_end]
-
-    # Remove frames that must be ignored by the loss function
-    if params.ignore_frames_loss != 0:
-        y_pred = y_pred[:, :, params.ignore_frames_loss : -params.ignore_frames_loss]
-        y = y[:, params.ignore_frames_loss : -params.ignore_frames_loss]
-
     # Handle specific loss functions
-    if params.criterion == "dice_loss":
-        # Set regions in pred where label is ignored to 0
-        y_pred = y_pred * (y != 4)
-        y = y * (y != 4)
+    if isinstance(criterion, MySoftDiceLoss):
+        # Set regions in pred and y where the label is ignored to 0
+        y_pred[y == config.ignore_index] = 0
+        y[y == config.ignore_index] = 0
     else:
         y = y.long()
 
+    # Remove frames that must be ignored by the loss function
+    if params.ignore_frames_loss > 0:
+        y_pred = y_pred[
+            ..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :
+        ]
+        y = y[..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :]
+
     # Move criterion weights to GPU
-    if hasattr(criterion, "weight") and not criterion.weight.is_cuda:
-        criterion.weight = criterion.weight.to(params.device)
-    if hasattr(criterion, "NLLLoss") and not criterion.NLLLoss.weight.is_cuda:
-        criterion.NLLLoss.weight = criterion.NLLLoss.weight.to(params.device)
+    # if hasattr(criterion, "weight") and not criterion.weight.is_cuda:
+    #     criterion.weight = criterion.weight.to(params.device)
+    # if hasattr(criterion, "NLLLoss") and not criterion.NLLLoss.weight.is_cuda:
+    #     criterion.NLLLoss.weight = criterion.NLLLoss.weight.to(params.device)
+
+    criterion.to(y.device)
 
     # Compute loss
     loss = criterion(y_pred, y)
@@ -161,11 +161,8 @@ def mycycle(dataset_loader: torch.utils.data.DataLoader) -> Iterator:
             yield sample
 
 
-# _cycle = mycycle(dataset_loader)
-
-
 def sampler(dataset_loader: torch.utils.data.DataLoader) -> dict:
-    return next(mycycle(dataset_loader))  # (_cycle)
+    return next(mycycle(dataset_loader))
 
 
 ####################### Functions for data augmentation ########################
@@ -254,7 +251,46 @@ def random_flip_noise(
     return x, y
 
 
-################## Functions related to UNet and loss weights ##################
+###################### Functions related to UNet and loss ######################
+
+
+def compute_loss(
+    preds: List[torch.Tensor],
+    ys: List[torch.Tensor],
+    criterion: torch.nn.Module,
+    n_ignored_frames: int,
+) -> float:
+    """
+    Compute loss on the whole dataset, removing marginal frames from each movie.
+    """
+    losses = []
+    for pred, y in zip(preds, ys):
+        if isinstance(criterion, MySoftDiceLoss):
+            # Set regions in pred and y where the label is ignored to 0
+            pred[y == config.ignore_index] = 0
+            y[y == config.ignore_index] = 0
+        else:
+            # Since we have a batch size of 1, we need to add a batch dimension
+            pred = pred[None, :]
+            y = y.long()[None, :]
+
+        # Remove marginal frames
+        if n_ignored_frames > 0:
+            pred = pred[..., n_ignored_frames:-n_ignored_frames, :, :]
+            y = y[..., n_ignored_frames:-n_ignored_frames, :, :]
+
+        # Move criterion weights to the same device as y and pred
+        # if hasattr(criterion, "weight"): # TODO: in case delete this
+        #     if criterion.weight.device != y.device:
+        #         criterion.weight = criterion.weight.to(y.device)
+        # if hasattr(criterion, "NLLLoss.weight"):
+        #     if criterion.NLLLoss.weight.device != y.device:
+        #         criterion.NLLLoss.weight = criterion.NLLLoss.weight.to(
+        #             y.device)
+        criterion.to(y.device)
+        losses.append(criterion(pred, y).item())
+
+    return np.mean(losses)
 
 
 def compute_class_weights(
@@ -273,7 +309,8 @@ def compute_class_weights(
     class_counts = torch.Tensor([0] * config.num_classes)
 
     with torch.no_grad():
-        for _, y in dataset:
+        for sample in dataset:
+            y = sample["labels"]
             for c in range(config.num_classes):
                 class_counts[c] += torch.count_nonzero(y == c)
 
@@ -752,295 +789,90 @@ def max_inference(frame_preds: List[List[torch.Tensor]]) -> torch.Tensor:
     return max_preds
 
 
-# function to run a test sample (i.e., a test dataset) in the UNet
 @torch.no_grad()
-def get_raw_preds_dict(
-    model: torch.nn.Module,
-    params: TrainingConfig,
-    test_dataset: torch.utils.data.Dataset,
-    criterion: Optional[torch.nn.Module] = None,
-    inference_types: Optional[List[str]] = None,
-):  # TODO
-    """
-    Given a trained model and a test sample (i.e., a test dataset), run the
-    sample in the model and return the predictions.
-
-    Args:
-        model (torch.nn.Module): The trained neural network model.
-        test_dataset (torch.utils.data.Dataset): The test dataset containing the
-            sample(s).
-        params (TrainingConfig): A TrainingConfig containing various parameters.
-        criterion (torch.nn.Module, optional): If provided, the loss criterion
-            for computing loss.
-        inference_types (list of str, optional): List of inference types to use,
-            or None to use the default type.
-
-    Returns:
-    TODO
-    """
-    if inference_types is None:
-        assert params.inference in [
-            "overlap",
-            "average",
-            "gaussian",
-            "max",
-        ], f"inference type '{params.inference}' not implemented yet"
-        inference_types = [params.inference]
-
-    else:
-        assert all(
-            i in ["overlap", "average", "gaussian", "max"] for i in inference_types
-        ), "Unsupported inference type."
-
-    # Create a dataloader
-    test_dataloader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=params.batch_size,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=True,
-    )
-
-    # Run movie in the network and perform inference
-    preds = do_inference(
-        network=model,
-        params=params,
-        test_dataloader=test_dataloader,
-        device=params.device,
-        compute_loss=True if criterion is not None else False,
-        inference_types=inference_types,
-        return_dict=return_dict,
-    )
-
-    # Get original movie xs and annotations ys
-    xs = test_dataset.data[0]
-    if test_dataset.gt_available:
-        ys = test_dataset.annotations[0]
-
-    # Remove padded frames
-    pad = test_dataset.pad
-    if pad > 0:
-        start_pad = pad // 2
-        end_pad = -(pad // 2 + pad % 2)
-        xs = xs[start_pad:end_pad]
-
-        if test_dataset.temporal_reduction:
-            start_pad = start_pad // test_dataset.num_channels
-            end_pad = end_pad // test_dataset.num_channels
-
-        if params.nn_architecture != "unet_lstm":
-            if test_dataset.gt_available:
-                ys = ys[start_pad:end_pad]
-            if len(inference_types) == 1:
-                if not return_dict:
-                    preds = preds[:, start_pad:end_pad]
-                else:
-                    preds = {
-                        event_type: pred[start_pad:end_pad]
-                        for event_type, pred in preds.items()
-                    }
-            else:
-                if not return_dict:
-                    preds = {i: p[:, start_pad:end_pad] for i, p in preds.items()}
-                else:
-                    for i, preds_dict in preds.items():
-                        preds[i] = {
-                            event_type: pred[start_pad:end_pad]
-                            for event_type, pred in preds_dict.items()
-                        }
-
-        else:
-            raise NotImplementedError
-
-    # If original sample was shorter than the current movie duration,
-    # remove additional padded frames
-    movie_duration = test_dataset.movie_duration
-    if movie_duration < xs.shape[0]:
-        pad = xs.shape[0] - movie_duration
-        start_pad = pad // 2
-        end_pad = -(pad // 2 + pad % 2)
-        xs = xs[start_pad:end_pad]
-
-        if test_dataset.temporal_reduction:
-            start_pad = start_pad // test_dataset.num_channels
-            end_pad = end_pad // test_dataset.num_channels
-
-        if ys is not None:
-            ys = ys[start_pad:end_pad]
-
-        if len(inference_types) == 1:
-            if not return_dict:
-                preds = preds[:, start_pad:end_pad]
-            else:
-                preds = {
-                    event_type: pred[start_pad:end_pad]
-                    for event_type, pred in preds.items()
-                }
-        else:
-            if not return_dict:
-                preds = {i: p[:, start_pad:end_pad] for i, p in preds.items()}
-            else:
-                for i, preds_dict in preds.items():
-                    preds[i] = {
-                        event_type: pred[start_pad:end_pad]
-                        for event_type, pred in preds_dict.items()
-                    }
-
-    if criterion is not None:
-        assert ys is not None, "Cannot compute loss if annotations are not available."
-
-        if ys.ndim == 3:
-            if len(inference_types) == 1 and not return_dict:
-                preds_loss = preds[
-                    :, test_dataset.ignore_frames : -test_dataset.ignore_frames
-                ]
-            else:
-                raise NotImplementedError
-                # Still need to adapt code to compute loss for list of inference
-                # types, however usually loss should be computed only during
-                # training, and therefore inference_types should be None.
-                # Similarly, return_dict should be False.
-
-            ys_loss = ys[test_dataset.ignore_frames : -test_dataset.ignore_frames]
-        else:
-            raise NotImplementedError
-
-        if params.criterion == "dice_loss":
-            # set regions in pred where label is ignored to 0
-            preds_loss = preds_loss * (ys_loss != 4)
-            ys_loss = ys_loss * (ys_loss != 4)
-        else:
-            ys_loss = ys_loss.long()[None, :]
-            preds_loss = preds_loss[None, :]
-
-        # Move criterion weights to cpu
-        if hasattr(criterion, "weight") and criterion.weight.is_cuda:
-            criterion.weight = criterion.weight.cpu()
-        if hasattr(criterion, "NLLLoss") and criterion.NLLLoss.weight.is_cuda:
-            criterion.NLLLoss.weight = criterion.NLLLoss.weight.cpu()
-
-        loss = criterion(preds_loss, ys_loss).item()
-        return xs.numpy(), ys.numpy(), preds.numpy(), loss
-
-    else:
-        if len(inference_types) == 1:
-            if not return_dict:
-                preds = preds.numpy()
-            else:
-                preds = {event_type: pred.numpy() for event_type, pred in preds.items()}
-        else:
-            if not return_dict:
-                preds = {i: p.numpy() for i, p in preds.items()}
-            else:
-                for i, preds_dict in preds.items():
-                    preds[i] = {
-                        event_type: pred.numpy()
-                        for event_type, pred in preds_dict.items()
-                    }
-
-    return xs.numpy(), ys.numpy(), preds if ys is not None else xs.numpy(), preds
-
-
-@torch.no_grad()
-def get_preds_from_path(  # TODO: vedere se si può eliminare e tenere solo get_preds
+def get_final_preds(
     model: nn.Module,
     params: TrainingConfig,
-    movie_path: str,
-    output_dir: Optional[str] = None,
-) -> [Tuple[torch.Tensor, torch.Tensor]]:
+    **kwargs,
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Function to get predictions from a movie path.
+    Either 'movie' or 'movie_path' must be provided as kwargs.
 
     Args:
     - model (torch.nn.Module): The trained neural network model.
     - params (TrainingConfig): A TrainingConfig containing various parameters.
-    - movie_path: Path to the movie.
-    - return_dict (bool, optional): Whether to return a dictionary with
-        inference type as key and predictions as value, or a single tensor of
-        predictions. Defaults to False.
-    - output_dir: If not None, save raw predictions on disk.
+
+    Kwargs:
+    - movie (np.ndarray): The movie to be processed.
+    - movie_path (str): Path to the movie to be processed.
 
     Returns:
-    - If return_dict is True, return a dictionary with keys 'sparks', 'puffs',
-        'waves'; else return a tuple of numpy arrays with integral values for
-        classes and instances.
+    - Return a tuple with two elements:
+        - preds_segmentation: Predicted segmentation.
+        - preds_instances: Predicted event instances.
     """
 
     ### Get sample as dataset ###
     sample_dataset = SparkDatasetInference(
-        sample_path=movie_path,
         params=params,
-        # resampling=False, # It could be implemented later
-        # resampling_rate=150,
+        **kwargs,
+    )
+
+    # Create a dataloader
+    dataset_loader = DataLoader(
+        sample_dataset,
+        batch_size=params.inference_batch_size,
+        shuffle=False,
+        num_workers=params.num_workers,
+        pin_memory=params.pin_memory,
     )
 
     ### Run sample in UNet ###
-    input_movie, preds_dict = get_raw_preds_dict(
-        model=model,
-        test_dataset=sample_dataset,
+    raw_pred = do_inference(
+        network=model,
         params=params,
-        inference_types=None,
-        return_dict=True,
-    )
+        dataloader=dataset_loader,
+        device=params.device,
+        compute_loss=False,
+        inference_types=[params.inference],
+    )[0][params.inference]
 
     ### Get processed output ###
-
-    # Get predicted segmentation and event instances
-    preds_instances, preds_segmentation, _ = process_raw_predictions(
-        raw_preds_dict=preds_dict,
+    input_movie = sample_dataset.get_movies()[0]
+    raw_pred_dict = {
+        "sparks": raw_pred[1],
+        "puffs": raw_pred[3],
+        "waves": raw_pred[2],
+    }
+    pred_instances, pred_segmentation, _ = process_raw_predictions(
+        raw_preds_dict=raw_pred_dict,
         input_movie=input_movie,
         training_mode=False,
         debug=False,
     )
-    # preds_instances and preds_segmentations are dictionaries
-    # with keys 'sparks', 'puffs', 'waves'.
 
-    # Save raw preds on disk ### I don't know if this is necessary
-    if output_dir is not None:
-        # Create output directory if it does not exist
-        os.makedirs(output_dir, exist_ok=True)
-        write_videos_on_disk(
-            training_name=None,
-            video_name=sample_dataset.video_name,
-            path=output_dir,
-            preds=[
-                None,
-                preds_dict["sparks"],
-                preds_dict["waves"],
-                preds_dict["puffs"],
-            ],
-            ys=None,
-        )
+    # Get integral values for classes and instances
+    pred_segmentation = preds_dict_to_mask(pred_segmentation)
+    pred_instances = np.sum(list(pred_instances.values()), axis=0)
 
-    if return_dict:
-        return preds_segmentation, preds_instances
-
-    else:
-        # Get integral values for classes and instances
-        preds_segmentation = preds_dict_to_mask(preds_segmentation)
-        preds_instances = sum(preds_instances.values())
-        # Instances already have different IDs
-
-        return preds_segmentation, preds_instances
+    return pred_segmentation, pred_instances
 
 
 ################################ Test function #################################
 
 
-# TODO: ormai anche per i test datasets si usa la stessa classe che per il
-# training, quindi devo aggiornare il loop che dalla lista dei datasets
-# andrà a far passare direttamente i vari video contenuti nell'unico dataset.
-def test_function(  # da aggiornare in base alla nuova definizione dei datasets
+def test_function(
     network: nn.Module,
     device: torch.device,
     criterion: nn.Module,
     params: TrainingConfig,
-    testing_datasets: List[SparkDataset],
+    testing_dataset: SparkDataset,
     training_name: str,
     output_dir: str,
     training_mode: bool = True,
     debug: bool = False,
-) -> None:
+) -> Dict[str, Union[float, np.ndarray]]:
     """
     Validate UNet during training.
     Output segmentation is computed using argmax values and Otsu threshold (to
@@ -1050,15 +882,15 @@ def test_function(  # da aggiornare in base alla nuova definizione dei datasets
     network:            the model being trained
     device:             current device
     criterion:          loss function to be computed on the validation set
-    testing_datasets:   list of SparkDataset instances
+    params:             TrainingConfig object containing various parameters
+    testing_dataset:    SparkDataset object containing the validation set
     training_name:      training name used to save predictions on disk
     output_dir:         directory where the predicted movies are saved
     training_mode:      bool, if True, separate events using a simpler algorithm
     """
 
-    network.eval()
-
     # Initialize dicts that will contain the results
+    metrics = {}
     tot_preds = {"sparks": 0, "puffs": 0, "waves": 0}
     tp_preds = {"sparks": 0, "puffs": 0, "waves": 0}
     ignored_preds = {"sparks": 0, "puffs": 0, "waves": 0}
@@ -1067,50 +899,78 @@ def test_function(  # da aggiornare in base alla nuova definizione dei datasets
     tp_ys = {"sparks": 0, "puffs": 0, "waves": 0}
     undetected_ys = {"sparks": 0, "puffs": 0, "waves": 0}
 
-    # Compute loss on all samples
-    sum_loss = 0.0
+    ############################ Run samples in UNet ############################
+
+    start = time.time()
+    logger.debug("Testing function: running samples in UNet")
+
+    # Get movies, labels, and instances
+    xs = testing_dataset.get_movies()
+    ys = testing_dataset.get_labels()
+    ys_instances = testing_dataset.get_instances()
+
+    # Create a dataloader
+    dataset_loader = DataLoader(
+        testing_dataset,
+        batch_size=params.inference_batch_size,
+        shuffle=False,
+        num_workers=params.num_workers,
+        pin_memory=params.pin_memory,
+    )
+
+    # Get U-Net's raw predictions
+    network.eval()
+    raw_preds = do_inference(
+        network=network,
+        params=params,
+        dataloader=dataset_loader,
+        device=device,
+        compute_loss=True,
+        inference_types=[params.inference],
+    )
+    raw_preds = [preds_dict[params.inference] for preds_dict in raw_preds.values()]
+
+    logger.debug(
+        f"Time to run samples {testing_dataset.sample_ids} in UNet: {time.time() - start:.2f} s"
+    )
+
+    # Get ys and predictions as lists of tensors
+    ys_tensors = [torch.from_numpy(y) for y in ys.values()]
+    raw_preds_tensors = [torch.from_numpy(raw_pred) for raw_pred in raw_preds]
+
+    # Compute loss on dataset
+    metrics["validation_loss"] = compute_loss(
+        preds=raw_preds_tensors,
+        ys=ys_tensors,
+        criterion=criterion,
+        n_ignored_frames=params.ignore_frames_loss,
+    )
+
+    ##################### Compute metrics for each movie  ########################
 
     # Concatenate annotations and preds to compute segmentation-based metrics
     ys_concat = []
     preds_concat = []
 
-    for test_dataset in testing_datasets:
-        ########################## Run sample in UNet ##########################
-
-        start = time.time()
-
-        # Get video name
-        video_name = test_dataset.video_name
-        logger.debug(f"Testing function: running sample {video_name} in UNet")
-
-        # Run sample in UNet, returns a list [bg, sparks, waves, puffs]
-        xs, ys, preds, loss = get_raw_preds_dict(
-            model=network,
-            test_dataset=test_dataset,
-            device=device,
-            criterion=criterion,
-            batch_size=params.batch_size,
-            detect_nan=False,
-        )
-
-        # Sum up losses of each sample
-        sum_loss += loss
+    for i, sample_id in enumerate(testing_dataset.sample_ids):
+        logger.debug(f"Processing sample {sample_id}")
+        x = xs[i]
+        y = ys[i]
+        y_instances = ys_instances[i]
+        raw_pred = raw_preds[i]
 
         # Compute exp of predictions
-        preds = np.exp(preds)
+        raw_pred = np.exp(raw_pred)
 
+        logger.debug("Testing function: saving raw predictions on disk")
         # Save raw predictions as .tif videos
         write_videos_on_disk(
-            xs=xs,
-            ys=ys,
-            preds=preds,
+            xs=x,
+            ys=y,
+            raw_preds=raw_pred,
             training_name=training_name,
-            video_name=video_name,
-            path=output_dir,
-        )
-
-        logger.debug(
-            f"Time to run sample {video_name} in UNet: {time.time() - start:.2f} s"
+            video_name=sample_id,
+            out_dir=output_dir,
         )
 
         ####################### Re-organise annotations ########################
@@ -1119,55 +979,33 @@ def test_function(  # da aggiornare in base alla nuova definizione dei datasets
         logger.debug("Testing function: re-organising annotations")
 
         # ys_instances is a dict with classified event instances, for each class
-        ys_instances = masks_to_instances_dict(
-            instances_mask=test_dataset.events, labels_mask=ys, shift_ids=True
+        y_instances = masks_to_instances_dict(
+            instances_mask=y_instances, labels_mask=y, shift_ids=True
         )
 
         # Remove ignored events entry from ys_instances
-        ys_instances.pop("ignore", None)
-
-        # Get ignored pixels mask
-        # TODO: remove ignored frames as well?
-        ignore_mask = np.where(ys == config.ignore_index, 1, 0)
+        y_instances.pop("ignore", None)
 
         logger.debug(f"Time to re-organise annotations: {time.time() - start:.2f} s")
 
         ######################### Get processed output #########################
 
+        start = time.time()
         logger.debug(
             "Testing function: getting processed output (segmentation and instances)"
         )
 
         # Get predicted segmentation and event instances
-        raw_preds_dict = {
-            "sparks": preds[1],
-            "puffs": preds[3],
-            "waves": preds[2],
+        raw_pred_dict = {
+            "sparks": raw_pred[1],
+            "puffs": raw_pred[3],
+            "waves": raw_pred[2],
         }
         preds_instances, preds_segmentation, _ = process_raw_predictions(
-            raw_preds_dict=raw_preds_dict,
-            input_movie=xs,
+            raw_preds_dict=raw_pred_dict,
+            input_movie=x,
             training_mode=training_mode,
             debug=debug,
-        )
-
-        ##################### Stack ys and segmented preds #####################
-
-        # Stack annotations and remove marginal frames
-        ys_concat.append(
-            trim_and_pad_video(video=ys, n_margin_frames=params.ignore_frames_loss)
-        )
-
-        # Stack preds and remove marginal frames
-        temp_preds = np.zeros_like(ys)
-        for event_type, event_label in config.classes_dict.items():
-            if event_type == "ignore":
-                continue
-            temp_preds += event_label * preds_segmentation[event_type]
-        preds_concat.append(
-            trim_and_pad_video(
-                video=temp_preds, n_margin_frames=params.ignore_frames_loss
-            )
         )
 
         logger.debug(f"Time to process predictions: {time.time() - start:.2f} s")
@@ -1175,21 +1013,15 @@ def test_function(  # da aggiornare in base alla nuova definizione dei datasets
         ############### Compute pairwise scores (based on IoMin) ###############
 
         start = time.time()
-
         if debug:
             n_ys_events = max(
-                [
-                    np.max(ys_instances[event_type])
-                    for event_type in config.classes_dict.keys()
-                    if event_type != "ignore"
-                ]
+                [np.max(y_instances[event_type]) for event_type in config.event_types]
             )
 
             n_preds_events = max(
                 [
                     np.max(preds_instances[event_type])
-                    for event_type in config.classes_dict.keys()
-                    if event_type != "ignore"
+                    for event_type in config.event_types
                 ]
             )
             logger.debug(
@@ -1197,10 +1029,8 @@ def test_function(  # da aggiornare in base alla nuova definizione dei datasets
             )
 
         iomin_scores = get_score_matrix(
-            ys_instances=ys_instances,
+            ys_instances=y_instances,
             preds_instances=preds_instances,
-            ignore_mask=None,
-            score="iomin",
         )
 
         logger.debug(f"Time to compute pairwise scores: {time.time() - start:.2f} s")
@@ -1208,20 +1038,17 @@ def test_function(  # da aggiornare in base alla nuova definizione dei datasets
         ####################### Get matches summary #######################
 
         start = time.time()
-
         logger.debug("Testing function: getting matches summary")
 
         matched_ys_ids, matched_preds_ids = get_matches_summary(
-            ys_instances=ys_instances,
+            ys_instances=y_instances,
             preds_instances=preds_instances,
             scores=iomin_scores,
-            ignore_mask=ignore_mask,
+            ignore_mask=y == config.ignore_index,
         )
 
         # Count number of categorized events that are necessary for the metrics
-        for ca_event in config.classes_dict.keys():
-            if ca_event == "ignore":
-                continue
+        for ca_event in config.event_types:
             tot_preds[ca_event] += len(matched_preds_ids[ca_event]["tot"])
             tp_preds[ca_event] += len(matched_preds_ids[ca_event]["tp"])
             ignored_preds[ca_event] += len(matched_preds_ids[ca_event]["ignored"])
@@ -1233,16 +1060,25 @@ def test_function(  # da aggiornare in base alla nuova definizione dei datasets
 
         logger.debug(f"Time to get matches summary: {time.time() - start:.2f} s")
 
+        ##################### Stack ys and segmented preds #####################
+
+        # Stack annotations and remove marginal frames
+        ys_concat.append(
+            y[..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :]
+        )
+
+        # Stack preds and remove marginal frames
+        temp_preds = preds_dict_to_mask(preds_dict=preds_segmentation)
+        preds_concat.append(
+            temp_preds[
+                ..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :
+            ]
+        )
+
     ############################## Reduce metrics ##############################
 
     start = time.time()
-
     logger.debug("Testing function: reducing metrics")
-
-    metrics = {}
-
-    # Compute average validation loss
-    metrics["validation_loss"] = sum_loss / len(testing_datasets)
 
     ##################### Compute instances-based metrics ######################
 
@@ -1291,7 +1127,7 @@ def test_function(  # da aggiornare in base alla nuova definizione dei datasets
     ignore_concat = ys_concat == 4
 
     for event_type, event_label in config.classes_dict.items():
-        if event_type == "ignore":
+        if event_type not in config.event_types:
             continue
         class_preds = preds_concat == event_label
         class_ys = ys_concat == event_label
@@ -1304,18 +1140,16 @@ def test_function(  # da aggiornare in base alla nuova definizione dei datasets
     metrics["segmentation/average_IoU"] = np.mean(
         [
             metrics["segmentation/" + event_type + "_IoU"]
-            for event_type in config.classes_dict.keys()
-            if event_type != "ignore"
+            for event_type in config.event_types
         ]
     )
 
     # Compute confusion matrix
-    metrics["segmentation_confusion_matrix"] = sk_confusion_matrix(
+    metrics["segmentation_confusion_matrix"] = confusion_matrix(
         y_true=ys_concat.flatten(), y_pred=preds_concat.flatten(), labels=[0, 1, 2, 3]
     )
 
     logger.debug(f"Time to reduce metrics: {time.time() - start:.2f} s")
-
     return metrics
 
 

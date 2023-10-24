@@ -8,7 +8,7 @@ Classes:
                     logging.
 
 Author: Prisca Dotti
-Last modified: 15.10.2023
+Last modified: 21.10.2023
 """
 
 
@@ -21,6 +21,7 @@ from logging.handlers import RotatingFileHandler
 
 import numpy as np
 import torch
+
 import wandb
 
 __all__ = ["config", "TrainingConfig"]
@@ -65,10 +66,10 @@ class ProjectConfig:
             "puffs": 3,
         }
         # note: the class values have to be consecutive
-        self.classes_names = ["sparks", "waves", "puffs"]
+        self.event_types = ["sparks", "waves", "puffs"]
 
         self.num_classes = len(self.classes_dict)
-        self.ignore_index = self.num_classes + 1  # Label ignored during training
+        self.ignore_index = self.num_classes  # Label ignored during training
 
         # Include ingore index in the classes dictionary
         self.classes_dict["ignore"] = self.ignore_index
@@ -212,7 +213,9 @@ class TrainingConfig:
         self.configure_logging()
 
         # Load configuration file
-        self.training_config_file = training_config_file
+        self.training_config_file = self.dataset_dir = os.path.realpath(
+            os.path.join(config.basedir, training_config_file)
+        )
         self.load_configuration_file()
 
         # Load configuration parameters here...
@@ -407,6 +410,12 @@ class TrainingConfig:
             inference_section.get("inference_data_stride", "32")
         )
         self.inference = inference_section.get("inference", "overlap")
+        assert self.inference in [
+            "overlap",
+            "average",
+            "gaussian",
+            "max",
+        ], f"Inference type '{self.inference}' not supported yet."
         self.inference_load_epoch = int(
             inference_section.get("inference_load_epoch", "100000")
         )
@@ -530,4 +539,4 @@ class TrainingConfig:
                 else:
                     wandb.config.update({attribute: value}, allow_val_change=True)
 
-            # TODO: AGGIUNGERE TUTTI I PARAMS NECESSARI DA PRINTARE
+            # TODO: add all parameters that have to be printed here...

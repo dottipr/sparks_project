@@ -2,7 +2,7 @@
 Script with functions to either load data or save data to disc.
 
 Author: Prisca Dotti
-Last modified: 18.10.2023
+Last modified: 23.10.2023
 """
 
 # import csv
@@ -33,11 +33,6 @@ __all__ = [
     # "write_colored_sparks_on_disk",
     # "pair_and_write_sparks_on_video",
 ]
-
-# REMARK
-# How to save .json files:
-# with open(filename,"w") as f:
-#    json.dump(dict_or_data,f)
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +150,7 @@ def load_rgb_annotations_ids(
 def write_videos_on_disk(
     training_name: str,
     video_name: str,
-    path: str = "predictions",
+    out_dir: str = "predictions",
     class_names: List[str] = ["sparks", "waves", "puffs"],
     xs: Optional[np.ndarray] = None,
     ys: Optional[np.ndarray] = None,
@@ -169,7 +164,7 @@ def write_videos_on_disk(
     Args:
         training_name (str): Training name.
         video_name (str): Video name.
-        path (str): Output directory path.
+        out_dir (str): Output directory path.
         class_names (list, optional): List of class names.
         xs (numpy.ndarray, optional): Input video used by the network.
         ys (numpy.ndarray, optional): Segmentation video used in the loss
@@ -190,29 +185,29 @@ def write_videos_on_disk(
     else:
         out_name_root = f"{video_name}"
 
-    logger.debug(f"Writing videos on directory {os.path.abspath(path)} ..")
-    os.makedirs(os.path.abspath(path), exist_ok=True)
+    logger.debug(f"Writing videos on directory {os.path.abspath(out_dir)} ..")
+    os.makedirs(os.path.abspath(out_dir), exist_ok=True)
 
     if xs is not None:
-        imageio.volwrite(os.path.join(path, out_name_root + "xs.tif"), xs)
+        imageio.volwrite(os.path.join(out_dir, f"{out_name_root}_xs.tif"), xs)
     if ys is not None:
-        imageio.volwrite(os.path.join(path, out_name_root + "ys.tif"), np.uint8(ys))
+        imageio.volwrite(os.path.join(out_dir, f"{out_name_root}_ys.tif"), np.uint8(ys))
     if raw_preds is not None:
         for i, class_name in enumerate(class_names):
             imageio.volwrite(
-                os.path.join(path, f"{out_name_root}_raw_{class_name}.tif"),
+                os.path.join(out_dir, f"{out_name_root}_raw_{class_name}.tif"),
                 raw_preds[i + 1],
             )
     if segmented_preds is not None:
         for class_name in class_names:
             imageio.volwrite(
-                os.path.join(path, f"{out_name_root}_segmented_{class_name}.tif"),
+                os.path.join(out_dir, f"{out_name_root}_segmented_{class_name}.tif"),
                 np.uint8(segmented_preds[class_name]),
             )
     if instances_preds is not None:
         for class_name in class_names:
             imageio.volwrite(
-                os.path.join(path, f"{out_name_root}_instances_{class_name}.tif"),
+                os.path.join(out_dir, f"{out_name_root}_instances_{class_name}.tif"),
                 np.uint8(instances_preds[class_name]),
             )
 

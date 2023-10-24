@@ -2,7 +2,7 @@
 Script containing the architectures tried in the experiments.
 
 Author: Prisca Dotti
-Last modified: 16.10.2023
+Last modified: 23.10.2023
 """
 
 import logging
@@ -25,12 +25,12 @@ __all__ = ["TempRedUNet", "UNetConvLSTM", "ConvLSTM", "ConvLSTMCell", "UNetPadWr
 
 class UNetPadWrapper(unet.UNetClassifier):
     def __init__(self, config: unet.UNetConfig) -> None:
-        super().__init__()
+        super().__init__(config)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = x.shape[-2]
         w = x.shape[-1]
-        steps = super().config.steps
+        steps = self.config.steps
 
         # Calculate the required padding for both height and width:
         h_pad = 2**steps - h % 2**steps if h % 2**steps != 0 else 0
@@ -57,7 +57,7 @@ class UNetPadWrapper(unet.UNetClassifier):
 
 class TempRedUNet(unet.UNet):
     def __init__(self, unet_config: unet.UNetConfig) -> None:
-        super().__init__()
+        super().__init__(unet_config)
 
         padding = {"valid": 0, "same": unet_config.dilation}[unet_config.border_mode]
 

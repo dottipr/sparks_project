@@ -1,6 +1,6 @@
 """
 Load a saved UNet model at given epochs and save its predictions in the
-folder `trainings_validation`.
+folder `C:project_basedir/evaluation/inference_script/run_name/`.
 
 Predictions are saved as:
 `{training_name}_{epoch}_{video_id}_{class}.tif`
@@ -9,7 +9,7 @@ Predictions are saved as:
           results.
 
 Author: Prisca Dotti
-Last modified: 18.10.2023
+Last modified: 21.10.2023
 """
 
 import logging
@@ -22,10 +22,8 @@ from torch.utils.data import DataLoader
 from config import TrainingConfig, config
 from data.data_processing_tools import masks_to_instances_dict, process_raw_predictions
 from utils.in_out_tools import write_videos_on_disk
-
-# from torch.cuda.amp import GradScaler
 from utils.training_inference_tools import do_inference
-from utils.training_script_utils import init_dataset, init_model
+from utils.training_script_utils import get_sample_ids, init_dataset, init_model
 
 logger = logging.getLogger(__name__)
 
@@ -36,24 +34,29 @@ def main():
     ##################### Get training-specific parameters #####################
 
     run_name = "final_model"
+    # run_name = "TEMP_new_annotated_peaks_physio"  # (if run on laptop)
     config_filename = "config_final_model.ini"
     load_epoch = 100000
 
     use_train_data = False
-    get_final_pred = True  # set to False to only compute raw predictions
-    testing = False  # set to False to only generate unet predictions
-    # set to True to also compute processed outputs and metrics
+    get_final_pred = True  # Set to False to only compute raw predictions
+    custom_ids = []
+    # custom_ids = ["05"] # Override sample_ids if needed
+
+    testing = True  # Set to False to only generate U-Net predictions
+    # Set to True to also compute processed outputs and metrics
     # inference_types = ['overlap', 'average', 'gaussian', 'max']
-    inference_types = None  # set to None to use the default inference type from
+    inference_types = []  # Set to empty to use the default inference type from
     # the config file
 
     # Initialize general parameters
     params = TrainingConfig(
         training_config_file=os.path.join("config_files", config_filename)
     )
+
     if run_name:
         params.run_name = run_name
-    model_name = f"network_{load_epoch:06d}.pth"
+    model_filename = f"network_{load_epoch:06d}.pth"
 
     # Print parameters to console if needed
     # params.print_params()
@@ -76,9 +79,9 @@ def main():
     # output_name = training_name + "_step=2"
     output_name = params.run_name
 
-    save_folder = os.path.join(output_folder, output_name)
+    save_folder = os.path.join(config.basedir, output_folder, output_name)
     os.makedirs(save_folder, exist_ok=True)
-    logger.info(f"Annotations and predictions will be saved on '{save_folder}'")
+    logger.info(f"Annotations and predictions will be saved on '{save_folder}'.")
 
     ######################### Detect GPU, if available #########################
 
@@ -90,68 +93,12 @@ def main():
     logger.info(f"Processing training '{params.run_name}'...")
 
     # Define the sample IDs based on dataset size and usage
-    if use_train_data:
-        logger.info("Predicting outputs for training data")
-        if params.dataset_size == "full":
-            sample_ids = [
-                "01",
-                "02",
-                "03",
-                "04",
-                "06",
-                "07",
-                "08",
-                "09",
-                "11",
-                "12",
-                "13",
-                "14",
-                "16",
-                "17",
-                "18",
-                "19",
-                "21",
-                "22",
-                "23",
-                "24",
-                "27",
-                "28",
-                "29",
-                "30",
-                "33",
-                "35",
-                "36",
-                "38",
-                "39",
-                "41",
-                "42",
-                "43",
-                "44",
-                "46",
-            ]
-        elif params.dataset_size == "minimal":
-            sample_ids = ["01"]
-        else:
-            raise ValueError(
-                f"Unknown dataset size '{params.dataset_size}'. "
-                f"Choose between 'full' and 'minimal'."
-            )
-    else:
-        logger.info("Predicting outputs for testing data")
-        if params.dataset_size == "full":
-            sample_ids = ["05", "10", "15", "20", "25", "32", "34", "40", "45"]
-        elif params.dataset_size == "minimal":
-            sample_ids = ["34"]
-        else:
-            raise ValueError(
-                f"Unknown dataset size '{params.dataset_size}'. "
-                f"Choose between 'full' and 'minimal'."
-            )
-
-    # Check if the specified dataset path is a directory
-    assert os.path.isdir(
-        params.dataset_dir
-    ), f'"{params.dataset_dir}" is not a directory'
+    sample_ids = get_sample_ids(
+        train_data=use_train_data,
+        dataset_size=params.dataset_size,
+        custom_ids=custom_ids,
+    )
+    logger.info(f"Predicting outputs for samples {sample_ids}")
 
     logger.info(f"Using {params.dataset_dir} as dataset root path")
 
@@ -159,8 +106,9 @@ def main():
     dataset = init_dataset(
         params=params,
         sample_ids=sample_ids,
-        inference_dataset=True,
+        apply_data_augmentation=True,
         print_dataset_info=True,
+        load_instances=testing,
     )
 
     # Create a dataloader
@@ -171,7 +119,6 @@ def main():
         num_workers=params.num_workers,
         pin_memory=params.pin_memory,
     )
-
     ### Configure UNet ###
 
     network = init_model(params=params)
@@ -180,20 +127,22 @@ def main():
     ### Load UNet model ###
 
     # Path to the saved model checkpoint
-    models_relative_path = os.path.join("models", "saved_models")
-    model_path = os.path.join(models_relative_path, params.run_name, model_name)
+    models_relative_path = os.path.join(
+        "models", "saved_models", params.run_name, model_filename
+    )
+    model_dir = os.path.realpath(os.path.join(config.basedir, models_relative_path))
 
     # Load the model state dictionary
     logger.info(f"Loading trained model '{run_name}' at epoch {load_epoch}...")
-    network.load_state_dict(torch.load(model_path, map_location=params.device))
-    network.eval()
+    network.load_state_dict(torch.load(model_dir, map_location=params.device))
 
     ########################### Run samples in UNet ############################
 
-    if inference_types is None:
+    if len(inference_types) == 0:
         inference_types = [params.inference]
 
     # get U-Net's raw predictions
+    network.eval()
     raw_preds = do_inference(
         network=network,
         params=params,
@@ -240,7 +189,8 @@ def main():
                 # transform raw predictions into a dictionary
                 raw_preds_dict = {
                     event_type: raw_preds[i][inference][event_label]
-                    for event_type, event_label in config.classes_dict
+                    for event_type, event_label in config.classes_dict.items()
+                    if event_type in config.event_types
                 }
 
                 preds_instances, preds_segmentation, _ = process_raw_predictions(
@@ -279,9 +229,9 @@ def main():
             write_videos_on_disk(
                 training_name=output_name,
                 video_name=video_name,
-                path=os.path.join(save_folder, "inference_" + inference),
-                xs=xs[i],
-                ys=ys[i],
+                out_dir=os.path.join(save_folder, "inference_" + inference),
+                # xs=xs[i], # xs is available elsewhere
+                # ys=ys[i], # ys is available elsewhere
                 raw_preds=raw_preds_movie,
                 segmented_preds=segmented_preds_movie,
                 instances_preds=instances_preds_movie,

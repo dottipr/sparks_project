@@ -91,7 +91,7 @@ def get_metrics_from_summary(
     metrics = {}
 
     for event_type in config.classes_dict.keys():
-        if event_type == "ignore":
+        if event_type not in config.event_types:
             continue
 
         denom_preds = tot_preds[event_type] - ignored_preds[event_type]
@@ -114,11 +114,7 @@ def get_metrics_from_summary(
     # Compute average over classes for each metric
     for m in ["precision", "recall", "correctly_classified", "detected"]:
         metrics["average/" + m] = np.mean(
-            [
-                metrics[event_type + "/" + m]
-                for event_type in config.classes_dict.keys()
-                if event_type != "ignore"
-            ]
+            [metrics[event_type + "/" + m] for event_type in config.event_types]
         )
 
     return metrics
@@ -444,9 +440,6 @@ def get_matches_summary(
             # Otherwise, pred_id matches with at least one labelled event
             else:
                 for other_class in ca_classes:
-                    if other_class:
-                        continue
-
                     # Check if pred_id matched with an event of the other class
                     matched_other_class = (
                         matched_events & matched_ys_ids[other_class]["tot"]
@@ -470,11 +463,13 @@ def get_matches_summary(
 
 ############################# DataFrame functions ##############################
 
+import pandas as pd
+
 
 def get_df_summary_events(
     inference_type: str,
-    matched_ids: Dict[str, Dict[str, int]],
-    matched_percent: Dict[str, Dict[str, float]],
+    matched_ids: Dict[str, Dict[str, Dict[str, Dict[str, float]]]],
+    matched_percent: Dict[str, Dict[str, Dict[str, float]]],
     is_detected: bool = True,
 ) -> pd.DataFrame:
     """
@@ -497,24 +492,17 @@ def get_df_summary_events(
     event_type_label = "Detected" if is_detected else "Labeled"
 
     # Create DataFrames from matched_ids and matched_percent
-    df_ids = pd.DataFrame([matched_ids[inference_type]["sum"]])
-    df_percent = pd.DataFrame([matched_percent[inference_type]])
-
-    # Exclude "background" and "ignore" keys from config.classes_dict
-    event_types = [
-        event_type
-        for event_type in config.classes_dict.keys()
-        if event_type not in ["background", "ignore"]
-    ]
+    df_ids = pd.DataFrame(matched_ids[inference_type]["sum"])
+    df_percent = pd.DataFrame(matched_percent[inference_type])
 
     # Assign 'tp' values to their respective event types
-    for event_type in event_types:
+    for event_type in config.event_types:
         df_ids.at[event_type, event_type] = df_ids.at["tp", event_type]
         df_percent.at[event_type, event_type] = df_percent.at["tp", event_type]
 
     # Rename columns with '%' for percentages
     df_percent = df_percent.rename(
-        columns={event_type: f"% {event_type}" for event_type in event_types}
+        columns={event_type: f"% {event_type}" for event_type in config.event_types}
     )
 
     # Combine DataFrames
@@ -528,7 +516,7 @@ def get_df_summary_events(
         "tot": f"Total {event_type_label}",
         **{
             event_type: f"Matched with {event_type_label} {event_type.capitalize()}"
-            for event_type in event_types
+            for event_type in config.event_types
         },
     }
 
@@ -536,7 +524,7 @@ def get_df_summary_events(
     df = df.rename(index=index_labels)
 
     # Define data types for the DataFrame
-    convert_dict = {event_type: int for event_type in event_types}
+    convert_dict = {event_type: int for event_type in config.event_types}
 
     return df.astype(convert_dict)
 

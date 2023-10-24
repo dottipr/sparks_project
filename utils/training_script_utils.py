@@ -5,12 +5,12 @@ datasets, model and loss function, to make the code more readable.
 Functions:
     init_config_file_path: Load configuration file.
     init_training_dataset: Initialize training dataset.
-    init_testing_dataset: Initialize testing dataset.
     init_model: Initialize deep learning model.
     init_criterion: Initialize loss function.
+    get_sample_ids: Get sample IDs for training or testing.
 
 Author: Prisca Dotti
-Last modified: 18.10.2023
+Last modified: 23.10.2023
 """
 import argparse
 import logging
@@ -18,7 +18,6 @@ import os
 from typing import List, Union
 
 from torch import nn
-from torch.utils.data import Dataset
 
 import models.UNet as unet
 import models.unetOpenAI as unet_openai
@@ -50,7 +49,6 @@ __all__ = [
     "init_config_file_path",
     "init_dataset",
     "get_sample_ids",
-    "init_testing_dataset",
     "init_model",
     "init_criterion",
 ]
@@ -86,7 +84,8 @@ def init_config_file_path() -> str:
 def init_dataset(
     params: TrainingConfig,
     sample_ids: List[str],
-    inference_dataset: bool,
+    apply_data_augmentation: bool,
+    load_instances: bool = False,
     print_dataset_info: bool = True,
 ) -> SparkDataset:
     """
@@ -96,8 +95,9 @@ def init_dataset(
         params (TrainingConfig): TrainingConfig instance containing configuration
             parameters.
         sample_ids (list): List of sample IDs for training.
-        inference_dataset (bool): Whether the dataset is for training or not.
-            If False, apply data augmentation to the samples.
+        apply_data_augmentation (bool): If True, apply data augmentation to the samples.
+        load_instances (bool, optional): Whether to load the event instances
+            from disk. Default is False.
         print_dataset_info (bool, optional): Whether to print dataset information.
             Default is True.
 
@@ -108,6 +108,7 @@ def init_dataset(
         "params": params,
         "base_path": params.dataset_dir,
         "sample_ids": sample_ids,
+        "load_instances": load_instances,
         "inference": None,
     }
 
@@ -124,7 +125,7 @@ def init_dataset(
         logger.error(f"{params.nn_architecture} is not a valid nn architecture.")
         exit()
 
-    if not inference_dataset:
+    if apply_data_augmentation:
         # Apply transforms based on noise_data_augmentation setting
         # (transforms are applied when getting a sample from the dataset)
         transforms = (
@@ -138,7 +139,11 @@ def init_dataset(
     return dataset
 
 
-def get_sample_ids(train_data=False, dataset_size="full", custom_ids=[]):
+def get_sample_ids(
+    train_data: bool = False,
+    dataset_size: str = "full",
+    custom_ids: List[str] = [],
+) -> List[str]:
     if len(custom_ids) == 0:
         if train_data:
             if dataset_size == "full":
@@ -201,61 +206,6 @@ def get_sample_ids(train_data=False, dataset_size="full", custom_ids=[]):
     return sample_ids
 
 
-# TODO: rimuovere da tutti gli scripts che lo usano e correggerli
-def init_testing_dataset(
-    params: TrainingConfig, test_sample_ids: List[str], print_dataset_info: bool = True
-) -> List:
-    """
-    Initialize the testing dataset based on provided parameters and sample IDs.
-
-    Args:
-        params (TrainingConfig): TrainingConfig instance containing configuration
-            parameters.
-        test_sample_ids (list): List of sample IDs for testing.
-        print_dataset_info (bool, optional): Whether to print dataset information.
-            Default is True.
-
-    Returns:
-        list: List of initialized testing datasets.
-    """
-
-    # Define dataset path
-    dataset_path = os.path.realpath(f"{config.basedir}/{params.dataset_dir}")
-
-    assert os.path.isdir(dataset_path), f'"{dataset_path}" is not a directory'
-
-    testing_datasets = []
-
-    dataset_args = {
-        "params": params,
-        "base_path": dataset_path,
-        "sample_ids": test_sample_ids,
-        "testing": True,
-        "inference": params.inference,
-    }
-
-    if params.nn_architecture == "unet_lstm":
-        DatasetClass = SparkDatasetLSTM
-    elif params.nn_architecture in ["pablos_unet", "github_unet", "openai_unet"]:
-        DatasetClass = SparkDataset
-    else:
-        logger.error(f"{params.nn_architecture} is not a valid nn architecture.")
-        exit()
-
-    for sample_id in test_sample_ids:
-        dataset = DatasetClass(
-            **dataset_args,
-        )  # TODO: aggiornare secondo il nuovo SparkDataset
-        testing_datasets.append(dataset)
-
-        if print_dataset_info:
-            logger.info(
-                f"Testing dataset for sample {sample_id} contains {len(dataset)} samples"
-            )
-
-    return testing_datasets
-
-
 def init_model(params: TrainingConfig) -> nn.Module:
     """
     Initialize the deep learning model based on the specified architecture in params.
@@ -282,8 +232,7 @@ def init_model(params: TrainingConfig) -> nn.Module:
         )
 
         if not params.temporal_reduction:
-            network = unet.UNetClassifier(unet_config)  # TEMP
-            # network = UNetPadWrapper(unet_config)
+            network = UNetPadWrapper(unet_config)
         else:
             assert (
                 params.data_duration % params.num_channels == 0
@@ -361,7 +310,7 @@ def init_model(params: TrainingConfig) -> nn.Module:
 
 def init_criterion(
     params: TrainingConfig, dataset: Union[SparkDataset, SparkDatasetLSTM]
-) -> nn.Module:  # TODO: aggiungere altri datasets oppure una classe più generale
+) -> nn.Module:
     """
     Initialize the loss function based on the specified criterion in params.
 

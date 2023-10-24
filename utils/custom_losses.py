@@ -2,7 +2,7 @@
 Script containing custom loss functions for training.
 
 Author: Prisca Dotti
-Last modified: 12.10.2023
+Last modified: 23.10.2023
 """
 
 import logging
@@ -577,6 +577,7 @@ class SoftDiceLoss(nn.Module):
 
 
 class MySoftDiceLoss(SoftDiceLoss):
+    # Remark: I am not sure if this requires logits or probabilities !!!!
     def forward(
         self, x: torch.Tensor, y: torch.Tensor, loss_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:

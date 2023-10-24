@@ -7,7 +7,7 @@ REMARKS
 the end of the script (such as compute_filtered_butter, ...)
 
 Author: Prisca Dotti
-Last modified: 11.10.2023
+Last modified: 23.10.2023
 """
 
 import logging
@@ -352,11 +352,11 @@ def remove_padding(preds: torch.Tensor, original_duration: int) -> torch.Tensor:
     Returns:
         torch.Tensor: Cropped predictions without padding.
     """
-    pad = preds.size(1) - original_duration
+    pad = preds.size(-3) - original_duration
     if pad > 0:
         start_pad = pad // 2
         end_pad = -(pad // 2 + pad % 2)
-        preds = preds[:, start_pad:end_pad]
+        preds = preds[..., start_pad:end_pad, :, :]
 
     return preds
 
@@ -553,8 +553,8 @@ def get_separated_events(
     watershed_classes: List[str] = ["sparks"],
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, List[Tuple[int, int, int]]],]:
     """
-    Separate each class into event instances using watershed separation
-    algorithm.
+    Separate each class into event instances using connected components and
+    watershed separation algorithm for the classes listed in "watershed_classes".
 
     Args:
     - argmax_preds (dict): Segmented UNet output with class-wise predictions.
@@ -572,10 +572,7 @@ def get_separated_events(
     separated_events = {}
     coords_events = {}
 
-    for (event_type,) in config.classes_dict.keys():
-        if event_type in ["ignore", "background"]:
-            continue
-
+    for event_type in config.event_types:
         # Separate connected components in puff (3) and wave classes (2)
         if event_type not in watershed_classes:
             separated_events[event_type] = cc3d.connected_components(
@@ -720,7 +717,6 @@ def count_instances_per_class(instances_dict: Dict[str, List[int]]) -> Dict[str,
     return instances_counts
 
 
-# Functions related to the processing of masks with labelled event instances
 def renumber_labelled_mask(labelled_mask: np.ndarray, shift_id: int = 0) -> np.ndarray:
     """
     Renumber labelled events in a mask to consecutive integers.
@@ -737,20 +733,15 @@ def renumber_labelled_mask(labelled_mask: np.ndarray, shift_id: int = 0) -> np.n
 
     if labelled_mask.max() > 0:
         unique_labels = np.unique(labelled_mask)
-        # Remove background label
-        unique_labels = unique_labels[unique_labels != 0]
-
-        new_mask = np.zeros_like(labelled_mask)
-
-        unique_labels = list(np.unique(labelled_mask))
-        unique_labels.remove(0)
+        unique_labels = unique_labels[unique_labels != 0]  # Remove background label
         new_mask = np.zeros_like(labelled_mask)
 
         for new_id, old_id in enumerate(unique_labels):
             new_mask[labelled_mask == old_id] = new_id + shift_id + 1
 
-        # Check that the number of events hasn't changed
+        # Check that the events have been renumbered correctly
         new_labels = np.unique(new_mask)
+        new_labels = new_labels[new_labels != 0]
         expected_labels = np.arange(shift_id + 1, shift_id + len(unique_labels) + 1)
         assert np.array_equal(
             new_labels, expected_labels
@@ -778,16 +769,16 @@ def masks_to_instances_dict(
         otherwise, they are numbered starting from 1.
 
     Returns:
-    - dict: Dictionary with event labels as keys and event instances masks as
+    - dict: Dictionary with event types as keys and event instances masks as
         values.
     """
     instances_dict = {}
     shift_id = 0
 
     for event_type, event_label in config.classes_dict.items():
-        if event_type == "ignore" or event_type == "background":
+        if event_type not in config.event_types:
             continue
-        instances_dict[event_label] = np.where(
+        instances_dict[event_type] = np.where(
             labels_mask == event_label, instances_mask, 0
         )
 
@@ -882,7 +873,7 @@ def remove_small_events(
     - dict: A dictionary with removed or relabelled events for each event type.
     """
     for event_type, event_instances_mask in instances_dict.items():
-        if event_type == "ignore" or event_type == "background":
+        if event_type not in config.event_types:
             continue
 
         # Merge event labels of event separated by a small gap
@@ -910,9 +901,9 @@ def remove_small_events(
                     if event_size < min_size:
                         # If the event is smaller than the minimal size in the
                         # specified axis, replace its label with new_id
-                        instances_dict[event_type] = np.where(
-                            event_roi, new_id, event_instances_mask
-                        )
+                        instances_dict[event_type][event_roi] = new_id
+
+                        break
     return instances_dict
 
 
@@ -938,7 +929,7 @@ def process_raw_predictions(
       and event coordinates.
     """
     raw_preds_list = list(raw_preds_dict.values())
-    raw_preds_dict = {"background": 1 - np.sum(raw_preds_list, axis=0)}
+    raw_preds_dict["background"] = 1 - np.sum(raw_preds_list, axis=0)
 
     assert (
         raw_preds_dict["background"].shape == input_movie.shape
@@ -1002,6 +993,8 @@ def preds_dict_to_mask(preds_dict: Dict[str, np.ndarray]) -> np.ndarray:
     """
     labels_mask = np.zeros_like(list(preds_dict.values())[0], dtype=int)
     for event_type, event_label in config.classes_dict.items():
+        if event_type not in config.event_types:
+            continue
         labels_mask = np.where(preds_dict[event_type], event_label, labels_mask)
     return labels_mask
 
@@ -1129,17 +1122,18 @@ def simple_nonmaxima_suppression(
     input_array = input_array.astype(np.float64)
 
     # Handle min_distance as a connectivity mask
-    if min_distance == 0:
-        min_distance = 1
-    elif np.isscalar(min_distance):
-        c_min_dist = ndi.generate_binary_structure(input_array.ndim, min_distance)
+    if np.isscalar(min_distance):
+        if min_distance == 0:
+            min_distance = 1
+        else:
+            c_min_dist = ndi.generate_binary_structure(input_array.ndim, min_distance)
     else:
         c_min_dist = np.array(min_distance, bool)
         if c_min_dist.ndim != input_array.ndim:
-            raise ValueError("Connectivity dimension must be same as image")
+            raise ValueError("Connectivity nb of dimensions must be same as input")
 
     if sigma > 0:
-        if mask:
+        if mask.size > 0:
             # Keep only the region inside the mask
             masked_img = np.where(mask, input_array, 0.0)
 
@@ -1150,7 +1144,7 @@ def simple_nonmaxima_suppression(
     else:
         smooth_img = input_array
 
-    if mask:
+    if mask.size > 0:
         # Hypothesis: maxima belong to the maxima mask
         smooth_img = np.where(mask, smooth_img, 0.0)
 

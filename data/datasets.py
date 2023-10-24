@@ -2,7 +2,7 @@
 Classes to create training and testing datasets
 
 Author: Prisca Dotti
-Last modified: 17.10.2023
+Last modified: 23.10.2023
 """
 
 import logging
@@ -236,6 +236,10 @@ class SparkDataset(Dataset):
             dict: A dictionary containing the original instances used for
             training and testing.
         """
+        # Raise an error if instances are not available
+        if not self.instances:
+            raise ValueError("Instances not available for this dataset.")
+
         # Remove padding from the instances
         instances_numpy = {
             i: instance.numpy() for i, instance in enumerate(self.instances)
@@ -816,15 +820,16 @@ class SparkDatasetInference(SparkDataset):
 
     def __init__(self, params: TrainingConfig, **kwargs) -> None:
         # Check that the arguments are suitable
-        if "movie" not in kwargs and "movie_path" not in kwargs:
-            raise ValueError("Either movie or movie_path must be provided.")
+        movie_path = kwargs.get("movie_path")
+        movie = kwargs.get("movie")
 
-        if "movie_path" in kwargs:
+        if movie is None and movie_path is None:
+            raise ValueError("Either movie or movie_path must be provided.")
+        if movie_path:
             # If a movie path is provided, load the movie from disk
-            movie_path = kwargs.get("movie_path")
             movies = [np.asarray(imageio.volread(movie_path))]
         else:
-            movies = [kwargs.get("movie")]
+            movies = [movie]
 
         # Initialize the SparksDataset class
         super().__init__(
