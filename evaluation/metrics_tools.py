@@ -31,6 +31,7 @@ __all__ = [
     "get_matches_summary",
     # "correspondences_precision_recall",
     "compute_f_score",
+    "compute_mcc",
     # "get_precision_recall",
     # "get_precision_recall_f1",
     # "get_precision_recall_f1_from_coords",
@@ -282,6 +283,31 @@ def compute_f_score(precision: float, recall: float, beta: float = 1) -> float:
         )
 
     return f_score
+
+
+def compute_mcc(tp: int, tn: int, fp: int, fn: int) -> float:
+    if (tp != 0) and (tn == 0) and (fp == 0) and (fn == 0):
+        mcc = 1
+    elif (tn != 0) and (tp == 0) and (fp == 0) and (fn == 0):
+        mcc = 1
+    elif (fp != 0) and (tp == 0) and (tn == 0) and (fn == 0):
+        mcc = -1
+    elif (fn != 0) and (tp == 0) and (tn == 0) and (fp == 0):
+        mcc = -1
+    elif (tp == 0) and (fn == 0) and (fp != 0) and (tn != 0):
+        mcc = 0
+    elif (fp == 0) and (tn == 0) and (tp != 0) and (fn != 0):
+        mcc = 0
+    elif (tp == 0) and (fp == 0) and (fn != 0) and (tn != 0):
+        mcc = 0
+    elif (fn == 0) and (tn == 0) and (tp != 0) and (fp != 0):
+        mcc = 0
+    else:
+        mcc = (tp * tn - fp * fn) / np.sqrt(
+            float((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+        )
+
+    return mcc
 
 
 ########################### Instances-based metrics ############################

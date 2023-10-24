@@ -57,6 +57,7 @@ __all__ = [
     "one_sided_non_inferiority_ttest",
     "compute_filtered_butter",
     "get_event_parameters",
+    "get_event_parameters_simple",
     "moving_average",
     "count_classes_in_roi",
     "compute_snr",
@@ -1277,15 +1278,15 @@ def compute_snr(x: np.ndarray, y: np.ndarray) -> float:
 ####################### Other functions (from notebooks) #######################
 
 
-def get_event_parameters(
-    event_mask: np.ndarray, simple: bool = True
-) -> Union[Tuple[int, int, float, float], List[List[List[int]]]]:
+def get_event_parameters_simple(
+    event_mask: np.ndarray,
+) -> Tuple[int, int, float, float]:
     """
-    Get event parameters from an event mask.
+    Get event parameters (start and end frames, and center of mass) from an
+    event mask.
 
     Args:
         event_mask (numpy.ndarray): The ROI denoting an event in the movie.
-        simple (bool): If True, return simplified parameters.
 
     Returns:
         tuple or list: Event parameters.
@@ -1296,30 +1297,48 @@ def get_event_parameters(
     # Extract frame numbers
     frames = np.unique(nonzero_pixels[:, 0])
 
-    if simple:
-        # Get start and end frames
-        start_frame, end_frame = frames[0], frames[-1]
+    # Get start and end frames
+    start_frame, end_frame = frames[0], frames[-1]
 
-        # Calculate center of mass in the first frame
-        y_center, x_center = ndi.center_of_mass(event_mask[start_frame])
+    # Calculate center of mass in the first frame
+    y_center, x_center = ndi.center_of_mass(event_mask[start_frame])
 
-        return (
-            start_frame,
-            end_frame,
-            round(float(x_center), 2),
-            round(float(y_center), 2),
-        )
+    return (
+        start_frame,
+        end_frame,
+        round(float(x_center), 2),
+        round(float(y_center), 2),
+    )
 
-    else:
-        # Create a list of lists for each frame
-        coord_list = []
 
-        for frame in frames:
-            frame_mask = event_mask[frame]
-            y_array, x_array = np.where(frame_mask)
-            coord_list.append([x_array.tolist(), y_array.tolist(), frame])
+def get_event_parameters(
+    event_mask: np.ndarray,
+) -> List[List[List[int]]]:
+    """
+    Get event parameters (list of coordinates and frame numbers) from an
+    event mask.
 
-        return coord_list
+    Args:
+        event_mask (numpy.ndarray): The ROI denoting an event in the movie.
+
+    Returns:
+        tuple or list: Event parameters.
+    """
+    # Find non-zero pixels in the event mask
+    nonzero_pixels = np.transpose(np.nonzero(event_mask))
+
+    # Extract frame numbers
+    frames = np.unique(nonzero_pixels[:, 0])
+
+    # Create a list of lists for each frame
+    coord_list = []
+
+    for frame in frames:
+        frame_mask = event_mask[frame]
+        y_array, x_array = np.where(frame_mask)
+        coord_list.append([x_array.tolist(), y_array.tolist(), frame])
+
+    return coord_list
 
 
 def moving_average(movie: np.ndarray, k: int = 3) -> np.ndarray:

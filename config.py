@@ -21,7 +21,6 @@ from logging.handlers import RotatingFileHandler
 
 import numpy as np
 import torch
-
 import wandb
 
 __all__ = ["config", "TrainingConfig"]

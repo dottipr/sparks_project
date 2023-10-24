@@ -117,16 +117,17 @@ def get_labels_cmap() -> Dict[int, list]:
 
 
 def set_edges_to_white(
-    input_movie: np.ndarray, white: Union[Tuple, List], thickness: int = 0
+    input_movie: np.ndarray, white: Union[int, Tuple, List], thickness: int = 0
 ) -> None:
     """
     Set the edges of an input movie to a specified color (called white for now).
 
     Args:
         input_movie (numpy.ndarray): Input movie as a NumPy array with shape
-            (T, H, W), where T is the number of frames, H is the height of each
-            frame, and W is the width of each frame.
-        white (tuple or list): RGB or RGBA color value to set the edges to, e.g.,
+            (T, H, W) or (T, H, W, 3) or (T, H, W, 4) for RGB or RGBA movies,
+            where T is the number of frames, H is the height of each frame, and
+            W is the width of each frame.
+        white (tuple or list): int, RGB or RGBA color value to set the edges to, e.g.,
             (255, 255, 255) for white.
         thickness (int): Thickness of the edge region to set to the white color.
 
@@ -286,55 +287,60 @@ def add_colored_segmentation_to_video(
     return video
 
 
-def ball(center: Tuple[int, int, int], radius: int) -> List[Tuple[int, int, int]]:
+def ball(center: Tuple[int, ...], radius: int) -> List[Tuple[int, ...]]:
     """
-    This function returns a list of coordinates (t, y, x) within a 3D ball
-    shape centered at the specified center.
+    Generate a list of coordinates within an N-dimensional ball shape centered
+    at the specified center.
 
     Args:
-        center (tuple): Center coordinates (t, y, x).
-        radius (int): Radius of the ball.
+        center (tuple): Center coordinates (N values).
+        radius (int): Radius of the hyperball.
 
     Returns:
-        list of tuples: List of coordinates within the ball.
+        list of tuples: List of coordinates within the hyperball.
     """
-    t, y, x = center
-    t_range = np.linspace(t - radius, t + radius, 2 * radius + 1, dtype=int)
-    y_range = np.linspace(y - radius, y + radius, 2 * radius + 1, dtype=int)
-    x_range = np.linspace(x - radius, x + radius, 2 * radius + 1, dtype=int)
-
-    cube_indices = list(itertools.product(t_range, y_range, x_range))
-    ball_indices = [pt for pt in cube_indices if l2_distance(center, pt) <= radius]
+    dimensions = len(center)
+    ranges = [
+        np.linspace(c - radius, c + radius, 2 * radius + 1, dtype=int) for c in center
+    ]
+    indices = list(itertools.product(*ranges))
+    ball_indices = [pt for pt in indices if l2_distance(center, pt) <= radius]
 
     return ball_indices
 
 
 def color_ball(
     mask: np.ndarray,
-    center: Tuple[int, int, int],
+    center: Tuple[int, ...],
     radius: int,
-    color: Tuple[int, int, int],
+    color: Tuple[int, ...],
     transparency: float = 0.5,  # original was 50
 ) -> np.ndarray:
     """
-    This function colors a region within a 3D ball shape in an RGBA mask with the
+    Color a region within an N-dimensional hyperball shape in an RGBA mask with the
     specified color and transparency.
 
     Args:
         mask (numpy.ndarray): RGBA mask to be colored.
-        center (tuple): Center coordinates (t, y, x) of the ball.
-        radius (int): Radius of the ball.
+        center (tuple): Center coordinates (N values) of the hyperball.
+        radius (int): Radius of the hyperball.
         color (tuple): RGB color tuple (e.g., (255, 0, 0) for red).
         transparency (int): Transparency level for the colored region (0-255).
     """
-    color_indices = ball(center, radius)
+    indices = ball(center, radius)
 
-    # Get mask dimensions
-    duration, height, width, _ = mask.shape
+    # Get mask dimensions (N + 1 dimensions for RGBA)
+    shape = mask.shape
 
-    for t, y, x in color_indices:
-        if 0 <= t < duration and 0 <= y < height and 0 <= x < width:
-            mask[t, y, x] = [*color, transparency]
+    for index in indices:
+        valid_index = True
+        for i, dim in enumerate(index):
+            if not (0 <= dim < shape[i]):
+                valid_index = False
+                break
+
+        if valid_index:
+            mask[tuple(index)] = [*color, transparency]
 
     return mask
 

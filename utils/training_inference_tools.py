@@ -13,12 +13,13 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.utils.data
+import wandb
 from scipy import ndimage as ndi
 from sklearn.metrics import confusion_matrix
 from torch import nn
+from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 
-import wandb
 from config import TrainingConfig, config
 from data.data_processing_tools import (
     masks_to_instances_dict,
@@ -75,7 +76,7 @@ def training_step(
     network: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     criterion: torch.nn.Module,
-    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
+    scheduler: Optional[_LRScheduler] = None,
     # scaler: torch.cuda.amp.GradScaler,
 ) -> Dict[str, torch.Tensor]:
     """

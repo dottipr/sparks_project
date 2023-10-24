@@ -21,15 +21,13 @@ Last modified: 24.10.2023
 import logging
 import os
 
-import torch
+import wandb
 from torch import nn, optim
-from torch.backends import cudnn
 
 # from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard.writer import SummaryWriter
 
-import wandb
 from config import TrainingConfig, config
 from models.UNet import unet
 from utils.training_inference_tools import (
@@ -150,9 +148,6 @@ def main():
     else:
         scheduler = None
 
-    # Set the network in training mode
-    network.train()
-
     # Define the output directory path
     output_path = os.path.join(config.output_dir, params.run_name)
     logger.info(f"Output directory: {output_path}")
@@ -213,11 +208,14 @@ def main():
         summary_writer=summary_writer,
     )
 
-    ############################## Start training ##############################
-
     # Load the model if a specific epoch is provided
     if params.load_epoch != 0:
         trainer.load(params.load_epoch)
+
+    ############################## Start training ##############################
+
+    # Set the network in training mode
+    network.train()
 
     # Resume the W&B run if needed (commented out for now)
     # if wandb.run.resumed:
