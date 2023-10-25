@@ -106,7 +106,7 @@ def main():
     dataset = init_dataset(
         params=params,
         sample_ids=sample_ids,
-        apply_data_augmentation=True,
+        apply_data_augmentation=False,
         print_dataset_info=True,
         load_instances=testing,
     )
@@ -122,7 +122,11 @@ def main():
     ### Configure UNet ###
 
     network = init_model(params=params)
-    network = nn.DataParallel(network).to(params.device)
+
+    # Move the model to the GPU if available
+    if params.device.type != "cpu":
+        network = nn.DataParallel(network).to(params.device, non_blocking=True)
+        # cudnn.benchmark = True
 
     ### Load UNet model ###
 
@@ -134,7 +138,25 @@ def main():
 
     # Load the model state dictionary
     logger.info(f"Loading trained model '{run_name}' at epoch {load_epoch}...")
-    network.load_state_dict(torch.load(model_dir, map_location=params.device))
+    try:
+        network.load_state_dict(torch.load(model_dir, map_location=params.device))
+    except RuntimeError as e:
+        if "module" in str(e):
+            # The error message contains "module," so handle the DataParallel loading
+            logger.warning(
+                "Failed to load the model, as it was trained with DataParallel. Wrapping it in DataParallel and retrying..."
+            )
+            # Get current device of the object (model)
+            temp_device = next(iter(network.parameters())).device
+
+            network = nn.DataParallel(network)
+            network.load_state_dict(torch.load(model_dir, map_location=params.device))
+
+            logger.info("Network should be on CPU, removing DataParallel wrapper...")
+            network = network.module.to(temp_device)
+        else:
+            # Handle other exceptions or re-raise the exception if it's unrelated
+            raise
 
     ########################### Run samples in UNet ############################
 

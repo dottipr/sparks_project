@@ -6,6 +6,7 @@ Last modified: 24.10.2023
 """
 
 import logging
+import os
 import time
 from collections import defaultdict
 from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
@@ -800,6 +801,9 @@ def get_final_preds(
     Function to get predictions from a movie path.
     Either 'movie' or 'movie_path' must be provided as kwargs.
 
+    Input has shape (t, y, x)
+    Outputs have shape (t, y, x)
+
     Args:
     - model (torch.nn.Module): The trained neural network model.
     - params (TrainingConfig): A TrainingConfig containing various parameters.
@@ -1308,3 +1312,45 @@ class MyTrainingManager(unet.TrainingManager):
         logger.info(f"Iteration {self.iter}...")
         logger.info(f"\tTraining loss: {loss:.4g}")
         logger.info(f"\tTime elapsed: {time_elapsed:.2f}s")
+
+    def load(self, niter: int) -> None:
+        """
+        Redeclare load function to account for models that need to be used on
+        cpu, but have been trained on gpu and saved wrapped on a DataParallel
+        object.
+        """
+        if self.load_path is None:
+            self.load_path = self.save_path
+
+        if self.load_path is None:
+            raise ValueError(
+                "`save_path` and `load_path` not set; cannot load a previous state"
+            )
+
+        for obj, filename_template, _, load_function in self.managed_objects:
+            filename = filename_template.format(iter=niter)
+            filename = os.path.join(self.load_path, filename)
+
+            logger.info("Loading '{}'...".format(filename))
+            try:
+                load_function(obj, filename)
+            except RuntimeError as e:
+                if "module" in str(e):
+                    # The error message contains "module," so handle the DataParallel loading
+                    logger.warning(
+                        "Failed to load the model, as it was trained with DataParallel. Wrapping it in DataParallel and retrying..."
+                    )
+                    # Get current device of the object (model)
+                    temp_device = next(iter(obj.parameters())).device
+
+                    obj = nn.DataParallel(obj)
+                    load_function(obj, filename)
+                    logger.info(
+                        "Network should be on CPU, removing DataParallel wrapper..."
+                    )
+                    obj = obj.module.to(temp_device)
+                else:
+                    # Handle other exceptions or re-raise the exception if it's unrelated
+                    raise
+
+        self.iter = niter

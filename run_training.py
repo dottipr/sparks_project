@@ -111,7 +111,7 @@ def main():
     network = init_model(params=params)
 
     # Move the model to the GPU if available
-    if params.device != "cpu":
+    if params.device.type != "cpu":
         network = nn.DataParallel(network).to(params.device, non_blocking=True)
         # cudnn.benchmark = True
 
