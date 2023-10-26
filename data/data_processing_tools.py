@@ -19,7 +19,7 @@ import numpy as np
 import torch
 from scipy import ndimage as ndi
 from scipy import signal, spatial
-from scipy.ndimage import binary_fill_holes, median_filter
+from scipy.ndimage import binary_fill_holes
 from scipy.stats import ttest_rel
 from skimage.filters import threshold_otsu
 from skimage.measure import label, regionprops
@@ -60,6 +60,7 @@ __all__ = [
     "get_event_parameters_simple",
     "moving_average",
     "count_classes_in_roi",
+    "get_cell_mask",
     "compute_snr",
 ]
 
@@ -1194,37 +1195,27 @@ def one_sided_non_inferiority_ttest(
 ######################### Signal-to-Noise Ratio (SNR) ##########################
 
 
-def get_cell_mask(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+def get_cell_mask(x: np.ndarray) -> np.ndarray:
     """
     Given the original recording and the mask with segmented events,
     return a mask with the cell body.
 
     Args:
         x (numpy.ndarray): Original recording.
-        y (numpy.ndarray): Mask with segmented events.
 
     Returns:
         numpy.ndarray: Mask with the cell body.
     """
 
-    # apply median filter to each frame in x
-    x_median = median_filter(x, size=(1, 3, 3))
+    # compute mean frame
+    x_mean = np.mean(np.array(x), axis=0)
 
-    # get mask of 99th percentile from x_median where y == 0
-    percentile = np.percentile(x_median[y == 0], 99)
-    percentile_mask = x_median <= percentile
+    percentile_high = np.percentile(x_mean, 99)
+    percentile_low = np.percentile(x_mean, 1)
+    percentile_mask = (x_mean < percentile_high) & (x_mean > percentile_low)
 
-    # get mask where mean has to be computed
-    mean_mask = np.logical_and(y == 0, percentile_mask)
-
-    # compute mean of blurred frames
-    x_mean = np.mean(np.array(x_median), axis=0, where=mean_mask)
-
-    # fill nan values in x_mean with mean of x_mean
-    x_mean[np.isnan(x_mean)] = np.mean(x_mean[~np.isnan(x_mean)])
-
-    # apply otsu thresholding to x_mean
-    threshold = threshold_otsu(x_mean)
+    # apply otsu thresholding to percentile_mask
+    threshold = threshold_otsu(x_mean[percentile_mask])
     threshold_mask = x_mean > threshold
 
     # clean up threshold_mask
@@ -1251,26 +1242,28 @@ def compute_snr(x: np.ndarray, y: np.ndarray) -> float:
     Returns:
         float: Signal-to-noise ratio.
     """
-    # Create a cell mask from the mask y
-    cell_mask = get_cell_mask(x, y)
+    # Convert the image series to double
+    x = x.astype(float)
+
+    # Create a cell mask from the mask y that includes both the cell body and events
+    cell_mask = get_cell_mask(x)
+    cell_mask = cell_mask | np.any(y, axis=0)
 
     # Create a repeated cell mask for each frame
-    cell_mask = np.repeat(cell_mask[:, np.newaxis, :], x.shape[0], axis=1)
-
-    # Create a mask that includes both the cell body and events
-    cell_and_events_mask = np.logical_or(cell_mask, y)  # check this!! logical_and
+    cell_mask = np.repeat(cell_mask[np.newaxis, :, :], x.shape[0], axis=0)
 
     # Calculate the 99th percentile of x within the cell_and_events_mask
-    percentile = np.percentile(x[cell_and_events_mask], 99)
+    p = 99
+    avg_events = np.percentile(x[y != 0], p)
 
     # Calculate the average baseline from the cell area without events
-    baseline = np.mean(x[cell_mask & (y == 0)])
+    avg_baseline = np.mean(x[cell_mask & (y == 0)])
 
     # Estimate noise standard deviation from the cell area without events
     sd_noise = np.std(x[cell_mask & (y == 0)])
 
     # Calculate SNR
-    snr = (percentile - baseline) / sd_noise
+    snr = (avg_events - avg_baseline) / sd_noise
 
     return snr
 
