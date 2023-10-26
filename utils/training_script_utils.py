@@ -10,7 +10,7 @@ Functions:
     get_sample_ids: Get sample IDs for training or testing.
 
 Author: Prisca Dotti
-Last modified: 23.10.2023
+Last modified: 26.10.2023
 """
 import argparse
 import logging
@@ -134,7 +134,7 @@ def init_dataset(
         dataset = TransformedSparkDataset(dataset, transforms)
 
     if print_dataset_info:
-        logger.info(f"Samples in training dataset: {len(dataset)}")
+        logger.info(f"Samples in dataset: {len(dataset)}")
 
     return dataset
 
