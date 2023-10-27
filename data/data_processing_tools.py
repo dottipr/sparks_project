@@ -1208,7 +1208,10 @@ def get_cell_mask(x: np.ndarray) -> np.ndarray:
     """
 
     # compute mean frame
-    x_mean = np.mean(np.array(x), axis=0)
+    if x.ndim >= 3:
+        x_mean = np.mean(np.array(x), axis=0)
+    else:
+        x_mean = np.array(x)
 
     percentile_high = np.percentile(x_mean, 99)
     percentile_low = np.percentile(x_mean, 1)
@@ -1231,13 +1234,16 @@ def get_cell_mask(x: np.ndarray) -> np.ndarray:
     return threshold_mask
 
 
-def compute_snr(x: np.ndarray, y: np.ndarray) -> float:
+def compute_snr(
+    x: np.ndarray, y: np.ndarray, event_roi: np.ndarray = np.array([])
+) -> float:
     """
     Compute the signal-to-noise ratio given the original recording and the mask
     with segmented events.
     Args:
         x (numpy.ndarray): Original recording.
         y (numpy.ndarray): Mask with segmented events.
+        event_roi (numpy.ndarray): Mask with the event ROI.
 
     Returns:
         float: Signal-to-noise ratio.
@@ -1250,11 +1256,18 @@ def compute_snr(x: np.ndarray, y: np.ndarray) -> float:
     cell_mask = cell_mask | np.any(y, axis=0)
 
     # Create a repeated cell mask for each frame
-    cell_mask = np.repeat(cell_mask[np.newaxis, :, :], x.shape[0], axis=0)
+    if cell_mask.ndim >= 3:
+        cell_mask = np.repeat(cell_mask[np.newaxis, :, :], x.shape[0], axis=0)
+    else:
+        cell_mask = cell_mask
 
-    # Calculate the 99th percentile of x within the cell_and_events_mask
+    # If an event ROI is not provided, use y
+    if event_roi.size == 0:
+        event_roi = y
+
+    # Calculate the 99th percentile of x within the events mask
     p = 99
-    avg_events = np.percentile(x[y != 0], p)
+    avg_events = np.percentile(x[event_roi != 0], p)
 
     # Calculate the average baseline from the cell area without events
     avg_baseline = np.mean(x[cell_mask & (y == 0)])
