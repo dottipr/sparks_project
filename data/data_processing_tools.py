@@ -19,7 +19,7 @@ import numpy as np
 import torch
 from scipy import ndimage as ndi
 from scipy import signal, spatial
-from scipy.ndimage import binary_fill_holes
+from scipy.ndimage import binary_fill_holes, find_objects
 from scipy.stats import ttest_rel
 from skimage.filters import threshold_otsu
 from skimage.measure import label, regionprops
@@ -894,7 +894,7 @@ def remove_small_events(
             # Get ROI of single event
             event_roi = event_instances_mask == event_id
             # Get ranges of current event (duration, height, width)
-            slices = ndi.measurements.find_objects(event_roi)[0]
+            slices = find_objects(event_roi)[0]
 
             for min_size, slice in zip(config.min_size[event_type], slices):
                 # If a minimal size is specified for the current axis in the
