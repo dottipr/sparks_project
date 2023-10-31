@@ -7,7 +7,7 @@ REMARKS
 the end of the script (such as compute_filtered_butter, ...)
 
 Author: Prisca Dotti
-Last modified: 23.10.2023
+Last modified: 30.10.2023
 """
 
 import logging
@@ -23,6 +23,7 @@ from scipy.ndimage import binary_fill_holes
 from scipy.stats import ttest_rel
 from skimage.filters import threshold_otsu
 from skimage.measure import label, regionprops
+from skimage.morphology import binary_closing, disk
 from skimage.segmentation import watershed
 
 from config import config
@@ -1207,22 +1208,30 @@ def get_cell_mask(x: np.ndarray) -> np.ndarray:
         numpy.ndarray: Mask with the cell body.
     """
 
-    # compute mean frame
+    # Compute mean frame
     if x.ndim >= 3:
         x_mean = np.mean(np.array(x), axis=0)
     else:
         x_mean = np.array(x)
 
+    # Normalize x_mean between 0 and 1
+    x_mean = (x_mean - np.min(x_mean)) / (np.max(x_mean) - np.min(x_mean))
+
     percentile_high = np.percentile(x_mean, 99)
     percentile_low = np.percentile(x_mean, 1)
     percentile_mask = (x_mean < percentile_high) & (x_mean > percentile_low)
 
-    # apply otsu thresholding to percentile_mask
-    threshold = threshold_otsu(x_mean[percentile_mask])
-    threshold_mask = x_mean > threshold
+    # Apply otsu thresholding to percentile_mask -> Canny edges
+    otsu_threshold = threshold_otsu(x_mean[percentile_mask])
+    otsu_mask = x_mean > otsu_threshold
+    otsu_mask = binary_fill_holes(otsu_mask).astype(bool)
 
-    # clean up threshold_mask
-    threshold_mask = binary_fill_holes(threshold_mask)
+    # Sobel edge detection
+    sobel_mask = x_mean > np.percentile(x_mean, 50)
+    sobel_mask = binary_fill_holes(sobel_mask).astype(bool)
+
+    # Combine masks
+    threshold_mask = np.logical_or(otsu_mask, sobel_mask)
 
     # keep only largest connected component
     threshold_mask = label(threshold_mask)
@@ -1231,11 +1240,18 @@ def get_cell_mask(x: np.ndarray) -> np.ndarray:
     largest_component = np.argmax(areas) + 1
     threshold_mask = threshold_mask == largest_component
 
+    # Compute mask's binary closing
+    threshold_mask = binary_closing(threshold_mask, disk(2))
+    threshold_mask = binary_fill_holes(threshold_mask)
+
     return threshold_mask
 
 
 def compute_snr(
-    x: np.ndarray, y: np.ndarray, event_roi: np.ndarray = np.array([])
+    x: np.ndarray,
+    y: np.ndarray,
+    event_roi: np.ndarray = np.array([]),
+    percentile: float = 99,
 ) -> float:
     """
     Compute the signal-to-noise ratio given the original recording and the mask
@@ -1243,7 +1259,10 @@ def compute_snr(
     Args:
         x (numpy.ndarray): Original recording.
         y (numpy.ndarray): Mask with segmented events.
-        event_roi (numpy.ndarray): Mask with the event ROI.
+        event_roi (numpy.ndarray): Mask with the region of interest (ROI) where
+            events are expected.
+        percentile (float): Percentile used to estimate the noise standard
+            deviation.
 
     Returns:
         float: Signal-to-noise ratio.
@@ -1261,19 +1280,29 @@ def compute_snr(
     else:
         cell_mask = cell_mask
 
-    # If an event ROI is not provided, use y
-    if event_roi.size == 0:
-        event_roi = y
+    # Create background mask
+    background_mask = cell_mask & (y == 0)
+
+    # Get event labels
+    event_labels = np.unique(y[y != config.ignore_index]).tolist()
+    event_labels.remove(0)
 
     # Calculate the 99th percentile of x within the events mask
-    p = 99
-    avg_events = np.percentile(x[event_roi != 0], p)
+    if event_roi.size == 0:
+        percentile_mask = np.isin(y, event_labels)
+    else:
+        percentile_mask = event_roi
+
+    avg_events = np.percentile(x[percentile_mask], percentile)
+    # print(f"\t99th percentile of events: {avg_events}")
 
     # Calculate the average baseline from the cell area without events
-    avg_baseline = np.mean(x[cell_mask & (y == 0)])
+    avg_baseline = np.mean(x[background_mask])
+    # print(f"\tAverage baseline: {avg_baseline}")
 
     # Estimate noise standard deviation from the cell area without events
-    sd_noise = np.std(x[cell_mask & (y == 0)])
+    sd_noise = np.std(x[background_mask])
+    # print(f"\tStandard deviation of noise: {sd_noise}")
 
     # Calculate SNR
     snr = (avg_events - avg_baseline) / sd_noise
