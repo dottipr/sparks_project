@@ -19,7 +19,13 @@ import numpy as np
 import torch
 from scipy import ndimage as ndi
 from scipy import signal, spatial
-from scipy.ndimage import binary_fill_holes, find_objects
+from scipy.ndimage import (
+    binary_fill_holes,
+    center_of_mass,
+    distance_transform_edt,
+    find_objects,
+    label,
+)
 from scipy.stats import ttest_rel
 from skimage.filters import threshold_otsu
 from skimage.measure import label, regionprops
@@ -605,7 +611,7 @@ def get_separated_events(
             smooth_xs = smooth_xs.astype(float)
 
             # Compute watershed separation
-            markers = ndi.label(mask_loc)[0]
+            markers = label(mask_loc)[0]
 
             split_event_mask = watershed(
                 image=-smooth_xs,
@@ -854,7 +860,7 @@ def analyse_spark_roi(spark_mask: np.ndarray) -> Tuple[int, float, int]:
     max_radius = 0
     for frame in frames:
         # Calculate the Euclidean distance transform for the spark mask
-        dt = ndi.distance_transform_edt(spark_mask[frame])
+        dt = distance_transform_edt(spark_mask[frame])
         temp_radius = np.amax(dt)
         max_radius = max(max_radius, temp_radius)
 
@@ -875,24 +881,28 @@ def remove_small_events(
     Returns:
     - dict: A dictionary with removed or relabelled events for each event type.
     """
-    for event_type, event_instances_mask in instances_dict.items():
+    clean_instances_dict = {}
+    for event_type in instances_dict.keys():
+        clean_instances_mask = np.copy(instances_dict[event_type])
+
         if event_type not in config.event_types:
+            clean_instances_dict[event_type] = clean_instances_mask
             continue
 
         # Merge event labels of event separated by a small gap
         max_gap = config.max_gap[event_type]
         if max_gap:
-            instances_dict[event_type] = merge_labels(
-                labelled_mask=event_instances_mask, max_gap=max_gap
+            clean_instances_mask = merge_labels(
+                labelled_mask=clean_instances_mask, max_gap=max_gap
             )
 
         # Remove small events
-        events_ids = list(np.unique(event_instances_mask))
+        events_ids = list(np.unique(clean_instances_mask))
         events_ids.remove(0)
 
         for event_id in events_ids:
             # Get ROI of single event
-            event_roi = event_instances_mask == event_id
+            event_roi = clean_instances_mask == event_id
             # Get ranges of current event (duration, height, width)
             slices = find_objects(event_roi)[0]
 
@@ -904,10 +914,11 @@ def remove_small_events(
                     if event_size < min_size:
                         # If the event is smaller than the minimal size in the
                         # specified axis, replace its label with new_id
-                        instances_dict[event_type][event_roi] = new_id
+                        clean_instances_mask[event_roi] = new_id
 
                         break
-    return instances_dict
+        clean_instances_dict[event_type] = clean_instances_mask
+    return clean_instances_dict
 
 
 def process_raw_predictions(
@@ -1336,7 +1347,7 @@ def get_event_parameters_simple(
     start_frame, end_frame = frames[0], frames[-1]
 
     # Calculate center of mass in the first frame
-    y_center, x_center = ndi.center_of_mass(event_mask[start_frame])
+    y_center, x_center = center_of_mass(event_mask[start_frame])
 
     return (
         start_frame,
