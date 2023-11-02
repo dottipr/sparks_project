@@ -1,5 +1,5 @@
 """
-Classes to create training and testing datasets
+Classes to create datasets.
 
 Author: Prisca Dotti
 Last modified: 23.10.2023
