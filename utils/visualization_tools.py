@@ -2,7 +2,7 @@
 Script with tools for data visualisation (e.g. plots and Napari).
 
 Author: Prisca Dotti
-Last modified: 13.10.2023
+Last modified: 02.11.2023
 """
 
 import itertools
@@ -76,7 +76,7 @@ def get_discrete_cmap(name: str = "gray", lut: int = 16) -> vispy.color.Colormap
     segmented_cmap = cm.get_cmap(name=name, lut=lut)
 
     # Get the colors
-    colors = segmented_cmap(np.arange(0, segmented_cmap.N))
+    colors = segmented_cmap(np.arange(0, lut))
 
     # Create a new discrete colormap
     cmap = vispy.color.Colormap(colors, interpolation="zero")
@@ -487,6 +487,7 @@ def add_colored_classes_to_video(
     Returns:
         list of numpy.ndarray: Colored video frames.
     """
+    color_movie = np.copy(movie)
     # Normalize sample movie and create a color dictionary
     if white_bg:
         classes_dict = {  # Dataset parameters
@@ -495,7 +496,7 @@ def add_colored_classes_to_video(
             "waves": {"nb": 2, "color": [138, 43, 226]},  # Purple
             "ignore": {"nb": 4, "color": [80, 80, 80]},  # Gray
         }
-        movie.fill(255)
+        color_movie.fill(255)
         transparency = 1000  # Remove transparency if the background is white
     else:
         classes_dict = {  # Dataset parameters
@@ -504,13 +505,13 @@ def add_colored_classes_to_video(
             "waves": {"nb": 2, "color": [178, 102, 255]},  # Purple
             "ignore": {"nb": 4, "color": [224, 224, 224]},  # Gray
         }
-        movie = 255 * (movie / movie.max())
+        color_movie = 255 * (color_movie / color_movie.max())
 
     # Convert video to RGB
     color_movie = [Image.fromarray(frame).convert("RGB") for frame in movie]
 
     # Add colored segmentation to movie
-    for event_class, class_info in classes_dict.items():
+    for class_info in classes_dict.values():
         class_nb = class_info["nb"]
         color = class_info["color"]
 
@@ -569,15 +570,17 @@ def add_colored_instances_to_video(
     Returns:
         list of numpy.ndarray: Colored video frames.
     """
+    color_movie = np.copy(movie)
+
     # Normalize sample movie
     if white_bg:
-        movie.fill(255)
+        color_movie.fill(255)
         transparency = 1000  # Remove transparency if the background is white
     else:
-        movie = 255 * (movie / movie.max())
+        color_movie = 255 * (color_movie / color_movie.max())
 
     # Convert video to RGB
-    color_movie = [Image.fromarray(frame).convert("RGB") for frame in movie]
+    color_movie = [Image.fromarray(frame).convert("RGB") for frame in color_movie]
 
     # Add colored segmentation to movie
     for event_id in range(1, instances_mask.max() + 1):

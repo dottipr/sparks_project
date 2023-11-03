@@ -30,6 +30,7 @@ This repository contains the code and resources related to the detection and cla
   - **matlab inference.ipynb**: A script showing how to use the method used for the Matlab GUI to run a sample in a saved U-Net model, either using a path or a numpy array as input.
   - **plot and analyze detected events.ipynb**: Used for plotting and analyzing detected events.
   - **training (interactive).ipynb**: Interactive version of the training script, mainly used for debugging.
+  - **save processed movies on disk.ipynb**: Notebook to save on disk annotated videos with colored segmentation masks or instances on top of them. It also allows to save a stacked version of the results with descriptive text on top of each movie.
 
 - **raw_notebooks/**: This directory contains notebooks used for experiments, figure generation, and similar purposes. Scripts in this directory may not be fully cleaned up.
 
