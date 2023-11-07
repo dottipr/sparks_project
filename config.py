@@ -368,7 +368,7 @@ class TrainingConfig:
         )
         if not os.path.isdir(self.dataset_dir):
             warnings.warn(
-                f'"{self.dataset_dir}" is not a directory, only inference with a provided movie path or an array is possible.'
+                f'Specified dataset path "{self.dataset_dir}" is not a directory, only inference with a provided movie path or an array is possible.'
             )
         self.dataset_size = dataset_section.get("dataset_size", "full")
         self.batch_size = int(dataset_section.get("batch_size", "4"))

@@ -14,13 +14,13 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.utils.data
-import wandb
 from scipy import ndimage as ndi
 from sklearn.metrics import confusion_matrix
 from torch import nn
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 
+import wandb
 from config import TrainingConfig, config
 from data.data_processing_tools import (
     masks_to_instances_dict,
@@ -795,6 +795,7 @@ def max_inference(frame_preds: List[List[torch.Tensor]]) -> torch.Tensor:
 def get_final_preds(
     model: nn.Module,
     params: TrainingConfig,
+    fill_holes: bool = False,
     **kwargs,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -807,6 +808,8 @@ def get_final_preds(
     Args:
     - model (torch.nn.Module): The trained neural network model.
     - params (TrainingConfig): A TrainingConfig containing various parameters.
+    - fill_holes (bool): Whether to fill holes in the predicted segmentation
+        mask, so that each event is a connected component in each frame.
 
     Kwargs:
     - movie (np.ndarray): The movie to be processed.
@@ -854,6 +857,7 @@ def get_final_preds(
         raw_preds_dict=raw_pred_dict,
         input_movie=input_movie,
         training_mode=False,
+        fill_holes=fill_holes,
         debug=False,
     )
 
