@@ -16,11 +16,13 @@ import logging
 import math
 import os
 import sys
+import warnings
 from configparser import ConfigParser
 from logging.handlers import RotatingFileHandler
 
 import numpy as np
 import torch
+
 import wandb
 
 __all__ = ["config", "TrainingConfig"]
@@ -364,10 +366,10 @@ class TrainingConfig:
         self.dataset_dir = os.path.realpath(
             os.path.join(config.basedir, self.dataset_dir)
         )
-        assert os.path.isdir(
-            self.dataset_dir
-        ), f'"{self.dataset_dir}" is not a directory'
-
+        if not os.path.isdir(self.dataset_dir):
+            warnings.warn(
+                f'"{self.dataset_dir}" is not a directory, only inference with a provided movie path or an array is possible.'
+            )
         self.dataset_size = dataset_section.get("dataset_size", "full")
         self.batch_size = int(dataset_section.get("batch_size", "4"))
         # self.num_workers = dataset_section.getint("num_workers", 1)
