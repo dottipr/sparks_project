@@ -22,7 +22,6 @@ from logging.handlers import RotatingFileHandler
 
 import numpy as np
 import torch
-
 import wandb
 
 __all__ = ["config", "TrainingConfig"]
@@ -35,6 +34,10 @@ class ProjectConfig:
         """
         Initialize the configuration object.
         The configuration object stores all the global variables for the project.
+
+        Comment for Matlab GUI: to change the values of the attributes, you can
+        access them using dot notation, e.g.
+        config.min_size["sparks"] = [1, 2, 3].
         """
         # Get basedir of the project
         self.basedir = os.path.dirname(os.path.realpath(__file__))
