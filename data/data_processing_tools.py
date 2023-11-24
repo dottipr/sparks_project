@@ -928,6 +928,12 @@ def fill_instances_holes(
     instances_dict: Dict[str, np.ndarray]
 ) -> Dict[str, np.ndarray]:
     clean_instances_dict = {}
+
+    # Get binary mask of present events
+    binary_instances = np.sum(
+        [event_mask for event_mask in instances_dict.values()], axis=0
+    ).astype(bool)
+
     for event_type in instances_dict.keys():
         clean_instances_mask = np.copy(instances_dict[event_type])
 
@@ -945,9 +951,13 @@ def fill_instances_holes(
                     np.uint8
                 )
                 filled_mask = np.array(binary_fill_holes(instance_mask))
-                clean_instances_mask[frame] = np.where(
-                    filled_mask, event_id, clean_instances_mask[frame]
-                )
+                filled_mask = np.logical_and(filled_mask, ~binary_instances[frame])
+                if filled_mask.any():
+                    clean_instances_mask[frame] = np.where(
+                        filled_mask,
+                        event_id,
+                        clean_instances_mask[frame],
+                    )
 
         clean_instances_dict[event_type] = clean_instances_mask
 

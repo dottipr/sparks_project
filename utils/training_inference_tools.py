@@ -820,7 +820,6 @@ def get_final_preds(
         - preds_segmentation: Predicted segmentation.
         - preds_instances: Predicted event instances.
     """
-
     ### Get sample as dataset ###
     sample_dataset = SparkDatasetInference(
         params=params,
