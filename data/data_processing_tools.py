@@ -17,6 +17,7 @@ from typing import Dict, List, Tuple, Union
 import cc3d
 import numpy as np
 import torch
+from matplotlib import pyplot as plt
 from scipy import ndimage as ndi
 from scipy import signal, spatial
 from scipy.ndimage import (
@@ -611,8 +612,7 @@ def get_separated_events(
             smooth_xs = smooth_xs.astype(float)
 
             # Compute watershed separation
-            markers = label(mask_loc)[0]
-
+            markers = label(mask_loc)
             split_event_mask = watershed(
                 image=-smooth_xs,
                 markers=markers,

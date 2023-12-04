@@ -144,6 +144,27 @@ def get_sample_ids(
     dataset_size: str = "full",
     custom_ids: List[str] = [],
 ) -> List[str]:
+    """
+    Returns a list of sample IDs based on the specified parameters.
+
+    Args:
+        train_data (bool, optional): Flag indicating whether the sample IDs are for training data. Defaults to False.
+        dataset_size (str, optional): The size of the dataset. Choose between 'full' and 'minimal'. Defaults to 'full'.
+        custom_ids (List[str], optional): Custom list of sample IDs. Defaults to an empty list.
+
+    Returns:
+        List[str]: A list of sample IDs.
+
+    Raises:
+        ValueError: If an unknown dataset size is provided.
+
+    Examples:
+        >>> get_sample_ids(train_data=True, dataset_size="full")
+        ['01', '02', '03', '04', '06', '07', '08', '09', '11', '12', '13', '14', '16', '17', '18', '19', '21', '22', '23', '24', '27', '28', '29', '30', '33', '35', '36', '38', '39', '41', '42', '43', '44', '46']
+
+        >>> get_sample_ids(train_data=False, dataset_size="minimal")
+        ['34']
+    """
     if len(custom_ids) == 0:
         if train_data:
             if dataset_size == "full":
@@ -187,8 +208,7 @@ def get_sample_ids(
                 sample_ids = ["01"]
             else:
                 raise ValueError(
-                    f"Unknown dataset size '{dataset_size}'. "
-                    f"Choose between 'full' and 'minimal'."
+                    f"Unknown dataset size '{dataset_size}'. Choose between 'full' and 'minimal'."
                 )
         else:
             if dataset_size == "full":
@@ -197,8 +217,7 @@ def get_sample_ids(
                 sample_ids = ["34"]
             else:
                 raise ValueError(
-                    f"Unknown dataset size '{dataset_size}'. "
-                    f"Choose between 'full' and 'minimal'."
+                    f"Unknown dataset size '{dataset_size}'. Choose between 'full' and 'minimal'."
                 )
     else:
         sample_ids = custom_ids
