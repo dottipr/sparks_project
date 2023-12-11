@@ -1058,12 +1058,12 @@ def test_function(
         # Count number of categorized events that are necessary for the metrics
         for ca_event in config.event_types:
             tot_preds[ca_event] += len(matched_preds_ids[ca_event]["tot"])
-            tp_preds[ca_event] += len(matched_preds_ids[ca_event]["tp"])
+            tp_preds[ca_event] += len(matched_preds_ids[ca_event][ca_event])
             ignored_preds[ca_event] += len(matched_preds_ids[ca_event]["ignored"])
             unlabeled_preds[ca_event] += len(matched_preds_ids[ca_event]["unlabeled"])
 
             tot_ys[ca_event] += len(matched_ys_ids[ca_event]["tot"])
-            tp_ys[ca_event] += len(matched_ys_ids[ca_event]["tp"])
+            tp_ys[ca_event] += len(matched_ys_ids[ca_event][ca_event])
             undetected_ys[ca_event] += len(matched_ys_ids[ca_event]["undetected"])
 
         logger.debug(f"Time to get matches summary: {time.time() - start:.2f} s")

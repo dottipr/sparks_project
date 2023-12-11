@@ -22,6 +22,7 @@ from logging.handlers import RotatingFileHandler
 
 import numpy as np
 import torch
+
 import wandb
 
 __all__ = ["config", "TrainingConfig"]
@@ -65,11 +66,13 @@ class ProjectConfig:
             "sparks": 1,
             "waves": 2,
             "puffs": 3,
+            # "transient": 4,
+            # "undefined": 5,  type of local signal (not spark of puff)
         }
         # note: the class values have to be consecutive
         self.event_types = ["sparks", "waves", "puffs"]
 
-        self.ignore_index = self.num_classes  # Label ignored during training
+        self.ignore_index = 4  # Label ignored during training
 
         # Include ingore index in the classes dictionary
         self.classes_dict["ignore"] = self.ignore_index
