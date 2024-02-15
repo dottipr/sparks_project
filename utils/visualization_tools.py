@@ -2,7 +2,7 @@
 Script with tools for data visualisation (e.g. plots and Napari).
 
 Author: Prisca Dotti
-Last modified: 02.11.2023
+Last modified: 14.02.2024
 """
 
 import itertools
@@ -36,6 +36,7 @@ __all__ = [
     "get_labels_cmap",
     "set_edges_to_white",
     "get_annotations_contour",
+    "get_instances_contour",
     "paste_segmentation_on_video",
     "add_colored_segmentation_to_video",
     "ball",
@@ -206,6 +207,45 @@ def get_annotations_contour(
         labels_contour += class_nb * class_contour.astype(labels_contour.dtype)
 
     return labels_contour
+
+
+def get_instances_contour(instances: np.ndarray, contour_val: int = 2) -> np.ndarray:
+    """
+    Compute the contour of annotation masks for Napari visualization.
+
+    Args:
+        instances (numpy.ndarray): Input mask with integer event instances.
+        contour_val (int): Number of pixels to dilate the contour.
+
+    Returns:
+        numpy.ndarray: Contour mask with the same shape as input annotations.
+
+    This function computes the contour of instance masks for visualization in
+    Napari. It dilates and erodes each event separately to obtain the contour
+    and combines them into a single contour mask.
+    """
+    # Create a structuring element for dilation and erosion
+    # (dilate only along x and y)
+    struct = np.zeros((1, 1 + contour_val, 1 + contour_val))
+    struct[0, 1, :] = 1
+    struct[0, :, 1] = 1
+
+    # Initialize the contour mask
+    events_contour = np.zeros_like(instances)
+
+    # Get list of event instances
+    instances_list = np.unique(instances)
+
+    for event_nb in instances_list:
+        event_mask = instances == event_nb
+        event_dilated = ndi.binary_dilation(event_mask, structure=struct)
+        event_eroded = ndi.binary_erosion(event_mask, structure=struct)
+        event_contour = np.where(
+            np.logical_not(event_eroded.astype(bool)), event_dilated, 0
+        )
+        events_contour += event_nb * event_contour.astype(events_contour.dtype)
+
+    return events_contour
 
 
 #################### colored events on movie visualisation #####################

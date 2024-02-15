@@ -5,9 +5,10 @@ REMARKS
 24.10.2022: functions that aren't currently used are commented out and put at
 the end of the script (such as ..., )
 16.06.2023: removed some unused functions (both in code and at the end of the script)
+14.02.2024: added computation of F1-score in get_metrics_from_summary
 
 Author: Prisca Dotti
-Last modified: 28.09.2023
+Last modified: 14.02.2024
 """
 
 import logging
@@ -76,6 +77,7 @@ def get_metrics_from_summary(
     - recall per class
     - % correctly classified events per class
     - % detected events per class
+    - F1-score per class
 
     Parameters:
         tot_preds (dict): Total number of predicted events per class.
@@ -111,6 +113,7 @@ def get_metrics_from_summary(
         metrics[event_type + "/recall"] = recall
         metrics[event_type + "/correctly_classified"] = correctly_classified
         metrics[event_type + "/detected"] = detected
+        metrics[event_type + "/f1-score"] = compute_f_score(precision, recall)
 
     # Also compute metrics with respect to all events
     denom_preds = sum(tot_preds.values()) - sum(ignored_preds.values())
@@ -129,9 +132,10 @@ def get_metrics_from_summary(
     metrics["total/recall"] = recall
     metrics["total/correctly_classified"] = correctly_classified
     metrics["total/detected"] = detected
+    metrics["total/f1-score"] = compute_f_score(precision, recall)
 
     # Compute average over classes for each metric
-    for m in ["precision", "recall", "correctly_classified", "detected"]:
+    for m in ["precision", "recall", "correctly_classified", "detected", "f1-score"]:
         metrics["average/" + m] = np.mean(
             [metrics[event_type + "/" + m] for event_type in config.event_types]
         )
@@ -565,20 +569,14 @@ def get_df_summary_events(
     return df.astype(convert_dict)
 
 
-def get_df_metrics(
-    inference_type: str, metrics_all: Dict[str, Dict[str, float]]
-) -> pd.DataFrame:
+def get_df_metrics(metrics_all: Dict[str, Dict[str, float]]) -> pd.DataFrame:
     """
-    Create a DataFrame of metrics for the specified inference type.
-
     Args:
-        inference_type (str): The type of inference (e.g., "overlap" or
-            "average").
         metrics_all (dict): Dictionary containing metrics data for all inference
             types.
 
     Returns:
-        pd.DataFrame: DataFrame of metrics for the specified inference type.
+        pd.DataFrame: DataFrame of metrics.
     """
     # Define the event types to consider
     event_types = [
@@ -594,7 +592,8 @@ def get_df_metrics(
     df_data = {event_type: {} for event_type in event_types}
 
     # Iterate through metrics for the specified inference type
-    for type_metric, val in metrics_all[inference_type].items():
+    # for type_metric, val in metrics_all[inference_type].items():
+    for type_metric, val in metrics_all.items():
         for event_type in event_types:
             if type_metric.startswith(event_type):
                 # Remove the event type prefix from the metric name
