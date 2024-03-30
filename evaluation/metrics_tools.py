@@ -19,6 +19,7 @@ import pandas as pd
 from scipy import sparse
 
 from config import config
+from data.data_processing_tools import renumber_labelled_mask
 
 logger = logging.getLogger(__name__)
 
@@ -300,9 +301,7 @@ def compute_f_score(precision: float, recall: float, beta: float = 1) -> float:
     if beta == 1:
         f_score = 2 * precision * recall / (precision + recall)
     else:
-        f_score = (
-            (1 + beta**2) * (precision * recall) / (beta**2 * precision + recall)
-        )
+        f_score = (1 + beta**2) * (precision * recall) / (beta**2 * precision + recall)
 
     return f_score
 
@@ -385,6 +384,8 @@ def get_score_matrix(
     """
     # Compute matrices with all separated events summed
     ys_all_events = np.sum(list(ys_instances.values()), axis=0)
+    # # TEMP
+    # ys_all_events = renumber_labelled_mask(ys_all_events)
     preds_all_events = np.sum(list(preds_instances.values()), axis=0)
 
     # Intersect predicted events with the negation of the ignore mas

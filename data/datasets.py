@@ -140,7 +140,7 @@ class SparkDataset(Dataset):
         self.movies = [torch.from_numpy(movie.astype(np.int32)) for movie in movies]
         self.labels = [torch.from_numpy(label.astype(np.int8)) for label in labels]
         self.instances = [
-            torch.from_numpy(instance.astype(np.int8)) for instance in instances
+            torch.from_numpy(instance.astype(np.int16)) for instance in instances
         ]
         self.gt_available = True if len(labels) == len(movies) else False
 

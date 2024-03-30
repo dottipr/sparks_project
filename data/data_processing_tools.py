@@ -561,7 +561,10 @@ def get_separated_events(
     debug: bool = False,
     training_mode: bool = False,
     watershed_classes: List[str] = ["sparks"],
-) -> Tuple[Dict[str, np.ndarray], Dict[str, List[Tuple[int, int, int]]],]:
+) -> Tuple[
+    Dict[str, np.ndarray],
+    Dict[str, List[Tuple[int, int, int]]],
+]:
     """
     Separate each class into event instances using connected components and
     watershed separation algorithm for the classes listed in "watershed_classes".
@@ -1085,11 +1088,12 @@ def detect_single_roi_peak(
     roi_movie = np.where(roi_mask, movie, 0.0)
 
     # Compute max along t
-    t_max = roi_movie.max(axis=0)
+    t_max = roi_movie.max(axis=0)  # 64 x 512
     # Compute standard deviation along t
-    t_std = np.std(roi_movie, axis=0)
+    t_std = np.std(roi_movie, axis=0)  # 64 x 512
+
     # Multiply max and std
-    prod = t_max * t_std
+    prod = t_max * t_std  # 64 x 512
 
     # Maximum filter
     dilated = ndi.maximum_filter(prod, size=max_filter_size)
@@ -1097,12 +1101,10 @@ def detect_single_roi_peak(
     argmaxima = np.logical_and(prod == dilated, prod != 0)
     argwhere = np.argwhere(argmaxima)
 
-    if len(argwhere) != 1:
-        raise ValueError(f"Found more than one peak in ROI: {len(argwhere)} peaks")
-
-    # Find slice t corresponding to max location
-    y, x = argwhere[0]
-    t = np.argmax(roi_movie[:, y, x])
+    # If more than one peak is found, choose the one with the highest value
+    peak_locs = [[np.argmax(roi_movie[:, y, x]), y, x] for y, x in argwhere]
+    movie_val = [roi_movie[t, y, x] for t, y, x in peak_locs]
+    t, y, x = peak_locs[np.argmax(movie_val)]
 
     return int(t), int(y), int(x)
 
