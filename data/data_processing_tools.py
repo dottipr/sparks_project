@@ -7,7 +7,7 @@ REMARKS
 the end of the script (such as compute_filtered_butter, ...)
 
 Author: Prisca Dotti
-Last modified: 30.10.2023
+Last modified: 02.04.2024
 """
 
 import logging
@@ -1261,8 +1261,7 @@ def one_sided_non_inferiority_ttest(
 
 def get_cell_mask(x: np.ndarray) -> np.ndarray:
     """
-    Given the original recording and the mask with segmented events,
-    return a mask with the cell body.
+    Given the original recording return a mask with the cell body.
 
     Args:
         x (numpy.ndarray): Original recording.
@@ -1373,7 +1372,7 @@ def compute_snr(
     return snr
 
 
-####################### Other functions (from notebooks) #######################
+############################### Dataset Analysis ###############################
 
 
 def get_event_parameters_simple(
@@ -1492,116 +1491,153 @@ def count_classes_in_roi(
     return n_classes
 
 
+def remove_background(frames: np.ndarray, mode: str = "offline") -> np.ndarray:
+    """
+    Remove background from a sequence of frames using either an 'offline'
+    or 'moving' average method.
+
+    Args:
+    - frames (numpy.ndarray): Input array of frames (time series of images).
+    - mode (str): Type of background removal to apply. Options:
+        - 'offline': Uses the average of all frames as the background.
+        - 'moving': Uses a moving average as the background.
+
+    Returns:
+    - numpy.ndarray: Background subtracted array of frames.
+    """
+    background = None  # Initialize background variable
+
+    if mode == "offline":
+        background = np.mean(frames, axis=0)
+
+    elif mode == "moving":
+        T = frames.shape[0]
+        N = T * 2 // 3  # Number of frames for moving average
+        # Initialize an empty array for the background
+        background = np.zeros_like(frames, dtype=float)
+        # Calculate the moving average for each frame
+        for t in range(T):
+            # Use slicing to calculate the moving average
+            start = max(0, t - N)
+            end = min(T, t + N)
+            background[t] = np.mean(frames[start:end], axis=0)
+
+    else:
+        raise ValueError(f"Unsupported background removal mode: {mode}")
+
+    return frames - background
+
+
 ############################### Unused functions ###############################
 
 
-def compute_filtered_butter(
-    movie_array: np.ndarray,
-    min_prominence: int = 2,
-    band_stop_width: int = 2,
-    min_freq: int = 7,
-    filter_order: int = 4,
-    Fs: int = 150,
-    debug: bool = False,
-) -> Union[
-    np.ndarray,
-    Tuple[np.ndarray, np.ndarray, np.ndarray, int, np.ndarray, np.ndarray, np.ndarray],
-]:
-    """
-    Apply Butterworth filter to input movie.
+# def compute_filtered_butter(
+#     movie_array: np.ndarray,
+#     min_prominence: int = 2,
+#     band_stop_width: int = 2,
+#     min_freq: int = 7,
+#     filter_order: int = 4,
+#     Fs: int = 150,
+#     debug: bool = False,
+# ) -> Union[
+#     np.ndarray,
+#     Tuple[np.ndarray, np.ndarray, np.ndarray, int, np.ndarray, np.ndarray, np.ndarray],
+# ]:
+#     """
+#     Apply Butterworth filter to input movie.
 
-    movie_array: input movie to be filtered
-    min_prominence: minimal prominence of filtered peaks in frequency domain
-    band_stop_width: width of the filtered band for each peak
-    min_freq: minimal frequence that can be filtered (???)
-    filter_order: order of Butterworth filter
-    Fs: sampling frequency [Hz]
+#     movie_array: input movie to be filtered
+#     min_prominence: minimal prominence of filtered peaks in frequency domain
+#     band_stop_width: width of the filtered band for each peak
+#     min_freq: minimal frequence that can be filtered (???)
+#     filter_order: order of Butterworth filter
+#     Fs: sampling frequency [Hz]
 
-    output: filtered version of input movie
-    """
+#     output: filtered version of input movie
+#     """
 
-    # sampling period [s]
-    T = 1 / Fs
-    # signal's length [s]
-    L = movie_array.shape[0]
-    # time vector
-    t = np.arange(L) / Fs
+#     # sampling period [s]
+#     T = 1 / Fs
+#     # signal's length [s]
+#     L = movie_array.shape[0]
+#     # time vector
+#     t = np.arange(L) / Fs
 
-    # movie's signal average along time (time profile of image series)
-    movie_average = np.mean(movie_array, axis=(1, 2))
+#     # movie's signal average along time (time profile of image series)
+#     movie_average = np.mean(movie_array, axis=(1, 2))
 
-    # get noise frequencies
-    # compute Fourier transform
-    fft = np.fft.fft(movie_average)
-    # compute two-sided spectrum
-    P2 = np.abs(fft / L)
-    # compute single-sided spectrum
-    P1 = P2[: (L // 2)]
-    P1[1:-1] = 2 * P1[1:-1]
+#     # get noise frequencies
+#     # compute Fourier transform
+#     fft = np.fft.fft(movie_average)
+#     # compute two-sided spectrum
+#     P2 = np.abs(fft / L)
+#     # compute single-sided spectrum
+#     P1 = P2[: (L // 2)]
+#     P1[1:-1] = 2 * P1[1:-1]
 
-    freqs = np.fft.fftfreq(L, d=1 / Fs)
-    f = freqs[: L // 2]
+#     freqs = np.fft.fftfreq(L, d=1 / Fs)
+#     f = freqs[: L // 2]
 
-    # detrend single-sided spectrum
-    # P1_decomposed = seasonal_decompose(P1, model='additive', period=1) # don't know period
-    # P1_detrend = signal.detrend(P1) # WRONG??
+#     # detrend single-sided spectrum
+#     # P1_decomposed = seasonal_decompose(P1, model='additive', period=1) # don't know period
+#     # P1_detrend = signal.detrend(P1) # WRONG??
 
-    # set spectrum corresponding to frequencies lower than min freq to zero
-    P1_cut = np.copy(P1)
-    P1_cut[:min_freq] = 0
+#     # set spectrum corresponding to frequencies lower than min freq to zero
+#     P1_cut = np.copy(P1)
+#     P1_cut[:min_freq] = 0
 
-    # find peaks in spectrum
-    peaks = signal.find_peaks(P1)[0]  # coords in P1 of peaks
-    # peaks = signal.find_peaks(P1_detrend)[0] # need first to detrend data properly
-    peaks_cut = peaks[peaks >= min_freq]  # coords in P1_cut of peaks
+#     # find peaks in spectrum
+#     peaks = signal.find_peaks(P1)[0]  # coords in P1 of peaks
+#     # peaks = signal.find_peaks(P1_detrend)[0] # need first to detrend data properly
+#     peaks_cut = peaks[peaks >= min_freq]  # coords in P1_cut of peaks
 
-    # compute peaks prominence
-    prominences = signal.peak_prominences(P1_cut, peaks_cut)[0]
+#     # compute peaks prominence
+#     prominences = signal.peak_prominences(P1_cut, peaks_cut)[0]
 
-    # keep only peaks with prominence large enough
-    prominent_peaks = peaks_cut[prominences > min_prominence]
+#     # keep only peaks with prominence large enough
+#     prominent_peaks = peaks_cut[prominences > min_prominence]
 
-    # regions to filter
-    bands_low = prominent_peaks - band_stop_width
-    bands_high = prominent_peaks + band_stop_width
-    bands_indices = np.transpose([bands_low, bands_high])
+#     # regions to filter
+#     bands_low = prominent_peaks - band_stop_width
+#     bands_high = prominent_peaks + band_stop_width
+#     bands_indices = np.transpose([bands_low, bands_high])
 
-    bands_freq = f[bands_indices]
+#     bands_freq = f[bands_indices]
 
-    # make sure that nothing is outside interval (0,max(f))
-    if bands_freq.size > 0:
-        bands_freq[:, 0][bands_freq[:, 0] < 0] = 0
-        bands_freq[:, 1][bands_freq[:, 1] > max(f)] = (
-            max(f) - np.mean(np.diff(f)) / 1000
-        )
+#     # make sure that nothing is outside interval (0,max(f))
+#     if bands_freq.size > 0:
+#         bands_freq[:, 0][bands_freq[:, 0] < 0] = 0
+#         bands_freq[:, 1][bands_freq[:, 1] > max(f)] = (
+#             max(f) - np.mean(np.diff(f)) / 1000
+#         )
 
-    # create butterworth filter
-    filter_type = "bandstop"
-    filtered = np.copy(movie_array)
+#     # create butterworth filter
+#     filter_type = "bandstop"
+#     filtered = np.copy(movie_array)
 
-    for i, band in enumerate(bands_freq):
-        Wn = band / max(f)
+#     for i, band in enumerate(bands_freq):
+#         Wn = band / max(f)
 
-        sos = signal.butter(N=filter_order, Wn=Wn, btype=filter_type, output="sos")
+#         sos = signal.butter(N=filter_order, Wn=Wn, btype=filter_type, output="sos")
 
-        filtered = signal.sosfiltfilt(sos, filtered, axis=0)
+#         filtered = signal.sosfiltfilt(sos, filtered, axis=0)
 
-    if debug:
-        # filtered movie's signal average along time (time profile of image series)
-        filtered_movie_average = np.mean(filtered, axis=(1, 2))
+#     if debug:
+#         # filtered movie's signal average along time (time profile of image series)
+#         filtered_movie_average = np.mean(filtered, axis=(1, 2))
 
-        # get frequencies of filtered movie
-        # compute Fourier transform
-        filtered_fft = np.fft.fft(filtered_movie_average)
-        # compute two-sided spectrum
-        filtered_P2 = np.abs(filtered_fft / L)
-        # compute single-sided spectrum
-        filtered_P1 = filtered_P2[: (L // 2)]
-        filtered_P1[1:-1] = 2 * filtered_P1[1:-1]
+#         # get frequencies of filtered movie
+#         # compute Fourier transform
+#         filtered_fft = np.fft.fft(filtered_movie_average)
+#         # compute two-sided spectrum
+#         filtered_P2 = np.abs(filtered_fft / L)
+#         # compute single-sided spectrum
+#         filtered_P1 = filtered_P2[: (L // 2)]
+#         filtered_P1[1:-1] = 2 * filtered_P1[1:-1]
 
-        # detrend single-sided spectrum
-        # filtered_P1_detrend = signal.detrend(filtered_P1) # WRONG??
+#         # detrend single-sided spectrum
+#         # filtered_P1_detrend = signal.detrend(filtered_P1) # WRONG??
 
-        return filtered, movie_average, filtered_movie_average, Fs, f, P1, filtered_P1
+#         return filtered, movie_average, filtered_movie_average, Fs, f, P1, filtered_P1
 
-    return filtered
+#     return filtered

@@ -2,7 +2,7 @@
 Script with tools for data visualisation (e.g. plots and Napari).
 
 Author: Prisca Dotti
-Last modified: 14.02.2024
+Last modified: 02.04.2024
 """
 
 import itertools
@@ -12,6 +12,7 @@ import random
 from ast import Tuple
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
+import matplotlib.patches as patches
 import numpy as np
 import vispy.color
 from matplotlib import cm
@@ -813,3 +814,47 @@ def get_spark_2d_signal(
         return t, y, x, y_frames, x_frames, signal_2d
 
     return signal_2d
+
+
+######################### Confocal Data Visualization ##########################
+
+
+def add_scale_bar(
+    ax, pixel_size, bar_length_um, bar_height_um, bar_color, bar_location, text_location
+):
+    """
+    Adds a scale bar to an axis.
+
+    ax: Matplotlib axis object to add the scale bar to.
+    pixel_size: The size of one pixel in micrometers.
+    bar_length_um: The length of the scale bar in micrometers.
+    bar_height_um: The height of the scale bar in micrometers.
+    bar_color: The color of the scale bar.
+    bar_location: The location of the scale bar as (x, y) in pixel coordinates.
+    text_location: The location of the bar text as (x, y) in pixel coordinates.
+    """
+    bar_length_pixels = bar_length_um / pixel_size
+    bar_height_pixels = bar_height_um / pixel_size
+
+    # Create a rectangle patch for the scale bar
+    scale_bar = patches.Rectangle(
+        bar_location,
+        bar_length_pixels,
+        bar_height_pixels,
+        linewidth=1,
+        edgecolor=bar_color,
+        facecolor=bar_color,
+    )
+
+    # Add the patch to the Axes
+    ax.add_patch(scale_bar)
+
+    # Add text annotation for the scale bar
+    ax.text(
+        text_location[0],
+        text_location[1],
+        f"{bar_length_um} μm",
+        color=bar_color,
+        verticalalignment="bottom",
+        horizontalalignment="right",
+    )
