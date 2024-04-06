@@ -792,7 +792,7 @@ def get_spark_2d_signal(
     - Other information if return_info is True.
     """
     t, y, x = coords
-    t_slice, y_slice, x_slice = slices
+    _, y_slice, x_slice = slices
 
     y_start = max(0, y_slice.start - spatial_context)
     y_end = min(video.shape[1], y_slice.stop + spatial_context)
@@ -860,6 +860,6 @@ def add_scale_bar(
         f"{bar_length_um} μm",
         color=bar_color,
         verticalalignment="bottom",
-        horizontalalignment="right",
+        horizontalalignment="left",
         zorder=10,
     )
