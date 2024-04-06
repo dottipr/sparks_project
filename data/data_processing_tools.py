@@ -1312,6 +1312,7 @@ def get_cell_mask(x: np.ndarray) -> np.ndarray:
 def compute_snr(
     x: np.ndarray,
     y: np.ndarray,
+    cell_mask: np.ndarray = np.array([]),
     event_roi: np.ndarray = np.array([]),
     percentile: float = 99,
 ) -> float:
@@ -1321,6 +1322,7 @@ def compute_snr(
     Args:
         x (numpy.ndarray): Original recording.
         y (numpy.ndarray): Mask with segmented events.
+        cell_mask (numpy.ndarray): Mask with the cell body.
         event_roi (numpy.ndarray): Mask with the region of interest (ROI) where
             events are expected.
         percentile (float): Percentile used to estimate the noise standard
@@ -1333,8 +1335,9 @@ def compute_snr(
     x = x.astype(float)
 
     # Create a cell mask from the mask y that includes both the cell body and events
-    cell_mask = get_cell_mask(x)
-    cell_mask = cell_mask | np.any(y, axis=0)
+    if cell_mask.size == 0:
+        cell_mask = get_cell_mask(x)
+        cell_mask = cell_mask | np.any(y, axis=0)
 
     # Create a repeated cell mask for each frame
     if cell_mask.ndim >= 3:

@@ -772,7 +772,10 @@ def get_spark_2d_signal(
     spatial_context: int,
     sigma: Optional[int] = None,
     return_info: bool = False,
-) -> Union[Tuple[int, int, int, np.ndarray, np.ndarray, np.ndarray], np.ndarray,]:
+) -> Union[
+    Tuple[int, int, int, np.ndarray, np.ndarray, np.ndarray],
+    np.ndarray,
+]:
     """
     Compute the 2D signal of a spark event given its slices and coordinates.
 
@@ -844,6 +847,7 @@ def add_scale_bar(
         linewidth=1,
         edgecolor=bar_color,
         facecolor=bar_color,
+        zorder=10,
     )
 
     # Add the patch to the Axes
@@ -857,4 +861,5 @@ def add_scale_bar(
         color=bar_color,
         verticalalignment="bottom",
         horizontalalignment="right",
+        zorder=10,
     )
