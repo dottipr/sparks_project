@@ -10,8 +10,9 @@ Functions:
     get_sample_ids: Get sample IDs for training or testing.
 
 Author: Prisca Dotti
-Last modified: 26.10.2023
+Last modified: 08.04.2024
 """
+
 import argparse
 import logging
 import os
@@ -26,6 +27,7 @@ from data.datasets import (
     SparkDataset,
     SparkDatasetLSTM,
     SparkDatasetResampled,
+    SparkDatasetSinChannels,
     SparkDatasetTemporalReduction,
 )
 from models.architectures import TempRedUNet, UNetConvLSTM, UNetPadWrapper
@@ -115,10 +117,20 @@ def init_dataset(
     if params.nn_architecture == "unet_lstm":
         dataset = SparkDatasetLSTM(**dataset_args)
     elif params.nn_architecture in ["pablos_unet", "github_unet", "openai_unet"]:
+        # Check that at most one of the following parameters is True
+        assert (
+            params.temporal_reduction + (params.new_fps != 0) + (params.sin_channels)
+            <= 1
+        ), "Only one of the following parameters can be True: temporal_reduction, new_fps, sin_channels"
+
         if params.temporal_reduction:  # not tested
             dataset = SparkDatasetTemporalReduction(**dataset_args)
         elif params.new_fps != 0:  # not tested
+            dataset_args["new_fps"] = params.new_fps
             dataset = SparkDatasetResampled(**dataset_args)
+        elif params.sin_channels:
+            dataset_args["n_sin_channels"] = params.n_sin_channels
+            dataset = SparkDatasetSinChannels(**dataset_args)
         else:
             dataset = SparkDataset(**dataset_args)
     else:
@@ -239,6 +251,10 @@ def init_model(params: TrainingConfig) -> nn.Module:
     if params.nn_architecture == "pablos_unet":
         batch_norm = {"batch": True, "none": False}
 
+        if params.sin_channels:
+            nb_sin_channels = sum(int(x) for x in params.n_sin_channels)
+            params.num_channels += nb_sin_channels
+
         unet_config = unet.UNetConfig(
             steps=params.unet_steps,
             first_layer_channels=params.first_layer_channels,
@@ -327,9 +343,7 @@ def init_model(params: TrainingConfig) -> nn.Module:
     return network
 
 
-def init_criterion(
-    params: TrainingConfig, dataset: Union[SparkDataset, SparkDatasetLSTM]
-) -> nn.Module:
+def init_criterion(params: TrainingConfig, dataset: SparkDataset) -> nn.Module:
     """
     Initialize the loss function based on the specified criterion in params.
 
@@ -353,7 +367,7 @@ def init_criterion(
         # Initialize the loss function
         criterion = nn.NLLLoss(
             ignore_index=config.ignore_index,
-            weight=class_weights  # .to(
+            weight=class_weights,  # .to(
             # params.device, non_blocking=True)
         )
 

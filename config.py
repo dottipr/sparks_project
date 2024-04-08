@@ -8,9 +8,8 @@ Classes:
                     logging.
 
 Author: Prisca Dotti
-Last modified: 21.10.2023
+Last modified: 08.04.2024
 """
-
 
 import logging
 import math
@@ -22,7 +21,6 @@ from logging.handlers import RotatingFileHandler
 
 import numpy as np
 import torch
-
 import wandb
 
 __all__ = ["config", "TrainingConfig"]
@@ -226,6 +224,13 @@ class TrainingConfig:
         params.ignore_frames_loss:
             If testing, used to ignore events in first and last frames
 
+        params.sin_channels:
+            If True, augment chunks with channels containing sinusoidal patterns
+            of varying frequencies
+
+        params.n_sin_channels:
+            Number of sinusoidal channels to add (per class)
+
         """
 
         # Configure logging
@@ -372,6 +377,8 @@ class TrainingConfig:
             "noise_data_augmentation": "",
             "sparks_type": "raw",
             "new_fps": "0",
+            "sin_channels": "no",
+            "n_sin_channels": "0,0,0",
         }
 
         # Load dataset parameters
@@ -406,6 +413,10 @@ class TrainingConfig:
         self.new_fps = int(
             dataset_section.get("new_fps", "0")
         )  # can be implemented later
+        self.sin_channels = bool(dataset_section.get("sin_channels", "no"))
+        # Get n_sin_channels as a list of integers
+        self.n_sin_channels = dataset_section.get("n_sin_channels", "0,0,0")
+        self.n_sin_channels = list(map(int, self.n_sin_channels.split(",")))
 
     def load_inference_params(self):
         fallback_inference_section = {

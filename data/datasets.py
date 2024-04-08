@@ -2,7 +2,7 @@
 Classes to create datasets.
 
 Author: Prisca Dotti
-Last modified: 23.10.2023
+Last modified: 08.04.2024
 """
 
 import logging
@@ -475,12 +475,6 @@ class SparkDatasetTemporalReduction(SparkDataset):
         ValueError: If neither `movies` nor `base_path` and `sample_ids` are
         provided.
         AssertionError: If temporal reduction is not enabled in the parameters.
-
-    Attributes:
-        same as SparkDataset
-
-    Methods:
-        same as SparkDataset
     """
 
     def __init__(self, params: TrainingConfig, **kwargs: Any) -> None:
@@ -601,13 +595,13 @@ class SparkDatasetResampled(SparkDataset):
         self.movie_paths: List[str] = kwargs["movie_paths"]
         self.new_fps: int = kwargs["new_fps"]
 
-        # Initialize the SparksDataset class
+        # Initialize SparkDataset class
         super().__init__(params=params, **kwargs)
 
     ############################## Class methods ###############################
 
     def __getitem__(self, idx: int) -> Dict[str, Union[torch.Tensor, int, float]]:
-        # Get item from the SparksDataset class and add the original frame rate
+        # Get item from SparkDataset class and add the original frame rate
         item_dict = super().__getitem__(idx)
         item_dict["original_fps"] = self.original_fps[int(item_dict["movie_id"])]
 
@@ -619,7 +613,7 @@ class SparkDatasetResampled(SparkDataset):
         """
         Preprocesses the videos in the dataset.
         """
-        # apply the same preprocessing as in the SparksDataset class
+        # apply the same preprocessing as in SparkDataset class
         super()._preprocess_videos()
 
         # Get the original frame rate of the movies
@@ -725,7 +719,7 @@ class SparkDatasetLSTM(SparkDataset):
     The label is the segmentation mask of the central frame.
     """
 
-    def __init__(self, params: TrainingConfig, **kwargs: Dict[str, Any]) -> None:
+    def __init__(self, params: TrainingConfig, **kwargs: Any) -> None:
         # step = 1 and ignore_frames = 0 because we need to have a prediction
         # for each frame.
         self.params.data_stride = 1
@@ -831,7 +825,111 @@ class SparkDatasetInference(SparkDataset):
         else:
             movies = [movie]
 
-        # Initialize the SparksDataset class
+        # Initialize SparkDataset class
         super().__init__(
             params=params, movies=movies, labels=[], instances=[], **kwargs
+        )
+
+
+### Dataset with sin channels ###
+# re-implementation of some very old code (July 2020)
+
+
+class SparkDatasetSinChannels(SparkDataset):
+    """
+    Create a dataset where each chunk is augmented with sinusoidal channels.
+
+    Args:
+    - params (TrainingConfig): The training configuration.
+    - movie_paths (List[str]): A list of paths to the movies (same order as the
+        movies in the dataset). This allows to obtain the original frame rate of
+        the movies from their metadata.
+    - n_sin_channels (List[int]): A list of 3 integers representing the number
+        of sinusoidal channels to add along the time, y, and x dimensions.
+    ... (same as SparkDataset)
+
+    Raises:
+        ValueError: If `n_sin_channels` is not provided.
+    ... (same as SparkDataset)
+    """
+
+    def __init__(self, params: TrainingConfig, **kwargs: Any) -> None:
+        # Verify that n_sin_channels is provided
+        if "n_sin_channels" not in kwargs:
+            raise ValueError("n_sin_channels must be provided")
+
+        self.n_sin_channels = kwargs["n_sin_channels"]
+
+        # Check that n_sin_channels is a list of length 3
+        assert len(self.n_sin_channels) == 3, "n_sin_channels must have length 3"
+
+        # Initialize SparkDataset class
+        super().__init__(params=params, **kwargs)
+
+    ############################## Class methods ###############################
+
+    def __getitem__(self, idx: int) -> Dict[str, Union[torch.Tensor, int, float]]:
+        # Get item from the SparkDataset class and add the sinusoidal channels
+        sample_dict = super().__getitem__(idx)
+        sample_dict["data"] = self._concat_sin_channels(
+            chunk=sample_dict["data"],
+            t_freqs=self.n_sin_channels[0],
+            y_freqs=self.n_sin_channels[1],
+            x_freqs=self.n_sin_channels[2],
+        )
+
+        return sample_dict
+
+    ############################## Private methods #############################
+
+    def _concat_sin_channels(
+        self, chunk: torch.Tensor, t_freqs: int, y_freqs: int, x_freqs: int
+    ) -> torch.Tensor:
+        """
+        Concatenate sinusoidal channels with different frequencies to the input
+        chunk.
+
+        Args:
+            chunk (torch.Tensor): Input chunk with shape frames x height (y) x
+            width (x).
+
+        Returns:
+            torch.Tensor: Augmented chunk with sinusoidal patterns along
+            dimension.
+        """
+
+        shape = chunk.shape
+
+        t = torch.linspace(-np.pi, np.pi, shape[0])
+        y = torch.linspace(-np.pi, np.pi, shape[1])
+        x = torch.linspace(-np.pi, np.pi, shape[2])
+
+        # Frequencies for sinusoidal patterns
+        n_t = [2**i for i in range(0, t_freqs)]
+        n_y = [2**i for i in range(0, y_freqs)]
+        n_x = [2**i for i in range(0, x_freqs)]
+
+        # Generate sinusoidal patterns
+        t_sin = [torch.sin(n * t) for n in n_t]
+        y_sin = [torch.sin(n * y) for n in n_y]
+        x_sin = [torch.sin(n * x) for n in n_x]
+
+        # Broadcast and transpose
+        t_sin_all = [
+            t_sin_n.expand(shape[1], shape[2], shape[0]).permute(2, 0, 1).unsqueeze(0)
+            for t_sin_n in t_sin
+        ]
+
+        y_sin_all = [
+            y_sin_n.expand(shape[2], shape[0], shape[1]).permute(1, 2, 0).unsqueeze(0)
+            for y_sin_n in y_sin
+        ]
+
+        x_sin_all = [
+            x_sin_n.expand(shape[0], shape[1], shape[2]).unsqueeze(0)
+            for x_sin_n in x_sin
+        ]
+
+        return torch.cat(
+            [chunk.unsqueeze(0)] + x_sin_all + y_sin_all + t_sin_all, dim=0
         )

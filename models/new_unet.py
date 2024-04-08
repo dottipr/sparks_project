@@ -8,6 +8,7 @@
 # Max Planck Institute of Neurobiology, Munich, Germany
 # Author: Martin Drawitsch
 
+# Source: https://github.com/ELEKTRONN/elektronn3/blob/master/elektronn3/models/unet.py
 """
 This is a modified version of the U-Net CNN architecture for biomedical
 image segmentation. U-Net was originally published in

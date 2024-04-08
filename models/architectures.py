@@ -210,7 +210,6 @@ class ConvLSTMCell(nn.Module):
 
 
 class ConvLSTM(nn.Module):
-
     """
     Adapted from: https://github.com/ndrplz/ConvLSTM_pytorch/blob/master/convlstm.py
 
