@@ -14,13 +14,14 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.utils.data
-import wandb
 from scipy import ndimage as ndi
 from sklearn.metrics import confusion_matrix
 from torch import nn
+from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 
+import wandb
 from config import TrainingConfig, config
 from data.data_processing_tools import (
     masks_to_instances_dict,
@@ -77,8 +78,8 @@ def training_step(
     network: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     criterion: torch.nn.Module,
+    scaler: GradScaler,
     scheduler: Optional[_LRScheduler] = None,
-    # scaler: torch.cuda.amp.GradScaler,
 ) -> Dict[str, torch.Tensor]:
     """
     Perform one training step.
@@ -99,53 +100,51 @@ def training_step(
 
     # Sample data from the dataset
     sample = sampler(dataset_loader)
-    x = sample["data"]
-    y = sample["labels"]
+    x, y = sample["data"], sample["labels"]
 
     x = x.to(params.device, non_blocking=True)  # [b, d, 64, 512]
     # [b, d, 64, 512] or [b, 64, 512]
     y = y.to(params.device, non_blocking=True)
 
-    # Forward pass
-    # with torch.cuda.amp.autocast():  # to use mixed precision (not working)
-    # get x number of dimensions
-    if x.dim() <= 3:
-        x = x.unsqueeze(1)  # [b, 1, d, 64, 512]
-    y_pred = network(x)  # [b, 4, d, 64, 512] or [b, 4, 64, 512]
-
-    # Handle specific loss functions
-    if isinstance(criterion, MySoftDiceLoss):
-        # Set regions in pred and y where the label is ignored to 0
-        y_pred[y == config.ignore_index] = 0
-        y[y == config.ignore_index] = 0
-    else:
-        y = y.long()
-
-    # Remove frames that must be ignored by the loss function
-    if params.ignore_frames_loss > 0:
-        y_pred = y_pred[
-            ..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :
-        ]
-        y = y[..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :]
-
-    # Move criterion weights to GPU
-    # if hasattr(criterion, "weight") and not criterion.weight.is_cuda:
-    #     criterion.weight = criterion.weight.to(params.device)
-    # if hasattr(criterion, "NLLLoss") and not criterion.NLLLoss.weight.is_cuda:
-    #     criterion.NLLLoss.weight = criterion.NLLLoss.weight.to(params.device)
-
-    criterion.to(y.device)
-
-    # Compute loss
-    loss = criterion(y_pred, y)
-
     optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
 
-    # scaler.scale(loss).backward()
-    # scaler.step(optimizer)
-    # scaler.update()
+    # Forward pass
+    with autocast():  # to use mixed precision (not working)
+        if x.dim() <= 4:  # [b, d, 64, 512] -> [b, 1, d, 64, 512]
+            x = x.unsqueeze(1)
+        y_pred = network(x)  # [b, 4, d, 64, 512] or [b, 4, 64, 512]
+
+        # Handle specific loss functions
+        if isinstance(criterion, MySoftDiceLoss):
+            # Set regions in pred and y where the label is ignored to 0
+            y_pred[y == config.ignore_index] = 0
+            y[y == config.ignore_index] = 0
+        else:
+            y = y.long()
+
+        # Remove frames that must be ignored by the loss function
+        if params.ignore_frames_loss > 0:
+            y_pred = y_pred[
+                ..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :
+            ]
+            y = y[..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :]
+
+        # Move criterion weights to GPU
+        # if hasattr(criterion, "weight") and not criterion.weight.is_cuda:
+        #     criterion.weight = criterion.weight.to(params.device)
+        # if hasattr(criterion, "NLLLoss") and not criterion.NLLLoss.weight.is_cuda:
+        #     criterion.NLLLoss.weight = criterion.NLLLoss.weight.to(params.device)
+
+        # Compute loss
+        criterion.to(y.device)
+        loss = criterion(y_pred, y)
+
+    scaler.scale(loss).backward()
+    scaler.step(optimizer)
+    scaler.update()
+
+    # loss.backward()
+    # optimizer.step()
 
     if scheduler is not None:
         lr = scheduler.get_last_lr()[0]
@@ -293,9 +292,10 @@ def compute_loss(
         #         criterion.NLLLoss.weight = criterion.NLLLoss.weight.to(
         #             y.device)
         criterion.to(y.device)
-        losses.append(criterion(pred, y).item())
+        with autocast():
+            losses.append(criterion(pred, y).item())
 
-    return np.mean(losses)
+    return float(np.mean(losses))
 
 
 def compute_class_weights(
@@ -538,14 +538,16 @@ def run_dataloader_in_network(
         batch_data = batch["data"].to(device, non_blocking=True)
 
         # Run the network on the batch
-        batch_preds = network(batch_data[:, None])
+        if batch_data.dim() <= 4:  # [b, d, 64, 512] -> [b, 1, d, 64, 512]
+            batch_data = batch_data.unsqueeze(1)
+        with autocast():
+            batch_preds = network(batch_data).cpu()
 
         if not compute_loss:
             # If computing loss, use logit values; otherwise, compute
             # probabilities because it reduces the errors due to floating point
             # precision.
             batch_preds = torch.exp(batch_preds)
-
         # Add each movie_id in the batch to the dict if not already present
         for i, movie_id in enumerate(batch_movie_ids):
             movie_id = movie_id.item()
@@ -555,7 +557,7 @@ def run_dataloader_in_network(
                     i
                 ].item()
 
-            predictions_per_movie[movie_id].append(batch_preds[i])
+            predictions_per_movie[movie_id].append(batch_preds[i].cpu())
 
     return predictions_per_movie, original_duration_per_movie
 

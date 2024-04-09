@@ -21,13 +21,12 @@ Last modified: 24.10.2023
 import logging
 import os
 
-import wandb
 from torch import nn, optim
-
-# from torch.cuda.amp import GradScaler
+from torch.cuda.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard.writer import SummaryWriter
 
+import wandb
 from config import TrainingConfig, config
 from models.UNet import unet
 from utils.training_inference_tools import (
@@ -44,6 +43,9 @@ from utils.training_script_utils import (
     init_dataset,
     init_model,
 )
+
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:900"
+
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +187,7 @@ def main():
             optimizer=optimizer,
             criterion=criterion,
             scheduler=scheduler,
-            # scaler=GradScaler(),
+            scaler=GradScaler(),
         ),
         save_every=params.c.getint("training", "save_every", fallback=5000),
         load_path=load_path,
