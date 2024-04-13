@@ -11,6 +11,7 @@ Last modified: 02.04.2024
 """
 
 import logging
+import math
 import time
 from typing import Dict, List, Tuple, Union
 
@@ -63,7 +64,7 @@ __all__ = [
     "detect_spark_peaks",
     "simple_nonmaxima_suppression",
     "one_sided_non_inferiority_ttest",
-    "compute_filtered_butter",
+    # "compute_filtered_butter",
     "get_event_parameters",
     "get_event_parameters_simple",
     "moving_average",
@@ -280,10 +281,9 @@ def apply_ignore_regions_to_events(
     Apply ignore regions around events in a segmentation mask.
 
     Args:
-    - mask (numpy.ndarray): The input segmentation mask.
+    - mask (numpy.ndarray): The input segmentation mask. Expected to be 3D.
     - ignore_radii (list): List of radii for ignore regions for each class.
-    - apply_erosion (list): List of binary flags for applying erosion for each
-        class.
+    - apply_erosion (list): List of binary flags for applying erosion for each class.
 
     Returns:
     - numpy.ndarray: The mask with ignore regions applied.
@@ -298,23 +298,34 @@ def apply_ignore_regions_to_events(
         f"but contains {len(apply_erosion)}."
     )
 
+    # Create empty mask to store results
+    new_mask = np.zeros_like(mask)
+
     for class_id in config.classes_dict.values():
-        if class_id in mask:
+        if np.any(mask == class_id):
             class_mask = np.where(mask == class_id, 1, 0)
-            dilated_mask = ndi.binary_dilation(
-                class_mask, iterations=ignore_radii[class_id - 1]
-            )
-            if apply_erosion[class_id - 1] == 1:
-                eroded_mask = ndi.binary_erosion(
-                    class_mask, iterations=ignore_radii[class_id - 1]
-                )
-                ignore_mask = np.logical_xor(dilated_mask, eroded_mask)
+            if apply_erosion[class_id - 1] > 0:
+                erode_radius = ignore_radii[class_id - 1] // 2
+                dilate_radius = ignore_radii[class_id - 1] - erode_radius
             else:
-                ignore_mask = np.logical_xor(dilated_mask, class_mask)
+                erode_radius = 0
+                dilate_radius = ignore_radii[class_id - 1]
 
-            mask = np.where(ignore_mask, config.ignore_index, mask)
+            # compute dilation and erosion frame-wise
+            for frame in range(class_mask.shape[0]):
+                frame_mask = class_mask[frame]
+                dilated_mask = ndi.binary_dilation(frame_mask, iterations=dilate_radius)
+                if apply_erosion[class_id - 1]:
+                    eroded_mask = ndi.binary_erosion(
+                        dilated_mask, iterations=erode_radius
+                    )
+                    ignore_mask = np.logical_xor(dilated_mask, eroded_mask)
+                else:
+                    ignore_mask = np.logical_xor(dilated_mask, frame_mask)
 
-    return mask
+                new_mask[frame] = np.where(ignore_mask, config.ignore_index, frame_mask)
+
+    return new_mask
 
 
 ########################### General masks processing ###########################
@@ -1529,6 +1540,93 @@ def remove_background(frames: np.ndarray, mode: str = "offline") -> np.ndarray:
         raise ValueError(f"Unsupported background removal mode: {mode}")
 
     return frames - background
+
+
+def detect_single_roi_center(
+    movie: np.ndarray, roi_mask: np.ndarray, max_filter_size: int = 10
+) -> Tuple[int, int, int]:
+    """
+    Given a movie and a ROI, extract coordinates of the center of the ROI.
+
+    Args:
+    - movie (numpy.ndarray): Input movie (could be smoothed).
+    - roi_mask (numpy.ndarray): Binary mask with the same shape as movie
+        (containing one connected component).
+    - max_filter_size (int): Size for the maximum filter.
+
+    Returns:
+    - tuple: Coordinates (t, y, x) of ROI's center.
+    """
+    roi_movie = np.where(roi_mask, movie, 0.0)
+
+    # Get the center of mass of the ROI
+    roi_sum = np.sum(roi_movie, axis=0)
+    centers = center_of_mass(roi_sum)
+    if isinstance(centers[0], tuple):
+        y, x = centers[0]
+    else:
+        y, x = centers[0][0]
+
+    # Set t as the middle of the ROI
+    roi_start = np.min(np.where(roi_mask)[0])
+    roi_end = np.max(np.where(roi_mask)[0])
+    t = (roi_start + roi_end) // 2
+
+    return int(t), int(y), int(x)
+
+
+# function based on max in ROI + gaussian smoothing
+def detect_puff_centers(
+    movie: np.ndarray,
+    instances_mask: np.ndarray,
+    sigma: int = 2,
+    max_filter_size: int = 10,
+    return_mask: bool = False,
+) -> Union[List[Tuple[int, int, int]], Tuple[List[Tuple[int, int, int]], np.ndarray]]:
+    """
+    Get spatial center of the Ca2+ puffs, for visualization purpose (temporal
+    profile and surface plot).
+
+    Args:
+    - movie (numpy.ndarray): Input array.
+    - instances_mask (numpy.ndarray): Mask with event ROIs.
+    - sigma (int): Sigma parameter of the Gaussian filter.
+    - max_filter_size (int): Dimension of the maximum filter size.
+    - return_mask (bool): If True, return both masks with maxima and locations, if
+      False, only returns locations.
+
+    Returns:
+    - list or tuple: List of center coordinates (t, y, x) or a tuple containing
+      the list of peak coordinates and the peaks mask if return_mask is True.
+    """
+    # Get a list of unique spark IDs
+    event_list = list(np.unique(instances_mask))
+    event_list.remove(0)
+
+    if sigma > 0:
+        # Smooth movie only on (y,x)
+        smooth_movie = np.array(ndi.gaussian_filter(movie, sigma=(0, sigma, sigma)))
+    else:
+        smooth_movie = movie
+
+    center_coords = []
+
+    # Find one peak in each ROI
+    for id_roi in event_list:
+        t, y, x = detect_single_roi_peak(
+            movie=smooth_movie,
+            roi_mask=(instances_mask == id_roi),
+            max_filter_size=max_filter_size,
+        )
+
+        center_coords.append((t, y, x))
+
+    if return_mask:
+        peaks_mask = np.zeros_like(instances_mask)
+        peaks_mask[np.array(center_coords)] = 1
+        return center_coords, peaks_mask
+
+    return center_coords
 
 
 ############################### Unused functions ###############################

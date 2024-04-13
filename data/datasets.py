@@ -356,7 +356,7 @@ class SparkDataset(Dataset):
         Preprocesses the videos in the dataset.
         """
         if self.params.remove_background == "average":
-            self.movies = [self._remove_avg_background(movie) for movie in self.movies]
+            self.movies = [self._remove_background(movie) for movie in self.movies]
 
         if self.params.data_smoothing in ["2d", "3d"]:
             n_dims = int(self.params.data_smoothing[0])
@@ -370,10 +370,28 @@ class SparkDataset(Dataset):
                 for movie in self.movies
             ]
 
-    def _remove_avg_background(self, movie: torch.Tensor) -> torch.Tensor:
-        # Remove the average background from the video frames.
-        avg = torch.mean(movie, dim=0)
-        return movie - avg
+    def _remove_background(
+        self, movie: torch.Tensor, mode: str = "average"
+    ) -> torch.Tensor:
+        if mode == "average":
+            # Remove the average background from the video frames.
+            background = torch.mean(movie, dim=0)
+        elif mode == "moving":
+            # Remove the moving average background from the video frames.
+            T = movie.shape[0]
+            N = self.params.data_duration // 2
+            # Initialize an empty array for the background
+            background = torch.zeros_like(movie)
+            # Calculate the moving average for each frame
+            for t in range(T):
+                # Use slicing to calculate the moving average
+                start = max(0, t - N)
+                end = min(T, t + N)
+                background[t] = torch.mean(movie[start:end], dim=0)
+        else:
+            raise ValueError(f"Unsupported background removal mode: {mode}")
+
+        return movie - background
 
     def _blur_movie(self, movie: torch.Tensor, n_dims: int) -> torch.Tensor:
         # Define the kernel size and sigma based on the number of dimensions
@@ -687,7 +705,8 @@ class SparkDatasetResampled(SparkDataset):
         self, movie: torch.Tensor, movie_path: str, new_fps: int
     ) -> torch.Tensor:
         """
-        Interpolate video frames based on new sampling times (FPS).
+        Interpolate video frames based on new sampling times (FPS) using spline
+        interpolation.
 
         Args:
             movie (numpy.ndarray): Input video frames.
@@ -698,16 +717,30 @@ class SparkDatasetResampled(SparkDataset):
             numpy.ndarray: Interpolated video frames.
         """
         frames_time = self._get_times(movie_path)
-        f = interp1d(frames_time, movie, kind="linear", axis=0)
-        assert len(frames_time) == movie.shape[0], (
-            "In video_spline_interpolation the duration of the video "
-            "is not equal to the number of frames"
+        # Ensure movie is in numpy format for interpolation
+        is_tensor = isinstance(movie, torch.Tensor)
+        movie_np = movie.numpy() if is_tensor else movie
+
+        # Use cubic spline interpolation
+        f = interp1d(
+            frames_time, movie_np, kind="cubic", axis=0, fill_value="extrapolate"
         )
+
+        assert len(frames_time) == movie_np.shape[0], (
+            "In video_spline_interpolation, the duration of the video "
+            "is not equal to the number of frames."
+        )
+
         frames_new = np.linspace(
             frames_time[0], frames_time[-1], int(frames_time[-1] * new_fps)
         )
 
-        return f(frames_new)
+        # Perform the interpolation and convert back to a torch.Tensor
+        movie_interpolated = f(frames_new)
+        if is_tensor:
+            movie_interpolated = torch.from_numpy(movie_interpolated)
+
+        return movie_interpolated
 
 
 class SparkDatasetLSTM(SparkDataset):
