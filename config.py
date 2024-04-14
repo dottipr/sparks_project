@@ -450,9 +450,7 @@ class TrainingConfig:
         self.inference_load_epoch = int(
             inference_section.get("inference_load_epoch", "100000")
         )
-        self.inference_batch_size = int(
-            inference_section.get("inference_batch_size", "4")
-        )
+        self.inference_batch_size = int(inference_section.get("batch_size", "4"))
         self.inference_dataset_size = inference_section.get(
             "inference_dataset_size", "full"
         )

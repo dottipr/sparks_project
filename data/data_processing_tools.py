@@ -1542,6 +1542,34 @@ def remove_background(frames: np.ndarray, mode: str = "offline") -> np.ndarray:
     return frames - background
 
 
+def compute_tyx_self_ratio(
+    movie: np.array,
+    no_events_roi: np.array,  # This should be a 2D boolean array
+):
+    # Background: Take value along t of average of left-most vertical line
+    vertical_line = movie[:, :, 0]
+    background = np.mean(vertical_line, axis=1)  # vector of size d
+
+    # Propagate background along the spatial dimensions
+    background = np.tile(
+        background[:, np.newaxis, np.newaxis], (1, movie.shape[1], movie.shape[2])
+    )
+
+    # Basic fluorescence: take average of movie in no_events_roi
+    no_events_intensities = movie[:, no_events_roi]
+    t_average = np.mean(no_events_intensities, axis=1)  # Mean over the specified ROI
+
+    # Propagate along spatial dimensions
+    f_0 = np.tile(
+        t_average[:, np.newaxis, np.newaxis], (1, movie.shape[1], movie.shape[2])
+    )
+
+    # Compute self-ratio
+    self_ratio = (movie - f_0) / (f_0 - background)
+
+    return self_ratio
+
+
 def detect_single_roi_center(
     movie: np.ndarray, roi_mask: np.ndarray, max_filter_size: int = 10
 ) -> Tuple[int, int, int]:

@@ -105,7 +105,7 @@ def get_metrics_from_summary(
         recall = tp_ys[event_type] / denom_ys if denom_ys > 0 else 0
         correctly_classified = (
             tp_preds[event_type] / (denom_preds - unlabeled_preds[event_type])
-            if denom_preds > 0
+            if denom_preds - unlabeled_preds[event_type] > 0
             else 0
         )
         detected = 1 - (undetected_ys[event_type] / denom_ys) if denom_ys > 0 else 0

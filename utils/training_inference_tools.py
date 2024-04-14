@@ -23,19 +23,14 @@ from torch.utils.data import DataLoader
 
 import wandb
 from config import TrainingConfig, config
-from data.data_processing_tools import (
-    masks_to_instances_dict,
-    preds_dict_to_mask,
-    process_raw_predictions,
-    remove_padding,
-)
+from data.data_processing_tools import (masks_to_instances_dict,
+                                        preds_dict_to_mask,
+                                        process_raw_predictions,
+                                        remove_padding)
 from data.datasets import SparkDataset, SparkDatasetInference
-from evaluation.metrics_tools import (
-    compute_iou,
-    get_matches_summary,
-    get_metrics_from_summary,
-    get_score_matrix,
-)
+from evaluation.metrics_tools import (compute_iou, get_matches_summary,
+                                      get_metrics_from_summary,
+                                      get_score_matrix)
 from models.UNet import unet
 from models.UNet.unet.trainer import _write_results
 from utils.custom_losses import MySoftDiceLoss
