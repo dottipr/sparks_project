@@ -24,7 +24,7 @@ import torch
 
 import wandb
 
-__all__ = ["config", "TrainingConfig"]
+__all__ = ["ProjectConfig", "TrainingConfig"]
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +327,7 @@ class TrainingConfig:
             "load_run_name": "",
             "load_epoch": "0",
             "train_epochs": "5000",
-            "criterion": "nll_loss",
+            "criterion": "lovasz_softmax",
             "lr_start": "1e-4",
             "ignore_frames_loss": "6",
             "gamma": "2.0",
@@ -348,7 +348,7 @@ class TrainingConfig:
         self.load_run_name = training_section.get("load_run_name", "")
         self.load_epoch = int(training_section.get("load_epoch", "0"))
         self.train_epochs = int(training_section.get("train_epochs", "5000"))
-        self.criterion = training_section.get("criterion", "nll_loss")
+        self.criterion = training_section.get("criterion", "lovasz_softmax")
         self.lr_start = float(training_section.get("lr_start", "1e-4"))
         self.ignore_frames_loss = int(training_section.get("ignore_frames_loss", "6"))
         if (self.criterion == "focal_loss") or (self.criterion == "sum_losses"):
@@ -356,7 +356,7 @@ class TrainingConfig:
         if self.criterion == "sum_losses":
             self.w = float(training_section.get("w", "0.5"))
         self.cuda = bool(training_section.get("cuda", "True"))
-        self.scheduler = training_section.get("scheduler")
+        self.scheduler = training_section.get("scheduler", None)
         if self.scheduler == "step":
             self.scheduler_step_size = int(training_section.get("step_size", "0"))
             self.scheduler_gamma = float(training_section.get("gamma", "0.1"))
@@ -378,7 +378,7 @@ class TrainingConfig:
             "noise_data_augmentation": "",
             "sparks_type": "raw",
             "new_fps": "0",
-            "sin_channels": "no",
+            "sin_channels": "",
             "n_sin_channels": "0,0,0",
         }
 
@@ -414,7 +414,7 @@ class TrainingConfig:
         self.new_fps = int(
             dataset_section.get("new_fps", "0")
         )  # can be implemented later
-        self.sin_channels = bool(dataset_section.get("sin_channels", "no"))
+        self.sin_channels = bool(dataset_section.get("sin_channels", ""))
         # Get n_sin_channels as a list of integers
         self.n_sin_channels = dataset_section.get("n_sin_channels", "0,0,0")
         self.n_sin_channels = list(map(int, self.n_sin_channels.split(",")))

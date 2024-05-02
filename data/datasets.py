@@ -246,6 +246,25 @@ class SparkDataset(Dataset):
         }
         return instances_numpy
 
+    def set_debug_dataset(self) -> None:
+        """
+        Set the dataset to be a debug dataset by reducing the number of samples.
+        """
+        # For each movie, only keep the central chunk
+        for i, movie in enumerate(self.movies):
+            frames = movie.shape[0]
+            samples_per_movie = (frames - self.window_size) // self.stride + 1
+            if samples_per_movie > 1:
+                # Keep only the central chunk
+                start_frame = (samples_per_movie // 2) * self.stride
+                end_frame = start_frame + self.window_size
+                self.movies[i] = movie[start_frame:end_frame]
+                if len(self.labels) > 0:
+                    self.labels[i] = self.labels[i][start_frame:end_frame]
+                if len(self.instances) > 0:
+                    self.instances[i] = self.instances[i][start_frame:end_frame]
+                self.original_durations[i] = self.movies[i].shape[0]
+
     ############################## Private methods #############################
 
     def _load_movies(self) -> List[np.ndarray]:
@@ -412,6 +431,7 @@ class SparkDataset(Dataset):
             absolute_max = np.iinfo(np.uint16).max  # 65535
             movie = (movie - torch.min(movie)) / (absolute_max - torch.min(movie))
         elif norm_type == "std_dev":
+            movie = movie.float()
             # Normalize each movie separately using its own standard deviation
             movie = (movie - torch.mean(movie)) / torch.std(movie)
         else:

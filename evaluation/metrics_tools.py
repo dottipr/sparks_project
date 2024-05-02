@@ -8,7 +8,7 @@ the end of the script (such as ..., )
 14.02.2024: added computation of F1-score in get_metrics_from_summary
 
 Author: Prisca Dotti
-Last modified: 14.02.2024
+Last modified: 02.05.2024
 """
 
 import logging
@@ -79,6 +79,7 @@ def get_metrics_from_summary(
     - % correctly classified events per class
     - % detected events per class
     - F1-score per class
+    - % labeled events per class
 
     Parameters:
         tot_preds (dict): Total number of predicted events per class.
@@ -109,12 +110,16 @@ def get_metrics_from_summary(
             else 0
         )
         detected = 1 - (undetected_ys[event_type] / denom_ys) if denom_ys > 0 else 0
+        labeled = (
+            1 - (unlabeled_preds[event_type] / denom_preds) if denom_preds > 0 else 0
+        )
 
         metrics[event_type + "/precision"] = precision
         metrics[event_type + "/recall"] = recall
         metrics[event_type + "/correctly_classified"] = correctly_classified
         metrics[event_type + "/detected"] = detected
         metrics[event_type + "/f1-score"] = compute_f_score(precision, recall)
+        metrics[event_type + "/labeled"] = labeled
 
     # Also compute metrics with respect to all events
     denom_preds = sum(tot_preds.values()) - sum(ignored_preds.values())
@@ -124,19 +129,30 @@ def get_metrics_from_summary(
     recall = sum(tp_ys.values()) / denom_ys if denom_ys > 0 else 0
     correctly_classified = (
         sum(tp_preds.values()) / (denom_preds - sum(unlabeled_preds.values()))
-        if denom_preds > 0
+        if denom_preds - sum(unlabeled_preds.values()) > 0
         else 0
     )
     detected = 1 - (sum(undetected_ys.values()) / denom_ys) if denom_ys > 0 else 0
+    labeled = (
+        1 - (sum(unlabeled_preds.values()) / denom_preds) if denom_preds > 0 else 0
+    )
 
     metrics["total/precision"] = precision
     metrics["total/recall"] = recall
     metrics["total/correctly_classified"] = correctly_classified
     metrics["total/detected"] = detected
     metrics["total/f1-score"] = compute_f_score(precision, recall)
+    metrics["total/labeled"] = labeled
 
     # Compute average over classes for each metric
-    for m in ["precision", "recall", "correctly_classified", "detected", "f1-score"]:
+    for m in [
+        "precision",
+        "recall",
+        "correctly_classified",
+        "detected",
+        "f1-score",
+        "labeled",
+    ]:
         metrics["average/" + m] = np.mean(
             [metrics[event_type + "/" + m] for event_type in config.event_types]
         )

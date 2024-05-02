@@ -219,7 +219,6 @@ def main():
                     raw_preds_dict=raw_preds_dict,
                     input_movie=xs[i],
                     training_mode=False,
-                    debug=debug,
                 )
 
                 movie_segmentation[inference] = preds_segmentation

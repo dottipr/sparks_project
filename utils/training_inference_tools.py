@@ -2,7 +2,7 @@
 Functions that are used during the training of the neural network model.
 
 Author: Prisca Dotti
-Last modified: 24.10.2023
+Last modified: 02.05.2024
 """
 
 import logging
@@ -23,14 +23,19 @@ from torch.utils.data import DataLoader
 
 import wandb
 from config import TrainingConfig, config
-from data.data_processing_tools import (masks_to_instances_dict,
-                                        preds_dict_to_mask,
-                                        process_raw_predictions,
-                                        remove_padding)
+from data.data_processing_tools import (
+    masks_to_instances_dict,
+    preds_dict_to_mask,
+    process_raw_predictions,
+    remove_padding,
+)
 from data.datasets import SparkDataset, SparkDatasetInference
-from evaluation.metrics_tools import (compute_iou, get_matches_summary,
-                                      get_metrics_from_summary,
-                                      get_score_matrix)
+from evaluation.metrics_tools import (
+    compute_iou,
+    get_matches_summary,
+    get_metrics_from_summary,
+    get_score_matrix,
+)
 from models.UNet import unet
 from models.UNet.unet.trainer import _write_results
 from utils.custom_losses import MySoftDiceLoss
@@ -60,7 +65,7 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
+# logger.setLevel(logging.DEBUG)
 
 ################################ Training step #################################
 
@@ -101,45 +106,44 @@ def training_step(
     # [b, d, 64, 512] or [b, 64, 512]
     y = y.to(params.device, non_blocking=True)
 
-    optimizer.zero_grad(set_to_none=True)
+    optimizer.zero_grad(set_to_none=False)
 
     # Forward pass
-    with autocast():  # to use mixed precision (not working)
-        if x.dim() <= 4:  # [b, d, 64, 512] -> [b, 1, d, 64, 512]
-            x = x.unsqueeze(1)
-        y_pred = network(x)  # [b, 4, d, 64, 512] or [b, 4, 64, 512]
+    # with autocast():  # to use mixed precision (not working)
+    if x.dim() <= 4:  # [b, d, 64, 512] -> [b, 1, d, 64, 512]
+        x = x.unsqueeze(1)
+    y_pred = network(x)  # [b, 4, d, 64, 512] or [b, 4, 64, 512]
+    # Handle specific loss functions
+    if isinstance(criterion, MySoftDiceLoss):
+        # Set regions in pred and y where the label is ignored to 0
+        y_pred[y == config.ignore_index] = 0
+        y[y == config.ignore_index] = 0
+    else:
+        y = y.long()
 
-        # Handle specific loss functions
-        if isinstance(criterion, MySoftDiceLoss):
-            # Set regions in pred and y where the label is ignored to 0
-            y_pred[y == config.ignore_index] = 0
-            y[y == config.ignore_index] = 0
-        else:
-            y = y.long()
+    # Remove frames that must be ignored by the loss function
+    if params.ignore_frames_loss > 0:
+        y_pred = y_pred[
+            ..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :
+        ]
+        y = y[..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :]
 
-        # Remove frames that must be ignored by the loss function
-        if params.ignore_frames_loss > 0:
-            y_pred = y_pred[
-                ..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :
-            ]
-            y = y[..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :]
+    # Move criterion weights to GPU
+    # if hasattr(criterion, "weight") and not criterion.weight.is_cuda:
+    #     criterion.weight = criterion.weight.to(params.device)
+    # if hasattr(criterion, "NLLLoss") and not criterion.NLLLoss.weight.is_cuda:
+    #     criterion.NLLLoss.weight = criterion.NLLLoss.weight.to(params.device)
 
-        # Move criterion weights to GPU
-        # if hasattr(criterion, "weight") and not criterion.weight.is_cuda:
-        #     criterion.weight = criterion.weight.to(params.device)
-        # if hasattr(criterion, "NLLLoss") and not criterion.NLLLoss.weight.is_cuda:
-        #     criterion.NLLLoss.weight = criterion.NLLLoss.weight.to(params.device)
+    # Compute loss
+    criterion.to(y.device)
+    loss = criterion(y_pred, y)
 
-        # Compute loss
-        criterion.to(y.device)
-        loss = criterion(y_pred, y)
+    # scaler.scale(loss).backward()
+    # scaler.step(optimizer)
+    # scaler.update()
 
-    scaler.scale(loss).backward()
-    scaler.step(optimizer)
-    scaler.update()
-
-    # loss.backward()
-    # optimizer.step()
+    loss.backward()
+    optimizer.step()
 
     if scheduler is not None:
         lr = scheduler.get_last_lr()[0]
@@ -287,8 +291,13 @@ def compute_loss(
         #         criterion.NLLLoss.weight = criterion.NLLLoss.weight.to(
         #             y.device)
         criterion.to(y.device)
-        with autocast():
-            losses.append(criterion(pred, y).item())
+
+        # check if there are NaN values in the tensors
+        if torch.isnan(pred).any():
+            raise ValueError("Detected NaN in pred Tensor")
+
+        # with autocast():
+        losses.append(criterion(pred, y).item())
 
     return float(np.mean(losses))
 
@@ -535,8 +544,8 @@ def run_dataloader_in_network(
         # Run the network on the batch
         if batch_data.dim() <= 4:  # [b, d, 64, 512] -> [b, 1, d, 64, 512]
             batch_data = batch_data.unsqueeze(1)
-        with autocast():
-            batch_preds = network(batch_data).cpu()
+        # with autocast():
+        batch_preds = network(batch_data)
 
         if not compute_loss:
             # If computing loss, use logit values; otherwise, compute
@@ -568,10 +577,10 @@ def detect_nan_sample(x: torch.Tensor, y: torch.Tensor) -> None:
     if torch.isnan(x).any() or torch.isnan(y).any():
         if torch.isnan(x).any() or torch.isnan(y).any():
             logger.warning(
-                "Detect NaN in network input (test): {}".format(torch.isnan(x).any())
+                "Detected NaN in network input (test): {}".format(torch.isnan(x).any())
             )
             logger.warning(
-                "Detect NaN in network annotation (test): {}".format(
+                "Detected NaN in network annotation (test): {}".format(
                     torch.isnan(y).any()
                 )
             )
@@ -857,7 +866,6 @@ def get_final_preds(
         input_movie=input_movie,
         training_mode=False,
         fill_holes=fill_holes,
-        debug=False,
     )
 
     # Get integral values for classes and instances
@@ -879,7 +887,6 @@ def test_function(
     training_name: str,
     output_dir: str,
     training_mode: bool = True,
-    debug: bool = False,
 ) -> Dict[str, Union[float, np.ndarray]]:
     """
     Validate UNet during training.
@@ -897,6 +904,9 @@ def test_function(
     training_mode:      bool, if True, separate events using a simpler algorithm
     """
 
+    # Flag to determine if instance-based metrics should be computed
+    compute_instances_metrics = True
+
     # Initialize dicts that will contain the results
     metrics = {}
     tot_preds = {"sparks": 0, "puffs": 0, "waves": 0}
@@ -910,7 +920,7 @@ def test_function(
     ############################ Run samples in UNet ############################
 
     start = time.time()
-    logger.debug("Testing function: running samples in UNet")
+    logger.debug("Test function: running samples in UNet")
 
     # Get movies, labels, and instances
     xs = testing_dataset.get_movies()
@@ -942,6 +952,7 @@ def test_function(
         f"Time to run samples {testing_dataset.sample_ids} in UNet: {time.time() - start:.2f} s"
     )
 
+    logger.debug("Test function: computing loss")
     # Get ys and predictions as lists of tensors
     ys_tensors = [torch.from_numpy(y) for y in ys.values()]
     raw_preds_tensors = [torch.from_numpy(raw_pred) for raw_pred in raw_preds]
@@ -970,7 +981,7 @@ def test_function(
         # Compute exp of predictions
         raw_pred = np.exp(raw_pred)
 
-        logger.debug("Testing function: saving raw predictions on disk")
+        logger.debug("Test function: saving raw predictions on disk")
         # Save raw predictions as .tif videos
         write_videos_on_disk(
             xs=x,
@@ -984,7 +995,7 @@ def test_function(
         ####################### Re-organise annotations ########################
 
         start = time.time()
-        logger.debug("Testing function: re-organising annotations")
+        logger.debug("Test function: re-organising annotations")
 
         # ys_instances is a dict with classified event instances, for each class
         y_instances = masks_to_instances_dict(
@@ -1000,7 +1011,7 @@ def test_function(
 
         start = time.time()
         logger.debug(
-            "Testing function: getting processed output (segmentation and instances)"
+            "Test function: getting processed output (segmentation and instances)"
         )
 
         # Get predicted segmentation and event instances
@@ -1013,60 +1024,72 @@ def test_function(
             raw_preds_dict=raw_pred_dict,
             input_movie=x,
             training_mode=training_mode,
-            debug=debug,
+            compute_instances=compute_instances_metrics,
         )
 
         logger.debug(f"Time to process predictions: {time.time() - start:.2f} s")
 
         ############### Compute pairwise scores (based on IoMin) ###############
 
-        start = time.time()
-        if debug:
-            n_ys_events = max(
-                [np.max(y_instances[event_type]) for event_type in config.event_types]
-            )
+        if compute_instances_metrics and np.any(list(preds_instances.values())):
+            if logger.level <= logging.DEBUG:
+                start = time.time()
+                n_ys_events = max(
+                    [
+                        np.max(y_instances[event_type])
+                        for event_type in config.event_types
+                    ]
+                )
 
-            n_preds_events = max(
-                [
-                    np.max(preds_instances[event_type])
-                    for event_type in config.event_types
-                ]
-            )
+                n_preds_events = max(
+                    [
+                        np.max(preds_instances[event_type])
+                        for event_type in config.event_types
+                    ]
+                )
             logger.debug(
-                f"Testing function: computing pairwise scores between {n_ys_events} annotated events and {n_preds_events} predicted events"
+                f"Test function: computing pairwise scores between {n_ys_events} annotated events and {n_preds_events} predicted events"
             )
 
-        iomin_scores = get_score_matrix(
-            ys_instances=y_instances,
-            preds_instances=preds_instances,
-        )
+            iomin_scores = get_score_matrix(
+                ys_instances=y_instances,
+                preds_instances=preds_instances,
+            )
+        else:
+            logger.warning("Empty predicted events: skipping instances-based metrics.")
+            compute_instances_metrics = False
 
-        logger.debug(f"Time to compute pairwise scores: {time.time() - start:.2f} s")
+        if compute_instances_metrics:
+            logger.debug(
+                f"Time to compute pairwise scores: {time.time() - start:.2f} s"
+            )
 
-        ####################### Get matches summary #######################
+            ####################### Get matches summary #######################
 
-        start = time.time()
-        logger.debug("Testing function: getting matches summary")
+            start = time.time()
+            logger.debug("Test function: getting matches summary")
 
-        matched_ys_ids, matched_preds_ids = get_matches_summary(
-            ys_instances=y_instances,
-            preds_instances=preds_instances,
-            scores=iomin_scores,
-            ignore_mask=y == config.ignore_index,
-        )
+            matched_ys_ids, matched_preds_ids = get_matches_summary(
+                ys_instances=y_instances,
+                preds_instances=preds_instances,
+                scores=iomin_scores,
+                ignore_mask=y == config.ignore_index,
+            )
 
-        # Count number of categorized events that are necessary for the metrics
-        for ca_event in config.event_types:
-            tot_preds[ca_event] += len(matched_preds_ids[ca_event]["tot"])
-            tp_preds[ca_event] += len(matched_preds_ids[ca_event][ca_event])
-            ignored_preds[ca_event] += len(matched_preds_ids[ca_event]["ignored"])
-            unlabeled_preds[ca_event] += len(matched_preds_ids[ca_event]["unlabeled"])
+            # Count number of categorized events that are necessary for the metrics
+            for ca_event in config.event_types:
+                tot_preds[ca_event] += len(matched_preds_ids[ca_event]["tot"])
+                tp_preds[ca_event] += len(matched_preds_ids[ca_event][ca_event])
+                ignored_preds[ca_event] += len(matched_preds_ids[ca_event]["ignored"])
+                unlabeled_preds[ca_event] += len(
+                    matched_preds_ids[ca_event]["unlabeled"]
+                )
 
-            tot_ys[ca_event] += len(matched_ys_ids[ca_event]["tot"])
-            tp_ys[ca_event] += len(matched_ys_ids[ca_event][ca_event])
-            undetected_ys[ca_event] += len(matched_ys_ids[ca_event]["undetected"])
+                tot_ys[ca_event] += len(matched_ys_ids[ca_event]["tot"])
+                tp_ys[ca_event] += len(matched_ys_ids[ca_event][ca_event])
+                undetected_ys[ca_event] += len(matched_ys_ids[ca_event]["undetected"])
 
-        logger.debug(f"Time to get matches summary: {time.time() - start:.2f} s")
+            logger.debug(f"Time to get matches summary: {time.time() - start:.2f} s")
 
         ##################### Stack ys and segmented preds #####################
 
@@ -1086,7 +1109,7 @@ def test_function(
     ############################## Reduce metrics ##############################
 
     start = time.time()
-    logger.debug("Testing function: reducing metrics")
+    logger.debug("Test function: reducing metrics")
 
     ##################### Compute instances-based metrics ######################
 
@@ -1097,22 +1120,22 @@ def test_function(
     - F-score (e.g. beta = 0.5,1,2) (TODO)
     (- Matthews correlation coefficient (MCC))??? (TODO)
     """
+    if compute_instances_metrics:
+        # Get confusion matrix of all summed events
+        # metrics["events_confusion_matrix"] = sum(confusion_matrix.values())
 
-    # Get confusion matrix of all summed events
-    # metrics["events_confusion_matrix"] = sum(confusion_matrix.values())
+        # Get other metrics (precision, recall, % correctly classified, % detected, % labeled)
+        metrics_all = get_metrics_from_summary(
+            tot_preds=tot_preds,
+            tp_preds=tp_preds,
+            ignored_preds=ignored_preds,
+            unlabeled_preds=unlabeled_preds,
+            tot_ys=tot_ys,
+            tp_ys=tp_ys,
+            undetected_ys=undetected_ys,
+        )
 
-    # Get other metrics (precision, recall, % correctly classified, % detected)
-    metrics_all = get_metrics_from_summary(
-        tot_preds=tot_preds,
-        tp_preds=tp_preds,
-        ignored_preds=ignored_preds,
-        unlabeled_preds=unlabeled_preds,
-        tot_ys=tot_ys,
-        tp_ys=tp_ys,
-        undetected_ys=undetected_ys,
-    )
-
-    metrics.update(metrics_all)
+        metrics.update(metrics_all)
 
     #################### Compute segmentation-based metrics ####################
 

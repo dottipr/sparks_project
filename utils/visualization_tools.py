@@ -862,4 +862,5 @@ def add_scale_bar(
         verticalalignment="bottom",
         horizontalalignment="left",
         zorder=10,
+        fontsize=8,
     )

@@ -37,6 +37,7 @@ from skimage.segmentation import watershed
 from config import config
 
 logger = logging.getLogger(__name__)
+# logger.setLevel(logging.DEBUG)
 
 __all__ = [
     "keep_percentile",
@@ -513,7 +514,7 @@ def get_argmax_segmentation(
 
 
 def get_otsu_argmax_segmentation(
-    preds: Dict[str, np.ndarray], return_classes: bool = True, debug: bool = False
+    preds: Dict[str, np.ndarray], return_classes: bool = True
 ) -> Union[np.ndarray, Tuple[Dict[str, np.ndarray], np.ndarray]]:
     """
     Compute segmentation predictions using Otsu thresholding. Compute Otsu
@@ -526,7 +527,6 @@ def get_otsu_argmax_segmentation(
                     Dictionary with event types as keys and numpy arrays as values.
     - return_classes (bool): If True, return class-wise predictions.
                              If False, return the argmax class predictions.
-    - debug (bool): If True, print debugging information.
 
     Returns:
     - numpy.ndarray or tuple: Segmentation predictions.
@@ -544,8 +544,7 @@ def get_otsu_argmax_segmentation(
     )
 
     t_otsu = threshold_otsu(sum_preds)
-    if debug:
-        logger.debug(f"Events detection threshold: {t_otsu:.3f}")
+    logger.debug(f"Events detection threshold: {t_otsu:.3f}")
 
     # Get binary mask of valid predictions
     binary_sum_preds = sum_preds > t_otsu
@@ -569,7 +568,6 @@ def get_otsu_argmax_segmentation(
 def get_separated_events(
     argmax_preds: Dict[str, np.ndarray],
     movie: np.ndarray,
-    debug: bool = False,
     training_mode: bool = False,
     watershed_classes: List[str] = ["sparks"],
 ) -> Tuple[
@@ -593,10 +591,18 @@ def get_separated_events(
     entry is an array with labelled events (from 1 to n_events).
     - dict: Dictionary with list of peaks locations (keys: watersheds_classes).
     """
+
     separated_events = {}
     coords_events = {}
 
+    # If training mode, only compute metrics if the total number of detected events is below 5000
+    if training_mode:
+        max_tot_events = 5000
+        tot_events = 0
+
     for event_type in config.event_types:
+        logger.debug(f"Separating instances of {event_type}...")
+
         # Separate connected components in puff (3) and wave classes (2)
         if event_type not in watershed_classes:
             separated_events[event_type] = cc3d.connected_components(
@@ -604,6 +610,19 @@ def get_separated_events(
                 connectivity=config.connectivity,
                 return_N=False,
             )
+            if training_mode:
+                n_events = np.max(separated_events[event_type])
+                tot_events += n_events
+                if tot_events > max_tot_events:
+                    logger.warning(
+                        f"Total number of detected events ({tot_events}) exceeds the "
+                        f"maximum allowed ({max_tot_events}). Not computing metrics."
+                    )
+                    separated_events = {
+                        event_type: np.zeros_like(argmax_preds[event_type])
+                        for event_type in config.event_types
+                    }
+                    return separated_events, coords_events
 
         # Compute event peaks locations of classes in watershed_classes list
         else:
@@ -615,11 +634,24 @@ def get_separated_events(
                 sigma=config.sparks_sigma,
             )
 
-            if debug:
-                logger.debug(
-                    f"Number of {event_type} detected by nonmaxima suppression:"
-                    f" {len(coords_events[event_type])}"
-                )
+            logger.debug(
+                f"Number of {event_type} detected by nonmaxima suppression:"
+                f" {len(coords_events[event_type])}"
+            )
+
+            if training_mode:
+                n_events = len(coords_events[event_type])
+                tot_events += n_events
+                if tot_events > max_tot_events:
+                    logger.warning(
+                        f"Total number of detected events ({tot_events}) exceeds the "
+                        f"maximum allowed ({max_tot_events}). Not computing metrics."
+                    )
+                    separated_events = {
+                        event_type: np.zeros_like(argmax_preds[event_type])
+                        for event_type in config.event_types
+                    }
+                    return separated_events, coords_events
 
             # Compute smooth version of input video
             smooth_xs = ndi.gaussian_filter(movie, sigma=config.sparks_sigma)
@@ -636,6 +668,7 @@ def get_separated_events(
             )
 
             if not training_mode:
+                logger.debug("Not in training mode, computing missing peaks...")
                 # Labelling sparks with peaks in all connected components only
                 # if not training otherwise, it is not very important
 
@@ -646,13 +679,12 @@ def get_separated_events(
                 )
 
                 if not all_ccs_labelled:
-                    if debug:
-                        logger.debug(
-                            "Not all sparks were labelled, computing missing events..."
-                        )
-                        logger.debug(
-                            f"Number of sparks before correction: {np.max(split_event_mask)}"
-                        )
+                    logger.debug(
+                        "Not all sparks were labelled, computing missing events..."
+                    )
+                    logger.debug(
+                        f"Number of sparks before correction: {np.max(split_event_mask)}"
+                    )
 
                     # Get number of labelled events
                     n_split_events = np.max(split_event_mask)
@@ -699,16 +731,15 @@ def get_separated_events(
                         == argmax_preds[event_type].astype(bool)
                     )
 
-                    if debug:
-                        logger.debug(
-                            f"Number of sparks after correction: {np.max(split_event_mask)}"
-                        )
+                    logger.debug(
+                        f"Number of sparks after correction: {np.max(split_event_mask)}"
+                    )
 
                 assert all_ccs_labelled, "Some sparks CCs haven't been labelled!"
 
             separated_events[event_type] = split_event_mask
 
-        if debug:
+        if logger.level <= logging.DEBUG:
             # Check that event IDs are ordered and consecutive
             assert len(np.unique(separated_events[event_type])) - 1 == np.max(
                 separated_events[event_type]
@@ -983,7 +1014,7 @@ def process_raw_predictions(
     input_movie: np.ndarray,
     training_mode: bool = False,
     fill_holes: bool = False,
-    debug: bool = False,
+    compute_instances: bool = True,
 ) -> Tuple[
     Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, List[Tuple[int, int, int]]]
 ]:
@@ -1002,6 +1033,7 @@ def process_raw_predictions(
     - Tuple: A tuple containing processed event instances, segmented predictions,
       and event coordinates.
     """
+
     raw_preds_list = list(raw_preds_dict.values())
     raw_preds_dict["background"] = 1 - np.sum(raw_preds_list, axis=0)
 
@@ -1011,49 +1043,65 @@ def process_raw_predictions(
 
     # Get argmax segmentation using Otsu threshold on summed predictions
     preds_classes_dict, _ = get_otsu_argmax_segmentation(
-        preds=raw_preds_dict, return_classes=True, debug=debug
+        preds=raw_preds_dict,
+        return_classes=True,
     )
 
-    # Separate events in predictions
-    preds_instances_dict, coords_events = get_separated_events(
-        argmax_preds=preds_classes_dict,
-        movie=input_movie,
-        debug=debug,
-        training_mode=training_mode,
-    )
-
-    start = time.time()
-    # Remove small events and merge events that belong together
-    preds_instances_dict = remove_small_events(
-        instances_dict=preds_instances_dict, new_id=0
-    )
-
-    if fill_holes:
-        # Fill holes in the segmented predictions
-        preds_instances_dict = fill_instances_holes(instances_dict=preds_instances_dict)
-
-    for event_type in preds_instances_dict.keys():
-        # Update segmented predicted masks accordingly
-        preds_classes_dict[event_type] = preds_instances_dict[event_type].astype(bool)
-
-        # Remove spark peak locations of sparks that have been removed
-        if event_type in coords_events.keys():
-            corrected_loc = []
-            for t, y, x in coords_events[event_type]:
-                if preds_instances_dict[event_type][t, y, x] != 0:
-                    corrected_loc.append([t, y, x])
-            coords_events[event_type] = corrected_loc
-
-    # Renumber event instances so that each event has a unique ID
-    shift_id = 0
-    for event_type in preds_instances_dict.keys():
-        preds_instances_dict[event_type] = renumber_labelled_mask(
-            labelled_mask=preds_instances_dict[event_type], shift_id=shift_id
+    if compute_instances:
+        # Separate events in predictions
+        logger.debug("Separating events in predictions...")
+        preds_instances_dict, coords_events = get_separated_events(
+            argmax_preds=preds_classes_dict,
+            movie=input_movie,
+            training_mode=training_mode,
         )
-        shift_id = max(shift_id, np.max(preds_instances_dict[event_type]))
 
-    if debug:
-        logger.debug(f"Time for removing small events: {time.time() - start:.2f} s")
+        # If there are no predicted events don't do unnecessary processing
+        if np.any(list(preds_instances_dict.values())):
+            logger.debug("Removing small events and merging events...")
+            start = time.time()
+            # Remove small events and merge events that belong together
+            preds_instances_dict = remove_small_events(
+                instances_dict=preds_instances_dict, new_id=0
+            )
+
+            if fill_holes:
+                logger.debug("Filling holes in the segmented predictions...")
+                # Fill holes in the segmented predictions
+                preds_instances_dict = fill_instances_holes(
+                    instances_dict=preds_instances_dict
+                )
+
+            for event_type in preds_instances_dict.keys():
+                logger.debug(
+                    f"Number of {event_type} instances: {np.max(preds_instances_dict[event_type])}"
+                )
+                # Update segmented predicted masks accordingly
+                preds_classes_dict[event_type] = preds_instances_dict[
+                    event_type
+                ].astype(bool)
+
+                # Remove spark peak locations of sparks that have been removed
+                if event_type in coords_events.keys():
+                    corrected_loc = []
+                    for t, y, x in coords_events[event_type]:
+                        if preds_instances_dict[event_type][t, y, x] != 0:
+                            corrected_loc.append([t, y, x])
+                    coords_events[event_type] = corrected_loc
+
+            # Renumber event instances so that each event has a unique ID
+            shift_id = 0
+            for event_type in preds_instances_dict.keys():
+                preds_instances_dict[event_type] = renumber_labelled_mask(
+                    labelled_mask=preds_instances_dict[event_type], shift_id=shift_id
+                )
+                shift_id = max(shift_id, np.max(preds_instances_dict[event_type]))
+
+            logger.debug(f"Time for removing small events: {time.time() - start:.2f} s")
+
+    else:
+        preds_instances_dict = {}
+        coords_events = {}
 
     return preds_instances_dict, preds_classes_dict, coords_events
 

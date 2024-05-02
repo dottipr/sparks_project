@@ -136,6 +136,8 @@ def main():
         optimizer = optim.Adam(network.parameters(), lr=params.lr_start)
     elif params.optimizer == "adadelta":
         optimizer = optim.Adadelta(network.parameters(), lr=params.lr_start)
+    elif params.optimizer == "sgd":
+        optimizer = optim.SGD(network.parameters(), lr=params.lr_start)
     else:
         logger.error(f"{params.optimizer} is not a valid optimizer.")
         exit()
@@ -203,7 +205,6 @@ def main():
             training_name=params.run_name,
             output_dir=preds_output_dir,
             training_mode=True,
-            debug=config.debug_mode,
         ),
         test_every=params.c.getint("training", "test_every", fallback=1000),
         plot_every=params.c.getint("training", "test_every", fallback=1000),
