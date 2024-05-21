@@ -21,20 +21,15 @@ import torch
 from matplotlib import pyplot as plt
 from scipy import ndimage as ndi
 from scipy import signal, spatial
-from scipy.ndimage import (
-    binary_fill_holes,
-    center_of_mass,
-    distance_transform_edt,
-    find_objects,
-    label,
-)
+from scipy.ndimage import (binary_fill_holes, center_of_mass,
+                           distance_transform_edt, find_objects, label)
 from scipy.stats import ttest_rel
 from skimage.filters import threshold_otsu
 from skimage.measure import label, regionprops
 from skimage.morphology import binary_closing, disk
 from skimage.segmentation import watershed
 
-from config import config
+from ..config import config
 
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG)

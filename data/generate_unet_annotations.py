@@ -48,12 +48,12 @@ import os
 import imageio
 import numpy as np
 
-from data.data_processing_tools import (
+from ..utils.in_out_tools import load_annotations_ids, load_movies_ids
+from .data_processing_tools import (
     annotate_sparks_with_peaks,
     apply_ignore_regions_to_events,
     reduce_sparks_size,
 )
-from utils.in_out_tools import load_annotations_ids, load_movies_ids
 
 
 def main():

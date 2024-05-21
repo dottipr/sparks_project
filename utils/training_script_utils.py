@@ -22,17 +22,18 @@ from torch import nn
 
 import models.UNet as unet
 import models.unetOpenAI as unet_openai
-from config import TrainingConfig, config
-from data.datasets import (
+
+from ..config import TrainingConfig, config
+from ..data.datasets import (
     SparkDataset,
     SparkDatasetLSTM,
     SparkDatasetResampled,
     SparkDatasetSinChannels,
     SparkDatasetTemporalReduction,
 )
-from models.architectures import TempRedUNet, UNetConvLSTM, UNetPadWrapper
-from models.new_unet import UNet
-from utils.custom_losses import (
+from ..models.architectures import TempRedUNet, UNetConvLSTM, UNetPadWrapper
+from ..models.new_unet import UNet
+from .custom_losses import (
     Dice_CELoss,
     FocalLoss,
     LovaszSoftmax,
@@ -40,7 +41,7 @@ from utils.custom_losses import (
     MySoftDiceLoss,
     SumFocalLovasz,
 )
-from utils.training_inference_tools import (
+from .training_inference_tools import (
     TransformedSparkDataset,
     compute_class_weights,
     random_flip,
