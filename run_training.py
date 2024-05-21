@@ -15,12 +15,15 @@ Example:
     python run_training.py --config_file config.ini
 
 Author: Prisca Dotti
-Last modified: 24.10.2023
+Last modified: 04.05.2024
 """
 
 import logging
 import os
+import random
 
+import numpy as np
+import torch
 from torch import nn, optim
 from torch.cuda.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
@@ -66,9 +69,9 @@ def main():
 
     # We used these random seeds to ensure reproducibility of the results
 
-    # torch.manual_seed(0) <--------------------------------------------------!
-    # random.seed(0) <--------------------------------------------------------!
-    # np.random.seed(0) <-----------------------------------------------------!
+    torch.manual_seed(0)
+    random.seed(0)
+    np.random.seed(0)
 
     ############################ Configure datasets ############################
 
@@ -126,7 +129,7 @@ def main():
         logger.info("Initializing UNet weights...")
         network.apply(weights_init)
 
-    # The following line is commented as it does not work on Windows
+    # The following line is commented out as it does not work on Windows
     # torch.compile(network, mode="default", backend="inductor")
 
     ########################### Initialize training ############################

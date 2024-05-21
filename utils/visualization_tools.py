@@ -2,7 +2,7 @@
 Script with tools for data visualisation (e.g. plots and Napari).
 
 Author: Prisca Dotti
-Last modified: 02.04.2024
+Last modified: 04.05.2024
 """
 
 import itertools
@@ -14,10 +14,14 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import matplotlib.patches as patches
 import numpy as np
+import seaborn as sns
 import vispy.color
 from matplotlib import cm
+from matplotlib import pyplot as plt
+from matplotlib import ticker
 from PIL import Image
 from scipy import ndimage as ndi
+from scipy.ndimage import find_objects
 
 from config import config
 
@@ -51,6 +55,7 @@ __all__ = [
     "create_signal_mask",
     "get_spark_signal",
     "get_spark_2d_signal",
+    "plot_event_t_profile_2d_surface",
 ]
 
 logger = logging.getLogger(__name__)
@@ -817,6 +822,160 @@ def get_spark_2d_signal(
         return t, y, x, y_frames, x_frames, signal_2d
 
     return signal_2d
+
+
+def plot_event_t_profile_2d_surface(
+    sample_id: str,
+    movie: np.ndarray,
+    events_mask: np.ndarray,
+    event_coord: Tuple[int, int, int],
+    event_type: str,  # spark or puff
+    fps: float,
+    radius: int,
+    t_context_duration: int,
+    spatial_context: int,
+    figsize: Tuple[int, int] = (16, 8),
+    width_ratios: List[int] = [4, 6],
+    height_ratios: List[int] = [1, 25, 1],
+    linewidth: float = 0.7,
+    elevation: int = 30,
+    azimuth: int = 30,
+    super_title: str = "Temporal Profile and 2D Surface Plot of a Sample Ca$^{2+}$ Event",
+) -> None:
+
+    # event coordinates
+    t, y, x = event_coord
+    # print(f"Plotting Ca2+ {event_type.capitalize()} at t={t}, y={y}, x={x}")
+
+    # Create a new figure with two subplots, one for each of the plots
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(3, 2, width_ratios=width_ratios, height_ratios=height_ratios)
+
+    # First subplot for the temporal profile
+    ax1 = fig.add_subplot(gs[1, 0])
+    # ax1.set_title(
+    #     "Temporal Profile of Mean Intensity around a Sample Ca$^{2+}$ "
+    #     + event_type.capitalize(),
+    #     y=1.1,
+    # )
+
+    # Extract the region and calculate the mean intensity over time
+    frames, signal, (y, x), start, stop = get_spark_signal(
+        video=movie,
+        sparks_labelled=events_mask,
+        center=(t, y, x),
+        radius=radius,
+        context_duration=t_context_duration,
+        return_info=True,
+    )
+    # Use ms in x axis instead of frames
+    t_axis = np.linspace(0, 1000 * len(frames) / fps, num=len(frames))
+    start_ms = 1000 * (start - frames[0]) / fps
+    stop_ms = 1000 * (stop - frames[0]) / fps
+
+    ax1.axvspan(start_ms, stop_ms, facecolor=cm.jet(0.25), alpha=0.2)
+    sns.lineplot(
+        ax=ax1,
+        x=t_axis,
+        y=signal,
+        color=cm.jet(0.2),
+        linewidth=linewidth,
+    )
+
+    ax1.set_xlabel("Time [ms]", labelpad=20)
+    ax1.set_ylabel("Intensity [ΔF/F$_0$]", labelpad=20)
+    ax1.grid(True)
+
+    # Second subplot for the 2D surface plot
+    ax2 = fig.add_subplot(gs[:, 1], projection="3d")
+    # ax2.set_title(
+    #     "2D Surface Plot of a Sample Ca$^{2+}$ " + event_type.capitalize(), y=1.075
+    # )
+
+    # Set the background color of the plot to white
+    ax2.xaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+    ax2.yaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+    ax2.zaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+
+    # Get event slice
+    event_nb = events_mask[t, y, x]
+    event_slice = find_objects(events_mask == event_nb)[0]
+
+    # Extract the 2D signal and the spatial context
+    _, _, _, y_axis, x_axis, signal_2d = get_spark_2d_signal(
+        video=movie,
+        slices=event_slice,
+        coords=(t, y, x),
+        spatial_context=spatial_context,
+        sigma=2,
+        return_info=True,
+    )
+
+    # Convert the x and y axis μm (1 pixel = 0.267 μm)
+    x_axis_um = (x_axis - x_axis[0]) * 0.267
+    y_axis_um = (y_axis - y_axis[0]) * 0.267
+
+    X, Y = np.meshgrid(x_axis_um, y_axis_um)
+
+    # Plot the surface
+    surf = ax2.plot_surface(
+        Y,
+        X,
+        signal_2d,
+        cmap="jet",
+        rstride=1,
+        cstride=1,
+        linewidth=0,
+        edgecolor="k",
+        antialiased=False,
+    )
+
+    # Move z-axis ticks further away from the axis (increase the pad value)
+    for tick in ax2.zaxis.get_major_ticks():
+        tick.set_pad(15)
+
+    # Customize the z axis
+    ax2.set_zlim(signal_2d.min(), signal_2d.max())
+
+    # Add color bar which maps values to colors
+    cbar = plt.colorbar(surf, shrink=0.5, aspect=10, ax=ax2, pad=0.01)
+    cbar.set_label("Intensity [ΔF/F$_0$]", labelpad=15)
+
+    # Labels
+    ax2.set_xlabel("X [μm]", labelpad=25)
+    ax2.set_ylabel("Y [μm]", labelpad=25)
+    ax2.set_zlabel("Intensity [ΔF/F$_0$]", labelpad=25)
+
+    # Don't rotate x-, y-, and z-axis label by 90 degrees
+    ax2.xaxis.set_rotate_label(False)
+    ax2.yaxis.set_rotate_label(False)
+    ax2.zaxis.set_rotate_label(False)
+
+    # Rotate z-axis label by 90 degrees
+    ax2.zaxis.label.set_rotation(90)  # Rotate manually
+
+    # Format the tick labels on the x and y axes to display one decimal digit
+    ax2.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: "{:.1f}".format(x)))
+    ax2.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: "{:.1f}".format(x)))
+
+    # Set view angle
+    ax2.view_init(elev=elevation, azim=azimuth)
+
+    # Adjust subplots to minimize the whitespace
+    plt.subplots_adjust(left=0.1, right=0.9, bottom=0.2, top=0.8, wspace=0.0)
+
+    # Add a super title to the figure
+    fig.suptitle(super_title, fontsize=16, y=0.82)
+
+    fig.savefig(
+        f"movie_{sample_id}_{event_type}_t={t}_y={y}_x={x}.png",
+        dpi=600,
+        bbox_inches="tight",
+        # pad_inches=0.1
+    )
+
+    # Show the combined plot
+    plt.show()
 
 
 ######################### Confocal Data Visualization ##########################
