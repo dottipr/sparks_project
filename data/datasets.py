@@ -64,8 +64,8 @@ class SparkDataset(Dataset):
             truth labels.
         instances (List[np.ndarray]): A list of numpy arrays containing the
             instance data.
-        stride (int): The stride to use when generating samples from the movie
-            data.
+        # stride (int): The stride to use when generating samples from the movie
+        #     data.
 
     Raises:
         ValueError: If neither `movies` nor `base_path` and `sample_ids` are
@@ -439,7 +439,7 @@ class SparkDataset(Dataset):
         return movie
 
     def _adjust_videos_shape(self) -> None:
-        # Pad videos whose length does not match with chunks_duration and stride
+        # Pad videos whose length does not match with data_duration and stride
         # params.
         self.movies = [self._pad_extremities_of_video(video) for video in self.movies]
         if self.gt_available:
@@ -452,7 +452,7 @@ class SparkDataset(Dataset):
         self, video: torch.Tensor, padding_value: int = 0
     ) -> torch.Tensor:
         """
-        Pads videos whose length does not match with chunks_duration and step
+        Pads videos whose length does not match with data_duration and step
         params.
 
         Args:
