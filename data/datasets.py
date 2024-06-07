@@ -8,6 +8,7 @@ Last modified: 08.04.2024
 import logging
 import math
 import os
+import random
 from typing import Any, Dict, List, Tuple, Union
 
 import imageio
@@ -20,9 +21,9 @@ from torch import nn
 from torch.utils.data import Dataset
 from torchvision.transforms import GaussianBlur
 
-from ..config import TrainingConfig, config
-from ..utils.in_out_tools import load_annotations_ids, load_movies_ids
-from .data_processing_tools import detect_spark_peaks, remove_padding
+from config import TrainingConfig, config
+from data.data_processing_tools import detect_spark_peaks, get_cell_mask, remove_padding
+from utils.in_out_tools import load_annotations_ids, load_movies_ids
 
 __all__ = [
     "SparkDataset",
@@ -30,11 +31,13 @@ __all__ = [
     "SparkDatasetResampled",
     "SparkDatasetLSTM",
     "SparkDatasetInference",
+    "PatchSparkDataset",
 ]
 
 
 basepath = os.path.dirname("__file__")
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 """
@@ -74,8 +77,8 @@ class SparkDataset(Dataset):
     Attributes:
         params (TrainingConfig): The configuration object containing the dataset
             parameters.
-        window_size (int): The duration of each sample in frames.
-        stride (int): The stride to use when generating samples from the movie
+        window_duration (int): The size (t, y, or z) of each patch.
+        window_stride (int): The stride to use when generating samples from the movie
             data.
         movies (List[torch.Tensor]): A list of PyTorch tensors containing the
             movie data.
@@ -87,8 +90,8 @@ class SparkDataset(Dataset):
             dataset.
         spark_peaks (List[Tuple[int, int]]): A list of tuples containing the
             (t, y, x) coordinates of the spark peaks in each movie.
-        original_durations (List[int]): A list of the original durations of each
-            movie before padding.
+        # original_shapes (List[int, int, int]): A list of the original shapes
+        #     of the movies before padding.
 
     Methods:
         __len__(): Returns the total number of samples in the dataset.
@@ -133,8 +136,11 @@ class SparkDataset(Dataset):
             )
 
         # Store the dataset parameters
-        self.window_size = params.data_duration
-        self.stride: int = kwargs.get("stride", 0) or params.data_stride
+        self.window_duration = params.data_duration
+        self.window_stride: int = kwargs.get("stride", 0) or params.data_stride
+        self.patch_duration = int(params.patch_size[0])
+        self.patch_height = int(params.patch_size[1])
+        self.patch_width = int(params.patch_size[2])
 
         # Store the movies, labels and instances
         self.movies = [torch.from_numpy(movie.astype(np.int32)) for movie in movies]
@@ -143,6 +149,13 @@ class SparkDataset(Dataset):
             torch.from_numpy(instance.astype(np.int16)) for instance in instances
         ]
         self.gt_available = True if len(labels) == len(movies) else False
+
+        # Mask out regions outside the cell if required
+        if params.mask_cell_exterior:
+            self.labels = [
+                self._mask_cell_exterior(movie, label)
+                for movie, label in zip(self.movies, self.labels)
+            ]
 
         # If instances are available, get the locations of the spark peaks
         if len(self.instances) > 0:
@@ -153,22 +166,16 @@ class SparkDataset(Dataset):
         # Preprocess videos if necessary
         self._preprocess_videos()
 
-        # Store original duration of all movies before padding
-        self.original_durations = [movie.shape[0] for movie in self.movies]
+        # # Store original duration of all movies before padding
+        # self.original_shapes = [movie.shape for movie in self.movies]
 
-        # Adjust videos shape so that it is suitable for the model
-        self._adjust_videos_shape()
+        # # Adjust videos shape so that it is suitable for the model
+        # self._adjust_videos_shape()
 
     ############################## Class methods ###############################
 
     def __len__(self) -> int:
-        total_samples = 0
-        for movie in self.movies:
-            frames = movie.shape[0]
-            # Calculate the number of samples for each movie
-            samples_per_movie = (frames - self.window_size) // self.stride + 1
-            total_samples += samples_per_movie
-        return total_samples
+        return len(self.movies)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         if idx < 0:
@@ -176,26 +183,26 @@ class SparkDataset(Dataset):
 
         sample_dict = {}
 
-        # Get the movie index and chunk index for the given idx
-        movie_idx, chunk_idx = self._get_movie_and_chunk_indices(idx)
-        sample_dict["movie_id"] = movie_idx
+        # # Get the movie index and chunk index for the given idx
+        # movie_idx, chunk_idx = self._get_movie_and_chunk_indices(idx)
+        # sample_dict["movie_id"] = movie_idx
 
-        # Store the original duration of the movie
-        sample_dict["original_duration"] = self.original_durations[movie_idx]
+        # # Store the original duration of the movie
+        # sample_dict["original_duration"] = self.original_shapes[movie_idx]
 
-        # Calculate the starting frame within the movie
-        start_frame = chunk_idx * self.stride
-        end_frame = start_frame + self.window_size
+        # # Calculate the starting frame within the movie
+        # start_frame = chunk_idx * self.stride
+        # end_frame = start_frame + self.patch_size
 
         # Extract the windowed data and labels
-        sample_dict["data"] = self.movies[movie_idx][start_frame:end_frame]
+        sample_dict["data"] = self.movies[idx]
 
         if self.gt_available:
-            sample_dict["labels"] = self.labels[movie_idx][start_frame:end_frame]
+            sample_dict["labels"] = self.labels[idx]
 
         # Add the sample ID (string) to the item dictionary, if available
         if self.sample_ids:
-            sample_dict["sample_id"] = self.sample_ids[movie_idx]
+            sample_dict["sample_id"] = self.sample_ids[idx]
 
         return sample_dict
 
@@ -207,10 +214,7 @@ class SparkDataset(Dataset):
             dict: A dictionary containing the movies used as input to the model.
         """
         # Remove padding from the movies
-        movies_numpy = {
-            i: remove_padding(movie, self.original_durations[i]).numpy()
-            for i, movie in enumerate(self.movies)
-        }
+        movies_numpy = {i: movie.numpy() for i, movie in enumerate(self.movies)}
         return movies_numpy
 
     def get_labels(self) -> Dict[int, np.ndarray]:
@@ -222,10 +226,7 @@ class SparkDataset(Dataset):
             and testing.
         """
         # Remove padding from the labels
-        labels_numpy = {
-            i: remove_padding(label, self.original_durations[i]).numpy()
-            for i, label in enumerate(self.labels)
-        }
+        labels_numpy = {i: label.numpy() for i, label in enumerate(self.labels)}
         return labels_numpy
 
     def get_instances(self) -> Dict[int, np.ndarray]:
@@ -246,24 +247,24 @@ class SparkDataset(Dataset):
         }
         return instances_numpy
 
-    def set_debug_dataset(self) -> None:
-        """
-        Set the dataset to be a debug dataset by reducing the number of samples.
-        """
-        # For each movie, only keep the central chunk
-        for i, movie in enumerate(self.movies):
-            frames = movie.shape[0]
-            samples_per_movie = (frames - self.window_size) // self.stride + 1
-            if samples_per_movie > 1:
-                # Keep only the central chunk
-                start_frame = (samples_per_movie // 2) * self.stride
-                end_frame = start_frame + self.window_size
-                self.movies[i] = movie[start_frame:end_frame]
-                if len(self.labels) > 0:
-                    self.labels[i] = self.labels[i][start_frame:end_frame]
-                if len(self.instances) > 0:
-                    self.instances[i] = self.instances[i][start_frame:end_frame]
-                self.original_durations[i] = self.movies[i].shape[0]
+    # def set_debug_dataset(self) -> None:
+    #     """
+    #     Set the dataset to be a debug dataset by reducing the number of samples.
+    #     """
+    #     # For each movie, only keep the central chunk
+    #     for i, movie in enumerate(self.movies):
+    #         frames = movie.shape[0]
+    #         samples_per_movie = (frames - self.patch_size) // self.stride + 1
+    #         if samples_per_movie > 1:
+    #             # Keep only the central chunk
+    #             start_frame = (samples_per_movie // 2) * self.stride
+    #             end_frame = start_frame + self.patch_size
+    #             self.movies[i] = movie[start_frame:end_frame]
+    #             if len(self.labels) > 0:
+    #                 self.labels[i] = self.labels[i][start_frame:end_frame]
+    #             if len(self.instances) > 0:
+    #                 self.instances[i] = self.instances[i][start_frame:end_frame]
+    #             self.original_shapes[i] = self.movies[i].shape[0]
 
     ############################## Private methods #############################
 
@@ -322,36 +323,36 @@ class SparkDataset(Dataset):
 
         return instances
 
-    def _get_movie_and_chunk_indices(self, idx: int) -> Tuple[int, int]:
-        """
-        Given an index, returns the movie index and chunk index for the
-        corresponding chunk in the dataset.
+    # def _get_movie_and_chunk_indices(self, idx: int) -> Tuple[int, int]:
+    #     """
+    #     Given an index, returns the movie index and chunk index for the
+    #     corresponding chunk in the dataset.
 
-        Args:
-            idx (int): The index of the chunk in the dataset.
+    #     Args:
+    #         idx (int): The index of the chunk in the dataset.
 
-        Returns:
-            tuple: A tuple containing the movie index and chunk index for the
-            corresponding chunk.
-        """
-        current_idx = 0  # Number of samples seen so far
-        for movie_idx, movie in enumerate(self.movies):
-            frames, _, _ = movie.shape
-            samples_per_movie = (frames - self.window_size) // self.stride + 1
-            if idx < current_idx + samples_per_movie:
-                # If idx is smaller than the number of samples seen so
-                # far plus the number of samples in the current movie,
-                # then the sample we're looking for is in the current
-                # movie.
-                chunk_idx = idx - current_idx  # chunk idx in the movie
-                return movie_idx, chunk_idx
+    #     Returns:
+    #         tuple: A tuple containing the movie index and chunk index for the
+    #         corresponding chunk.
+    #     """
+    #     current_idx = 0  # Number of samples seen so far
+    #     for movie_idx, movie in enumerate(self.movies):
+    #         frames, _, _ = movie.shape
+    #         samples_per_movie = (frames - self.patch_size) // self.stride + 1
+    #         if idx < current_idx + samples_per_movie:
+    #             # If idx is smaller than the number of samples seen so
+    #             # far plus the number of samples in the current movie,
+    #             # then the sample we're looking for is in the current
+    #             # movie.
+    #             chunk_idx = idx - current_idx  # chunk idx in the movie
+    #             return movie_idx, chunk_idx
 
-            current_idx += samples_per_movie
+    #         current_idx += samples_per_movie
 
-        # If the index is out of range, raise an error
-        raise IndexError(
-            f"Index {idx} is out of range for dataset of length {len(self)}"
-        )
+    #     # If the index is out of range, raise an error
+    #     raise IndexError(
+    #         f"Index {idx} is out of range for dataset of length {len(self)}"
+    #     )
 
     def _detect_spark_peaks(self, class_name: str = "sparks") -> List[np.ndarray]:
         # Detect the spark peaks in the instance mask of each movie
@@ -398,7 +399,7 @@ class SparkDataset(Dataset):
         elif mode == "moving":
             # Remove the moving average background from the video frames.
             T = movie.shape[0]
-            N = self.params.data_duration // 2
+            N = self.window_duration // 2
             # Initialize an empty array for the background
             background = torch.zeros_like(movie)
             # Calculate the moving average for each frame
@@ -438,63 +439,15 @@ class SparkDataset(Dataset):
             raise ValueError(f"Invalid norm type: {norm_type}")
         return movie
 
-    def _adjust_videos_shape(self) -> None:
-        # Pad videos whose length does not match with data_duration and stride
-        # params.
-        self.movies = [self._pad_extremities_of_video(video) for video in self.movies]
-        if self.gt_available:
-            self.labels = [
-                self._pad_extremities_of_video(mask, padding_value=config.ignore_index)
-                for mask in self.labels
-            ]
-
-    def _pad_extremities_of_video(
-        self, video: torch.Tensor, padding_value: int = 0
+    def _mask_cell_exterior(
+        self, movie: torch.Tensor, labels: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Pads videos whose length does not match with data_duration and step
-        params.
+        # Label regions outside the cell in the movie as ignored regions.
+        outside = 1 - get_cell_mask(movie.numpy()).astype(int)
+        outside = torch.from_numpy(outside) * config.ignore_index
+        labels = torch.where(outside == 0, labels, outside)
 
-        Args:
-        - video (torch.Tensor): The video to pad.
-        - padding_value (int): The value to use for padding. Default is 0.
-
-        Returns:
-        - The padded video.
-        """
-        video_duration = video.shape[0]
-        chunk_duration = self.params.data_duration
-        stride = self.params.data_stride
-
-        # Check if length is shorter than data_duration
-        if video_duration < chunk_duration:
-            padding_length = chunk_duration - video_duration
-        else:
-            padding_length = stride * math.ceil(
-                (video_duration - chunk_duration) / stride
-            ) - (video_duration - chunk_duration)
-
-        if padding_length > 0:
-            video = F.pad(
-                video,
-                (
-                    0,
-                    0,
-                    0,
-                    0,
-                    padding_length // 2,
-                    padding_length // 2 + padding_length % 2,
-                ),
-                "constant",
-                value=padding_value,
-            )
-            video_duration = video.shape[0]
-
-        assert (
-            (video_duration - chunk_duration) / stride
-        ) % 1 == 0, "Padding at end of video is wrong."
-
-        return video
+        return labels
 
 
 class SparkDatasetTemporalReduction(SparkDataset):
@@ -790,9 +743,7 @@ class SparkDatasetLSTM(SparkDataset):
 
         if self.gt_available:
             # extract middle frame from label
-            sample_dict["labels"] = sample_dict["labels"][
-                self.params.data_duration // 2
-            ]
+            sample_dict["labels"] = sample_dict["labels"][self.window_duration // 2]
 
         return sample_dict
 
@@ -805,7 +756,7 @@ class SparkDatasetLSTM(SparkDataset):
         Instead of padding the video with zeros, pad it with the first
         and last frame of the video.
         """
-        padding_length = self.params.data_duration - video.shape[0]
+        padding_length = self.window_duration - video.shape[0]
         if padding_length:
             video = F.pad(
                 video,
@@ -820,7 +771,7 @@ class SparkDatasetLSTM(SparkDataset):
                 "replicate",
             )
 
-            assert video.shape[0] == self.params.data_duration, "Padding is wrong"
+            assert video.shape[0] == self.window_duration, "Padding is wrong"
 
             # logger.debug("Added padding to short video")
 
@@ -836,9 +787,9 @@ class SparkDatasetLSTM(SparkDataset):
         length = video.shape[0]
 
         # check that duration is odd
-        assert self.params.data_duration % 2 == 1, "duration must be odd"
+        assert self.window_duration % 2 == 1, "duration must be odd"
 
-        pad = self.params.data_duration - 1
+        pad = self.window_duration - 1
 
         # if video is int32, cast it to float32
         cast_to_float = video.dtype == torch.int32
@@ -853,7 +804,7 @@ class SparkDatasetLSTM(SparkDataset):
 
         # check that duration of video is original duration + chunk duration - 1
         assert (
-            video.shape[0] == length + self.params.data_duration - 1
+            video.shape[0] == length + self.window_duration - 1
         ), "padding at end of video is wrong"
 
         return video
@@ -986,3 +937,82 @@ class SparkDatasetSinChannels(SparkDataset):
         return torch.cat(
             [chunk.unsqueeze(0)] + x_sin_all + y_sin_all + t_sin_all, dim=0
         )
+
+
+### Dataset with patch extraction ###
+
+
+class PatchSparkDataset(SparkDataset):
+    """
+    A PyTorch Dataset class for spark detection with patch extraction. The
+    samples of this dataset are simply patches extracted from the movies. The
+    information about the original frame rate of the movies is not stored, so
+    it not suitable for inference.
+
+    TODO:
+    - improve sampling strategy, for the instance I am considering all valid
+        points as centers
+    - mask out regions outside the cell
+
+    Args:
+        same as SparkDataset
+    """
+
+    def __init__(self, params: TrainingConfig, **kwargs: Any) -> None:
+        # Initialize SparkDataset class
+        super().__init__(params=params, **kwargs)
+
+        # Set maximum number of patches for each training iteration
+        self.max_patches = 10000
+
+    ############################## Class methods ###############################
+
+    def __len__(self) -> int:
+        return self.max_patches
+
+    def __getitem__(self, idx: int) -> Dict[str, Union[torch.Tensor, int, float]]:
+        # Get a random center for the patch
+        movie_idx: int = random.randint(0, len(self.movies) - 1)
+        t_center: int = random.randint(
+            self.patch_duration // 2,
+            self.movies[movie_idx].shape[0] - self.patch_duration // 2,
+        )
+        y_center: int = random.randint(
+            self.patch_height // 2,
+            self.movies[movie_idx].shape[1] - self.patch_height // 2,
+        )
+        x_center: int = random.randint(
+            self.patch_width // 2,
+            self.movies[movie_idx].shape[2] - self.patch_width // 2,
+        )
+
+        # Extract the patch and label patch
+        patch: torch.Tensor = self.movies[movie_idx][
+            t_center - self.patch_duration // 2 : t_center + self.patch_duration // 2,
+            y_center - self.patch_height // 2 : y_center + self.patch_height // 2,
+            x_center - self.patch_width // 2 : x_center + self.patch_width // 2,
+        ]
+
+        if self.gt_available:
+            label_patch: torch.Tensor = self.labels[movie_idx][
+                t_center
+                - self.patch_duration // 2 : t_center
+                + self.patch_duration // 2,
+                y_center - self.patch_height // 2 : y_center + self.patch_height // 2,
+                x_center - self.patch_width // 2 : x_center + self.patch_width // 2,
+            ]
+        else:
+            label_patch: torch.Tensor = torch.zeros([])
+
+        # if the label only contains ignore_index, then the patch is invalid
+        if torch.all(label_patch == config.ignore_index):
+            return self.__getitem__(idx)
+
+        return {
+            "data": patch,
+            "labels": label_patch,
+            "movie_idx": movie_idx,
+            "t_center": t_center,
+            "y_center": y_center,
+            "x_center": x_center,
+        }

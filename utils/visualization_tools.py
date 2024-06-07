@@ -23,7 +23,7 @@ from PIL import Image
 from scipy import ndimage as ndi
 from scipy.ndimage import find_objects
 
-from ..config import config
+from config import config
 
 # NOTES FOR THE FUTURE:
 # How to create a DataFrame with various parameters

@@ -2,7 +2,7 @@
 Functions that are used during the training of the neural network model.
 
 Author: Prisca Dotti
-Last modified: 02.05.2024
+Last modified: 04.06.2024
 """
 
 import logging
@@ -14,33 +14,27 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.utils.data
+import wandb
 from scipy import ndimage as ndi
 from sklearn.metrics import confusion_matrix
 from torch import nn
-from torch.cuda.amp import GradScaler, autocast
+# from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 
-import wandb
-
-from ..config import TrainingConfig, config
-from ..data.data_processing_tools import (
-    masks_to_instances_dict,
-    preds_dict_to_mask,
-    process_raw_predictions,
-    remove_padding,
-)
-from ..data.datasets import SparkDataset, SparkDatasetInference
-from ..evaluation.metrics_tools import (
-    compute_iou,
-    get_matches_summary,
-    get_metrics_from_summary,
-    get_score_matrix,
-)
-from ..models.UNet import unet
-from ..models.UNet.unet.trainer import _write_results
-from .custom_losses import MySoftDiceLoss
-from .in_out_tools import write_videos_on_disk
+from config import TrainingConfig, config
+from data.data_processing_tools import (masks_to_instances_dict,
+                                        preds_dict_to_mask,
+                                        process_raw_predictions,
+                                        remove_padding)
+from data.datasets import SparkDataset, SparkDatasetInference
+from evaluation.metrics_tools import (compute_iou, get_matches_summary,
+                                      get_metrics_from_summary,
+                                      get_score_matrix)
+from models.UNet import unet
+from models.UNet.unet.trainer import _write_results
+from utils.custom_losses import MySoftDiceLoss
+from utils.in_out_tools import write_videos_on_disk
 
 __all__ = [
     "MyTrainingManager",  # training
@@ -53,7 +47,7 @@ __all__ = [
     "compute_class_weights_instances",  # training
     "compute_loss",  # training
     "weights_init",  # training
-    "run_dataloader_in_network",  # inference
+    # "run_dataloader_in_network",  # inference
     "do_inference",  # inference
     "max_inference",  # inference
     "gaussian_inference",  # inference
@@ -79,7 +73,7 @@ def training_step(
     network: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     criterion: torch.nn.Module,
-    scaler: GradScaler,
+    # scaler: GradScaler,
     scheduler: Optional[_LRScheduler] = None,
 ) -> Dict[str, torch.Tensor]:
     """
@@ -111,9 +105,9 @@ def training_step(
 
     # Forward pass
     # with autocast():  # to use mixed precision (not working)
-    if x.dim() <= 4:  # [b, d, 64, 512] -> [b, 1, d, 64, 512]
+    if x.dim() <= 4:  # [b, d, d, d] -> [b, 1, d, d, d]
         x = x.unsqueeze(1)
-    y_pred = network(x)  # [b, 4, d, 64, 512] or [b, 4, 64, 512]
+    y_pred = network(x)  # [b, 4, d, d, d] or [b, 4, d, d]
     # Handle specific loss functions
     if isinstance(criterion, MySoftDiceLoss):
         # Set regions in pred and y where the label is ignored to 0
@@ -128,12 +122,6 @@ def training_step(
             ..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :
         ]
         y = y[..., params.ignore_frames_loss : -params.ignore_frames_loss, :, :]
-
-    # Move criterion weights to GPU
-    # if hasattr(criterion, "weight") and not criterion.weight.is_cuda:
-    #     criterion.weight = criterion.weight.to(params.device)
-    # if hasattr(criterion, "NLLLoss") and not criterion.NLLLoss.weight.is_cuda:
-    #     criterion.NLLLoss.weight = criterion.NLLLoss.weight.to(params.device)
 
     # Compute loss
     criterion.to(y.device)
@@ -158,7 +146,6 @@ def training_step(
     return {"loss": loss}
 
 
-# Iterator (?) over the dataset
 def mycycle(dataset_loader: torch.utils.data.DataLoader) -> Iterator:
     while True:
         for sample in dataset_loader:
@@ -407,164 +394,135 @@ def weights_init(m: nn.Module) -> None:
 ############################### Inference tools ################################
 
 
+def extract_patches(data, t_patch, y_patch, x_patch, stride_t, stride_y, stride_x):
+    patches = []
+    coords = []
+    for t in range(0, data.shape[-3] - t_patch + 1, stride_t):
+        for y in range(0, data.shape[-2] - y_patch + 1, stride_y):
+            for x in range(0, data.shape[-1] - x_patch + 1, stride_x):
+                patch = data[..., t : t + t_patch, y : y + y_patch, x : x + x_patch]
+                patches.append(patch)
+                coords.append((t, y, x))
+    logger.debug(f"Extracted {len(patches)} patches")
+    return patches, coords
+
+
+def recombine_patches(
+    inferred_patches, coords, original_shape, t_patch, y_patch, x_patch
+):
+    recombined = torch.zeros(config.num_classes, *original_shape)
+    count = torch.zeros(original_shape)
+
+    for inferred_patch, (t, y, x) in zip(inferred_patches, coords):
+        recombined[
+            :, t : t + t_patch, y : y + y_patch, x : x + x_patch
+        ] += inferred_patch
+        count[t : t + t_patch, y : y + y_patch, x : x + x_patch] += 1
+
+    count[count == 0] = 1  # To avoid division by zero
+    recombined /= count
+
+    return recombined
+
+
 @torch.no_grad()
 def do_inference(
     network: nn.Module,
     params: TrainingConfig,
-    dataloader: torch.utils.data.DataLoader,
+    # dataloader: torch.utils.data.DataLoader,
+    dataset: SparkDataset,
     device: torch.device,
     compute_loss: bool = False,
-    inference_types: List[str] = [],
+    # inference_types: List[str] = [],
 ) -> Dict[int, Dict[str, np.ndarray]]:
     """
     Given a trained network and a dataloader, run the data through the network
-    and perform inference. The inference is done using different methods, which
-    are specified in the inference_types list. The returned predictions are also
-    cropped to the original duration of the movie.
+    and perform inference. The inference is done using splitting the data into
+    patches and then recombining the patches to get the final prediction using
+    average inference.
 
     Args:
         network (nn.Module): The trained neural network model.
         params (TrainingConfig): Configuration parameters for the selected
             model/training.
-        dataloader (torch.utils.data.DataLoader): Dataloader for input data.
+        # dataloader (torch.utils.data.DataLoader): Dataloader for input data.
+        dataset (SparkDataset): Dataset containing test data.
         device (torch.device): The device on which to perform inference.
         compute_loss (bool, optional): If True, get the logit values instead of
             the probabilities. Defaults to False.
-        inference_types (List[str], optional): List of inference types to apply.
+        # inference_types (List[str], optional): List of inference types to apply.
 
     Returns:
         Dict[int, Dict[str, np.ndarray]]: A dictionary mapping movie IDs to
         dictionaries of inference type to predictions.
     """
-    if len(inference_types) == 0:
-        inference_types = [params.inference]
-
-    # Loop over batches and store results and original duration for each movie
-    preds_per_movie, original_duration_per_movie = run_dataloader_in_network(
-        network=network,
-        dataloader=dataloader,
-        device=device,
-        compute_loss=compute_loss,
-    )
-
-    # Loop over movies and compute the predictions for each inference type
-    preds_all_movies_all_inferences = {}
-    for movie_id in preds_per_movie.keys():
-        # Initialize dict for storing the predictions for each inference type
-        preds_all_inferences = {}
-
-        # Concatenate the predictions for each movie using different types of inference
-        for inference_type in inference_types:
-            if inference_type == "overlap":
-                # This is the default inference type used in training, it works
-                # better than the others.
-
-                half_overlap = get_half_overlap(
-                    data_duration=params.data_duration,
-                    data_stride=params.data_stride,
-                    temporal_reduction=params.temporal_reduction,
-                    num_channels=params.num_channels,
-                )
-
-                combined_preds = overlap_inference(
-                    movie_preds=preds_per_movie[movie_id],
-                    half_overlap=half_overlap,
-                )
-            else:
-                # For the other inference types (average, gaussian, max), we
-                # need to keep track of the predictions corresponding to each
-                # frame in the movie.
-
-                frame_predictions = from_chunks_to_frames(
-                    prediction_chunks=preds_per_movie[movie_id],
-                    data_stride=params.data_stride,
-                )
-
-                if inference_type == "average":
-                    combined_preds = average_inference(frame_preds=frame_predictions)
-                elif inference_type == "gaussian":
-                    combined_preds = gaussian_inference(frame_preds=frame_predictions)
-                elif inference_type == "max":
-                    combined_preds = max_inference(frame_preds=frame_predictions)
-                else:
-                    raise ValueError(f"Unsupported inference type: {inference_type}")
-
-            # Crop the predictions to the original duration of the movie
-            combined_preds = remove_padding(
-                preds=combined_preds,
-                original_duration=original_duration_per_movie[movie_id],
-            )
-
-            # Convert the predictions to a numpy array
-            combined_preds = combined_preds.cpu().numpy()
-
-            preds_all_inferences[inference_type] = combined_preds
-
-        # Store the predictions for the movie
-        preds_all_movies_all_inferences[movie_id] = preds_all_inferences
-
-    return preds_all_movies_all_inferences
-
-
-@torch.no_grad()
-def run_dataloader_in_network(
-    network: nn.Module,
-    dataloader: torch.utils.data.DataLoader,
-    device: torch.device,
-    compute_loss: bool = False,
-) -> Tuple[Dict[int, List[torch.Tensor]], Dict[int, int]]:
-    """
-    Run the data through the network using the specified dataloader.
-
-    Args:
-        network (nn.Module): The neural network model.
-        dataloader (torch.utils.data.DataLoader): Dataloader for input data.
-        device (torch.device): The device on which to perform inference.
-        compute_loss (bool, optional): If True, get the logit values instead of
-            the probabilities. Defaults to False.
-
-    Returns:
-        Tuple[Dict[str, torch.Tensor], Dict[str, int]]: A tuple containing two
-        dictionaries:
-        - predictions_per_movie: A dictionary mapping movie IDs to lists of
-            predictions (per chunk).
-        - original_duration_per_movie: A dictionary mapping movie IDs to their
-            original durations.
-    """
-    network.to(device)
+    # Set the network to evaluation mode
     network.eval()
 
-    # Loop over batches and store results and original duration for each movie
-    predictions_per_movie = {}
-    original_duration_per_movie = {}
+    # Initialize a dictionary to store the predictions
+    all_preds = {}
 
-    for batch in dataloader:
-        batch_movie_ids = batch["movie_id"]
-        batch_data = batch["data"].to(device, non_blocking=True)
+    # Loop through the dataset
+    batch_size = params.inference_batch_size
+    for sample in dataset:
+        x = sample["data"]
+        movie_id = sample["sample_id"]
 
-        # Run the network on the batch
-        if batch_data.dim() <= 4:  # [b, d, 64, 512] -> [b, 1, d, 64, 512]
-            batch_data = batch_data.unsqueeze(1)
-        # with autocast():
-        batch_preds = network(batch_data)
+        all_preds[movie_id] = {}
+
+        # Extract patches from the input
+        patches, coords = extract_patches(
+            x,
+            dataset.patch_duration,
+            dataset.patch_height,
+            dataset.patch_width,
+            dataset.window_stride,
+            dataset.window_stride,
+            dataset.window_stride,
+        )
+
+        # Forward pass
+        inferred_patches = []
+        for i in range(0, len(patches), batch_size):
+            batch_patches = patches[i : i + batch_size]
+            logger.debug(
+                f"Processing patches {i+1}-{i+len(batch_patches)}/{len(patches)}"
+            )
+            batch_patches = [
+                patch.to(device).unsqueeze(0) for patch in batch_patches
+            ]  # Add batch dimension
+            batch_patches = torch.cat(batch_patches)  # Create a batch
+
+            # with autocast():  # to use mixed precision (not working)
+            if batch_patches.dim() <= 4:  # [b, d, 64, 512] -> [b, 1, d, 64, 512]
+                batch_patches = batch_patches.unsqueeze(1)
+
+            y_pred_batch = network(batch_patches)  # [b, 4, d, d, d] or [b, d, d, d]
+            inferred_patches.extend(y_pred_batch.cpu())
+
+            del batch_patches, y_pred_batch  # Free GPU memory
+            torch.cuda.empty_cache()
+
+        # Recombine patches to form the full output
+        y_pred = recombine_patches(
+            inferred_patches,
+            coords,
+            x.shape,
+            dataset.patch_duration,
+            dataset.patch_height,
+            dataset.patch_width,
+        )
 
         if not compute_loss:
             # If computing loss, use logit values; otherwise, compute
             # probabilities because it reduces the errors due to floating point
             # precision.
-            batch_preds = torch.exp(batch_preds)
-        # Add each movie_id in the batch to the dict if not already present
-        for i, movie_id in enumerate(batch_movie_ids):
-            movie_id = movie_id.item()
-            if movie_id not in predictions_per_movie.keys():
-                predictions_per_movie[movie_id] = []
-                original_duration_per_movie[movie_id] = batch["original_duration"][
-                    i
-                ].item()
+            y_pred = torch.exp(y_pred)
 
-            predictions_per_movie[movie_id].append(batch_preds[i].cpu())
+        # Store the predictions in the dictionary
+        all_preds[movie_id]["patches"] = y_pred.cpu().numpy()
 
-    return predictions_per_movie, original_duration_per_movie
+    return all_preds
 
 
 def detect_nan_sample(x: torch.Tensor, y: torch.Tensor) -> None:
@@ -836,23 +794,23 @@ def get_final_preds(
         **kwargs,
     )
 
-    # Create a dataloader
-    dataset_loader = DataLoader(
-        sample_dataset,
-        batch_size=params.inference_batch_size,
-        shuffle=False,
-        num_workers=params.num_workers,
-        pin_memory=params.pin_memory,
-    )
+    # # Create a dataloader
+    # dataset_loader = DataLoader(
+    #     sample_dataset,
+    #     batch_size=params.inference_batch_size,
+    #     shuffle=False,
+    #     num_workers=params.num_workers,
+    #     pin_memory=params.pin_memory,
+    # )
 
     ### Run sample in UNet ###
     raw_pred = do_inference(
         network=model,
         params=params,
-        dataloader=dataset_loader,
+        dataset=sample_dataset,
         device=params.device,
         compute_loss=False,
-        inference_types=[params.inference],
+        # inference_types=[params.inference],
     )[0][params.inference]
 
     ### Get processed output ###
@@ -928,24 +886,25 @@ def test_function(
     ys = testing_dataset.get_labels()
     ys_instances = testing_dataset.get_instances()
 
-    # Create a dataloader
-    dataset_loader = DataLoader(
-        testing_dataset,
-        batch_size=params.inference_batch_size,
-        shuffle=False,
-        num_workers=params.num_workers,
-        pin_memory=params.pin_memory,
-    )
+    # # Create a dataloader
+    # dataset_loader = DataLoader(
+    #     testing_dataset,
+    #     # batch_size=params.inference_batch_size,
+    #     batch_size=1,
+    #     shuffle=False,
+    #     num_workers=params.num_workers,
+    #     pin_memory=params.pin_memory,
+    # )
 
     # Get U-Net's raw predictions
     network.eval()
     raw_preds = do_inference(
         network=network,
         params=params,
-        dataloader=dataset_loader,
+        dataset=testing_dataset,
         device=device,
         compute_loss=True,
-        inference_types=[params.inference],
+        # inference_types=[params.inference],
     )
     raw_preds = [preds_dict[params.inference] for preds_dict in raw_preds.values()]
 

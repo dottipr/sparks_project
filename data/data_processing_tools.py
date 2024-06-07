@@ -7,7 +7,7 @@ REMARKS
 the end of the script (such as compute_filtered_butter, ...)
 
 Author: Prisca Dotti
-Last modified: 02.04.2024
+Last modified: 04.06.2024
 """
 
 import logging
@@ -18,18 +18,24 @@ from typing import Dict, List, Tuple, Union
 import cc3d
 import numpy as np
 import torch
+import torch.nn.functional as F
 from matplotlib import pyplot as plt
 from scipy import ndimage as ndi
 from scipy import signal, spatial
-from scipy.ndimage import (binary_fill_holes, center_of_mass,
-                           distance_transform_edt, find_objects, label)
+from scipy.ndimage import (
+    binary_fill_holes,
+    center_of_mass,
+    distance_transform_edt,
+    find_objects,
+    label,
+)
 from scipy.stats import ttest_rel
 from skimage.filters import threshold_otsu
 from skimage.measure import label, regionprops
 from skimage.morphology import binary_closing, disk
 from skimage.segmentation import watershed
 
-from ..config import config
+from config import config
 
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG)
@@ -67,6 +73,8 @@ __all__ = [
     "count_classes_in_roi",
     "get_cell_mask",
     "compute_snr",
+    "pad_extremities_of_video",
+    # "adjust_videos_shape",
 ]
 
 
@@ -324,7 +332,91 @@ def apply_ignore_regions_to_events(
     return new_mask
 
 
-########################### General masks processing ###########################
+####################### Patch extraction and processing ########################
+
+
+def pad_extremities_of_video(
+    video: torch.Tensor, patch_size: int, stride: int, padding_value: int = 0
+) -> torch.Tensor:
+    """
+    Pads videos whose size does not match with patch_size and step
+    params.
+
+    Remark: this code only works for 3D tensors.
+
+    Args:
+    - video (torch.Tensor): The video to pad.
+    - patch_size (int): The size of the patch (in all dimensions).
+    - stride (int): The stride to use for padding (in all dimensions).
+    - padding_value (int): The value to use for padding. Default is 0.
+
+    Returns:
+    - The padded video.
+    """
+    padding = []
+    for dim in reversed(video.shape):
+        # Check if length is shorter than patch_size
+        if dim < patch_size:
+            padding_length = patch_size - dim
+        else:
+            padding_length = stride * math.ceil((dim - patch_size) / stride) - (
+                dim - patch_size
+            )
+
+        if padding_length > 0:
+            padding.extend(
+                [padding_length // 2, padding_length // 2 + padding_length % 2]
+            )
+
+        assert (
+            (dim - patch_size) / stride
+        ) % 1 == 0, "Padding at end of video is wrong."
+
+    if padding:
+        video = F.pad(
+            video,
+            padding,
+            "constant",
+            value=padding_value,
+        )
+
+    return video
+
+
+# TODO: check if this function is actually needed. if so, adapt it to the new
+#       data structure
+# def adjust_videos_shape(self, patch_size: int, stride: int) -> None:
+#     # Pad videos whose length does not match with patch_size and stride
+#     # params.
+#     self.movies = [
+#         pad_extremities_of_video(video, patch_size, stride)
+#         for video in self.movies
+#     ]
+#     if self.gt_available:
+#         self.labels = [
+#             pad_extremities_of_video(mask, patch_size, stride, padding_value=config.ignore_index)
+#             for mask in self.labels
+#         ]
+
+
+def remove_padding(preds: torch.Tensor, original_duration: int) -> torch.Tensor:
+    """
+    Remove padding from the predictions to match the original duration.
+
+    Args:
+        preds (torch.Tensor): Predictions with padding.
+        original_duration (int): Original duration to crop to.
+
+    Returns:
+        torch.Tensor: Cropped predictions without padding.
+    """
+    pad = preds.size(-3) - original_duration
+    if pad > 0:
+        start_pad = pad // 2
+        end_pad = -(pad // 2 + pad % 2)
+        preds = preds[..., start_pad:end_pad, :, :]
+
+    return preds
 
 
 def trim_and_pad_video(
@@ -358,26 +450,6 @@ def trim_and_pad_video(
     return trimmed_video
 
 
-def remove_padding(preds: torch.Tensor, original_duration: int) -> torch.Tensor:
-    """
-    Remove padding from the predictions to match the original duration.
-
-    Args:
-        preds (torch.Tensor): Predictions with padding.
-        original_duration (int): Original duration to crop to.
-
-    Returns:
-        torch.Tensor: Cropped predictions without padding.
-    """
-    pad = preds.size(-3) - original_duration
-    if pad > 0:
-        start_pad = pad // 2
-        end_pad = -(pad // 2 + pad % 2)
-        preds = preds[..., start_pad:end_pad, :, :]
-
-    return preds
-
-
 def exclude_marginal_sparks_coords(
     spark_coords: List[Tuple[int, int, int]], n_exclude_frames: int, video_duration: int
 ) -> List[Tuple[int, int, int]]:
@@ -408,6 +480,9 @@ def exclude_marginal_sparks_coords(
             return new_coords
 
     return spark_coords
+
+
+########################### General masks processing ###########################
 
 
 def get_convex_hull(image: np.ndarray) -> np.ndarray:

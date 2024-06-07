@@ -21,7 +21,6 @@ from logging.handlers import RotatingFileHandler
 
 import numpy as np
 import torch
-
 import wandb
 
 __all__ = ["ProjectConfig", "TrainingConfig"]
@@ -371,9 +370,11 @@ class TrainingConfig:
             "num_workers": "1",
             "data_duration": "256",
             "data_stride": "32",
+            "patch_size": "0,0,0",
             "data_smoothing": "no",
             "norm_video": "abs_max",
             "remove_background": "no",
+            "mask_cell_exterior": "",
             # "only_sparks": "", # not used anymore
             "noise_data_augmentation": "",
             "sparks_type": "raw",
@@ -402,9 +403,12 @@ class TrainingConfig:
         self.num_workers = 0
         self.data_duration = int(dataset_section.get("data_duration", "256"))
         self.data_stride = int(dataset_section.get("data_stride", "32"))
+        self.patch_size = dataset_section.get("patch_size", "0,0,0")
+        self.patch_size = list(map(int, self.patch_size.split(",")))
         self.data_smoothing = dataset_section.get("data_smoothing", "no")
         self.norm_video = dataset_section.get("norm_video", "abs_max")
         self.remove_background = dataset_section.get("remove_background", "no")
+        self.mask_cell_exterior = bool(dataset_section.get("mask_cell_exterior", ""))
         # self.only_sparks = dataset_section.getboolean(
         #     "only_sparks", ) # not used anymore
         self.noise_data_augmentation = bool(
@@ -442,10 +446,11 @@ class TrainingConfig:
         )
         self.inference = inference_section.get("inference", "overlap")
         assert self.inference in [
-            "overlap",
-            "average",
-            "gaussian",
-            "max",
+            # "overlap",
+            # "average",
+            # "gaussian",
+            # "max",
+            "patches",  # only in this branch
         ], f"Inference type '{self.inference}' not supported yet."
         self.inference_load_epoch = int(
             inference_section.get("inference_load_epoch", "100000")
