@@ -14,6 +14,7 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.utils.data
+import wandb
 from scipy import ndimage as ndi
 from sklearn.metrics import confusion_matrix
 from torch import nn
@@ -21,26 +22,24 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 
-import wandb
-
-from ..config import TrainingConfig, config
-from ..data.data_processing_tools import (
+from config import TrainingConfig, config
+from data.data_processing_tools import (
     masks_to_instances_dict,
     preds_dict_to_mask,
     process_raw_predictions,
     remove_padding,
 )
-from ..data.datasets import SparkDataset, SparkDatasetInference
-from ..evaluation.metrics_tools import (
+from data.datasets import SparkDataset, SparkDatasetInference
+from evaluation.metrics_tools import (
     compute_iou,
     get_matches_summary,
     get_metrics_from_summary,
     get_score_matrix,
 )
-from ..models.UNet import unet
-from ..models.UNet.unet.trainer import _write_results
-from .custom_losses import MySoftDiceLoss
-from .in_out_tools import write_videos_on_disk
+from models.UNet import unet
+from models.UNet.unet.trainer import _write_results
+from utils.custom_losses import MySoftDiceLoss
+from utils.in_out_tools import write_videos_on_disk
 
 __all__ = [
     "MyTrainingManager",  # training

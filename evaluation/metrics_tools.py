@@ -18,8 +18,8 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-from ..config import config
-from ..data.data_processing_tools import renumber_labelled_mask
+from config import config
+from data.data_processing_tools import renumber_labelled_mask
 
 logger = logging.getLogger(__name__)
 
