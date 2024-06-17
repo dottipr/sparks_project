@@ -18,19 +18,25 @@ import wandb
 from scipy import ndimage as ndi
 from sklearn.metrics import confusion_matrix
 from torch import nn
+
 # from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 
 from config import TrainingConfig, config
-from data.data_processing_tools import (masks_to_instances_dict,
-                                        preds_dict_to_mask,
-                                        process_raw_predictions,
-                                        remove_padding)
-from data.datasets import SparkDataset, SparkDatasetInference
-from evaluation.metrics_tools import (compute_iou, get_matches_summary,
-                                      get_metrics_from_summary,
-                                      get_score_matrix)
+from data.data_processing_tools import (
+    masks_to_instances_dict,
+    preds_dict_to_mask,
+    process_raw_predictions,
+    remove_padding,
+)
+from data.datasets import CaEventsDataset, CaEventsDatasetInference, PatchSparksDataset
+from evaluation.metrics_tools import (
+    compute_iou,
+    get_matches_summary,
+    get_metrics_from_summary,
+    get_score_matrix,
+)
 from models.UNet import unet
 from models.UNet.unet.trainer import _write_results
 from utils.custom_losses import MySoftDiceLoss
@@ -60,7 +66,7 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-# logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.DEBUG)
 
 ################################ Training step #################################
 
@@ -159,7 +165,7 @@ def sampler(dataset_loader: torch.utils.data.DataLoader) -> dict:
 ####################### Functions for data augmentation ########################
 
 
-class TransformedSparkDataset(unet.TransformedDataset, SparkDataset):
+class TransformedSparkDataset(unet.TransformedDataset, CaEventsDataset):
     def __getitem__(self, idx: int) -> dict:
         value_dict = self.source_dataset[idx]  # dict with keys 'data', 'labels', etc.
         x = value_dict["data"]
@@ -430,7 +436,7 @@ def do_inference(
     network: nn.Module,
     params: TrainingConfig,
     # dataloader: torch.utils.data.DataLoader,
-    dataset: SparkDataset,
+    dataset: CaEventsDataset,
     device: torch.device,
     compute_loss: bool = False,
     # inference_types: List[str] = [],
@@ -789,7 +795,7 @@ def get_final_preds(
         - preds_instances: Predicted event instances.
     """
     ### Get sample as dataset ###
-    sample_dataset = SparkDatasetInference(
+    sample_dataset = CaEventsDatasetInference(
         params=params,
         **kwargs,
     )
@@ -842,7 +848,7 @@ def test_function(
     device: torch.device,
     criterion: nn.Module,
     params: TrainingConfig,
-    testing_dataset: SparkDataset,
+    testing_dataset: CaEventsDataset,
     training_name: str,
     output_dir: str,
     training_mode: bool = True,
@@ -917,6 +923,11 @@ def test_function(
     ys_tensors = [torch.from_numpy(y) for y in ys.values()]
     raw_preds_tensors = [torch.from_numpy(raw_pred) for raw_pred in raw_preds]
 
+    logger.debug("Length of ys_tensors: {}".format(len(ys_tensors)))
+    logger.debug("Shape of ys_tensors[0]: {}".format(ys_tensors[0].shape))
+    logger.debug("Length of raw_preds_tensors: {}".format(len(raw_preds_tensors)))
+    logger.debug("Shape of raw_preds_tensors[0]: {}".format(raw_preds_tensors[0].shape))
+
     # Compute loss on dataset
     metrics["validation_loss"] = compute_loss(
         preds=raw_preds_tensors,
@@ -950,6 +961,7 @@ def test_function(
             training_name=training_name,
             video_name=sample_id,
             out_dir=output_dir,
+            class_names=config.event_types,
         )
 
         ####################### Re-organise annotations ########################
@@ -976,10 +988,10 @@ def test_function(
 
         # Get predicted segmentation and event instances
         raw_pred_dict = {
-            "sparks": raw_pred[1],
-            "puffs": raw_pred[3],
-            "waves": raw_pred[2],
+            event_type: raw_pred[config.classes_dict[event_type]]
+            for event_type in config.event_types
         }
+
         preds_instances, preds_segmentation, _ = process_raw_predictions(
             raw_preds_dict=raw_pred_dict,
             input_movie=x,
@@ -1136,8 +1148,315 @@ def test_function(
     )
 
     # Compute confusion matrix
+    labels_list = [0] + [
+        config.classes_dict[event_type] for event_type in config.event_types
+    ]
     metrics["segmentation_confusion_matrix"] = confusion_matrix(
-        y_true=ys_concat.flatten(), y_pred=preds_concat.flatten(), labels=[0, 1, 2, 3]
+        y_true=ys_concat.flatten(), y_pred=preds_concat.flatten(), labels=labels_list
+    )
+
+    logger.debug(f"Time to reduce metrics: {time.time() - start:.2f} s")
+    return metrics
+
+
+@torch.no_grad()
+def test_function_patches(
+    network: nn.Module,
+    device: torch.device,
+    criterion: nn.Module,
+    params: TrainingConfig,
+    testing_dataset: PatchSparksDataset,
+    training_name: str,
+    output_dir: str,
+    training_mode: bool = True,
+) -> Dict[str, Union[float, np.ndarray]]:
+    """
+    Validate UNet during training when using PatchSparksDataset.
+    Output segmentation is computed using argmax values and Otsu threshold (to
+    remove artifacts & avoid using thresholds).
+    Removing small events prior metrics computation as well.
+
+    network:            the model being trained
+    device:             current device
+    criterion:          loss function to be computed on the validation set
+    params:             TrainingConfig object containing various parameters
+    testing_dataset:    SparkDataset object containing the validation set
+    training_name:      training name used to save predictions on disk
+    output_dir:         directory where the predicted movies are saved
+    training_mode:      bool, if True, separate events using a simpler algorithm
+    """
+
+    # Flag to determine if instance-based metrics should be computed
+    compute_instances_metrics = True
+
+    # Initialize dicts that will contain the results
+    metrics = {}
+    tot_preds = {"sparks": 0, "puffs": 0, "waves": 0}
+    tp_preds = {"sparks": 0, "puffs": 0, "waves": 0}
+    ignored_preds = {"sparks": 0, "puffs": 0, "waves": 0}
+    unlabeled_preds = {"sparks": 0, "puffs": 0, "waves": 0}
+    tot_ys = {"sparks": 0, "puffs": 0, "waves": 0}
+    tp_ys = {"sparks": 0, "puffs": 0, "waves": 0}
+    undetected_ys = {"sparks": 0, "puffs": 0, "waves": 0}
+
+    ############################ Run samples in UNet ############################
+
+    start = time.time()
+    logger.debug("Test function: running samples in UNet")
+
+    # # Get movies, labels, and instances
+    # xs = testing_dataset.get_movies()
+    # ys = testing_dataset.get_labels()
+    # ys_instances = testing_dataset.get_instances()
+
+    # Create a dataloader
+    dataset_loader = DataLoader(
+        testing_dataset,
+        batch_size=params.inference_batch_size,
+        shuffle=False,
+        num_workers=params.num_workers,
+        pin_memory=params.pin_memory,
+    )
+
+    # Get U-Net's raw predictions
+    network.eval()
+    raw_preds = []
+    ys = []
+    for batch in dataset_loader:
+        x = batch["data"].to(device)
+        raw_pred = network(x.unsqueeze(1))
+        raw_preds.extend(raw_pred.cpu())
+
+        y = batch["labels"].to(device)
+        ys.extend(y.cpu())
+
+    logger.debug(f"Time to run testing dataset in UNet: {time.time() - start:.2f} s")
+
+    logger.debug("Test function: computing loss")
+    # # Get ys and predictions as lists of tensors
+    # ys_tensors = [torch.from_numpy(y) for y in ys.values()]
+    # raw_preds_tensors = [torch.from_numpy(raw_pred) for raw_pred in raw_preds]
+
+    # Compute loss on dataset
+    metrics["validation_loss"] = compute_loss(
+        preds=raw_preds,
+        ys=ys,
+        criterion=criterion,
+        n_ignored_frames=params.ignore_frames_loss,
+    )
+
+    ##################### Compute metrics for each patch  ########################
+
+    # Concatenate annotations and preds to compute segmentation-based metrics
+    ys_concat = []
+    preds_concat = []
+
+    for i, sample in enumerate(testing_dataset):
+        logger.debug(f"Processing patch {i}/{len(testing_dataset)}")
+        x = sample["data"].numpy()
+        y = sample["labels"].numpy()
+        y_instances = sample["instances"].numpy()
+        raw_pred = raw_preds[i]
+
+        # Compute exp of predictions
+        raw_pred = torch.exp(raw_pred).numpy()
+
+        # logger.debug("Test function: saving raw predictions on disk")
+        # # Save raw predictions as .tif videos
+        # write_videos_on_disk(
+        #     xs=x,
+        #     ys=y,
+        #     raw_preds=raw_pred,
+        #     training_name=training_name,
+        #     video_name=sample_id,
+        #     out_dir=output_dir,
+        #     class_names=config.event_types,
+        # )
+
+        ####################### Re-organise annotations ########################
+
+        start = time.time()
+        logger.debug("Test function: re-organising annotations")
+
+        # ys_instances is a dict with classified event instances, for each class
+        y_instances = masks_to_instances_dict(
+            instances_mask=y_instances, labels_mask=y, shift_ids=True
+        )
+
+        # Remove ignored events entry from ys_instances
+        y_instances.pop("ignore", None)
+
+        logger.debug(f"Time to re-organise annotations: {time.time() - start:.2f} s")
+
+        ######################### Get processed output #########################
+
+        start = time.time()
+        logger.debug(
+            "Test function: getting processed output (segmentation and instances)"
+        )
+
+        # Get predicted segmentation and event instances
+        raw_pred_dict = {
+            event_type: raw_pred[config.classes_dict[event_type]]
+            for event_type in config.event_types
+        }
+
+        preds_instances, preds_segmentation, _ = process_raw_predictions(
+            raw_preds_dict=raw_pred_dict,
+            input_movie=x,
+            training_mode=training_mode,
+            compute_instances=compute_instances_metrics,
+        )
+
+        logger.debug(f"Time to process predictions: {time.time() - start:.2f} s")
+
+        ############### Compute pairwise scores (based on IoMin) ###############
+
+        if compute_instances_metrics and np.any(list(preds_instances.values())):
+            if logger.level <= logging.DEBUG:
+                start = time.time()
+                n_ys_events = max(
+                    [
+                        np.max(y_instances[event_type])
+                        for event_type in config.event_types
+                    ]
+                )
+
+                n_preds_events = max(
+                    [
+                        np.max(preds_instances[event_type])
+                        for event_type in config.event_types
+                    ]
+                )
+            logger.debug(
+                f"Test function: computing pairwise scores between {n_ys_events} annotated events and {n_preds_events} predicted events"
+            )
+
+            iomin_scores = get_score_matrix(
+                ys_instances=y_instances,
+                preds_instances=preds_instances,
+            )
+        else:
+            logger.warning("Empty predicted events: skipping instances-based metrics.")
+            compute_instances_metrics = False
+
+        if compute_instances_metrics:
+            logger.debug(
+                f"Time to compute pairwise scores: {time.time() - start:.2f} s"
+            )
+
+            ####################### Get matches summary #######################
+
+            start = time.time()
+            logger.debug("Test function: getting matches summary")
+
+            matched_ys_ids, matched_preds_ids = get_matches_summary(
+                ys_instances=y_instances,
+                preds_instances=preds_instances,
+                scores=iomin_scores,
+                ignore_mask=y == config.ignore_index,
+            )
+
+            # Count number of categorized events that are necessary for the metrics
+            for ca_event in config.event_types:
+                tot_preds[ca_event] += len(matched_preds_ids[ca_event]["tot"])
+                tp_preds[ca_event] += len(matched_preds_ids[ca_event][ca_event])
+                ignored_preds[ca_event] += len(matched_preds_ids[ca_event]["ignored"])
+                unlabeled_preds[ca_event] += len(
+                    matched_preds_ids[ca_event]["unlabeled"]
+                )
+
+                tot_ys[ca_event] += len(matched_ys_ids[ca_event]["tot"])
+                tp_ys[ca_event] += len(matched_ys_ids[ca_event][ca_event])
+                undetected_ys[ca_event] += len(matched_ys_ids[ca_event]["undetected"])
+
+            logger.debug(f"Time to get matches summary: {time.time() - start:.2f} s")
+
+        ##################### Stack ys and segmented preds #####################
+
+        # Stack annotations and remove marginal frames
+        ys_concat.append(y)
+
+        # Stack preds and remove marginal frames
+        preds_concat.append(preds_dict_to_mask(preds_dict=preds_segmentation))
+
+    ############################## Reduce metrics ##############################
+
+    start = time.time()
+    logger.debug("Test function: reducing metrics")
+
+    ##################### Compute instances-based metrics ######################
+
+    """
+    Metrics that can be computed (event instances):
+    - Confusion matrix
+    - Precision & recall (TODO)
+    - F-score (e.g. beta = 0.5,1,2) (TODO)
+    (- Matthews correlation coefficient (MCC))??? (TODO)
+    """
+    if compute_instances_metrics:
+        # Get confusion matrix of all summed events
+        # metrics["events_confusion_matrix"] = sum(confusion_matrix.values())
+
+        # Get other metrics (precision, recall, % correctly classified, % detected, % labeled)
+        metrics_all = get_metrics_from_summary(
+            tot_preds=tot_preds,
+            tp_preds=tp_preds,
+            ignored_preds=ignored_preds,
+            unlabeled_preds=unlabeled_preds,
+            tot_ys=tot_ys,
+            tp_ys=tp_ys,
+            undetected_ys=undetected_ys,
+        )
+
+        metrics.update(metrics_all)
+
+    #################### Compute segmentation-based metrics ####################
+
+    """
+    Metrics that can be computed (raw sparks, puffs, waves):
+    - Jaccard index (IoU)
+    - Dice score (TODO)
+    - Precision & recall (TODO)
+    - F-score (e.g. beta = 0.5,1,2) (TODO)
+    - Accuracy (biased since background is predominant) (TODO)
+    - Matthews correlation coefficient (MCC) (TODO)
+    - Confusion matrix
+    """
+
+    # Concatenate annotations and preds
+    ys_concat = np.concatenate(ys_concat, axis=0)
+    preds_concat = np.concatenate(preds_concat, axis=0)
+
+    # Concatenate ignore masks
+    ignore_concat = ys_concat == 4
+
+    for event_type, event_label in config.classes_dict.items():
+        if event_type not in config.event_types:
+            continue
+        class_preds = preds_concat == event_label
+        class_ys = ys_concat == event_label
+
+        metrics["segmentation/" + event_type + "_IoU"] = compute_iou(
+            ys_roi=class_ys, preds_roi=class_preds, ignore_mask=ignore_concat
+        )
+
+    # Get average IoU across all classes
+    metrics["segmentation/average_IoU"] = np.mean(
+        [
+            metrics["segmentation/" + event_type + "_IoU"]
+            for event_type in config.event_types
+        ]
+    )
+
+    # Compute confusion matrix
+    labels_list = [0] + [
+        config.classes_dict[event_type] for event_type in config.event_types
+    ]
+    metrics["segmentation_confusion_matrix"] = confusion_matrix(
+        y_true=ys_concat.flatten(),
+        y_pred=preds_concat.flatten(),
+        labels=labels_list,
     )
 
     logger.debug(f"Time to reduce metrics: {time.time() - start:.2f} s")

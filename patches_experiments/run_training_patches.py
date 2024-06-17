@@ -1,6 +1,9 @@
 """
 **Author**: Prisca Dotti# 
-**Last Edit**: 05.06.2024
+**Last Edit**: 17.06.2024
+
+UPDATES:
+- 17.06.2024: Adapted the script to the PatchSparksDataset class.
 
 The dataset used for training could be one of the following:
 - dataset of patches extracted in a meaningful way from confocal imaging
@@ -32,7 +35,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard.writer import SummaryWriter
 
 from config import TrainingConfig, config
-from data.datasets import PatchSparkDataset
+from data.datasets import PatchCaEventsDataset, PatchSparksDataset
 from models.UNet import unet
 from utils.training_inference_tools import (
     MyTrainingManager,
@@ -85,7 +88,8 @@ test_sample_ids = get_sample_ids(
 )
 
 # Initialize training dataset: here it only samples random patches
-dataset = PatchSparkDataset(
+# dataset = PatchCaEventsDataset(
+dataset = PatchSparksDataset(
     params=params,
     base_path=params.dataset_dir,
     sample_ids=train_sample_ids,

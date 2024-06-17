@@ -24,11 +24,11 @@ import models.UNet as unet
 import models.unetOpenAI as unet_openai
 from config import TrainingConfig, config
 from data.datasets import (
-    SparkDataset,
-    SparkDatasetLSTM,
-    SparkDatasetResampled,
-    SparkDatasetSinChannels,
-    SparkDatasetTemporalReduction,
+    CaEventsDataset,
+    CaEventsDatasetLSTM,
+    CaEventsDatasetResampled,
+    CaEventsDatasetSinChannels,
+    CaEventsDatasetTempRed,
 )
 from models.architectures import TempRedUNet, UNetConvLSTM, UNetPadWrapper
 from models.new_unet import UNet
@@ -89,7 +89,7 @@ def init_dataset(
     apply_data_augmentation: bool,
     load_instances: bool = False,
     print_dataset_info: bool = True,
-) -> SparkDataset:
+) -> CaEventsDataset:
     """
     Initialize the dataset based on provided parameters and sample IDs.
 
@@ -115,7 +115,7 @@ def init_dataset(
     }
 
     if params.nn_architecture == "unet_lstm":
-        dataset = SparkDatasetLSTM(**dataset_args)
+        dataset = CaEventsDatasetLSTM(**dataset_args)
     elif params.nn_architecture in ["pablos_unet", "github_unet", "openai_unet"]:
         # Check that at most one of the following parameters is True
         assert (
@@ -124,15 +124,15 @@ def init_dataset(
         ), "Only one of the following parameters can be True: temporal_reduction, new_fps, sin_channels"
 
         if params.temporal_reduction:  # not tested
-            dataset = SparkDatasetTemporalReduction(**dataset_args)
+            dataset = CaEventsDatasetTempRed(**dataset_args)
         elif params.new_fps != 0:  # not tested
             dataset_args["new_fps"] = params.new_fps
-            dataset = SparkDatasetResampled(**dataset_args)
+            dataset = CaEventsDatasetResampled(**dataset_args)
         elif params.sin_channels:
             dataset_args["n_sin_channels"] = params.n_sin_channels
-            dataset = SparkDatasetSinChannels(**dataset_args)
+            dataset = CaEventsDatasetSinChannels(**dataset_args)
         else:
-            dataset = SparkDataset(**dataset_args)
+            dataset = CaEventsDataset(**dataset_args)
     else:
         logger.error(f"{params.nn_architecture} is not a valid nn architecture.")
         exit()
@@ -343,7 +343,7 @@ def init_model(params: TrainingConfig) -> nn.Module:
     return network
 
 
-def init_criterion(params: TrainingConfig, dataset: SparkDataset) -> nn.Module:
+def init_criterion(params: TrainingConfig, dataset: CaEventsDataset) -> nn.Module:
     """
     Initialize the loss function based on the specified criterion in params.
 

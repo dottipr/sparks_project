@@ -26,12 +26,12 @@ from data.data_processing_tools import detect_spark_peaks, get_cell_mask, remove
 from utils.in_out_tools import load_annotations_ids, load_movies_ids
 
 __all__ = [
-    "SparkDataset",
-    "SparkDatasetTemporalReduction",
-    "SparkDatasetResampled",
-    "SparkDatasetLSTM",
-    "SparkDatasetInference",
-    "PatchSparkDataset",
+    "CaEventsDataset",
+    "CaEventsDatasetTempRed",
+    "CaEventsDatasetResampled",
+    "CaEventsDatasetLSTM",
+    "CaEventsDatasetInference",
+    "PatchCaEventsDataset",
 ]
 
 
@@ -48,9 +48,9 @@ Event label filenames are: XX_event_label.tif
 """
 
 
-class SparkDataset(Dataset):
+class CaEventsDataset(Dataset):
     """
-    A PyTorch Dataset class for spark detection.
+    A PyTorch Dataset class for ca release events detection.
 
     Args:
         params (TrainingConfig): A configuration object containing the
@@ -450,7 +450,7 @@ class SparkDataset(Dataset):
         return labels
 
 
-class SparkDatasetTemporalReduction(SparkDataset):
+class CaEventsDatasetTempRed(CaEventsDataset):
     """
     A PyTorch Dataset class for spark detection with temporal reduction.
 
@@ -551,7 +551,7 @@ class SparkDatasetTemporalReduction(SparkDataset):
             return np.max(voxel_seq)
 
 
-class SparkDatasetResampled(SparkDataset):
+class CaEventsDatasetResampled(CaEventsDataset):
     """
     Dataset class for resampled SR-calcium releases segmented dataset.
 
@@ -716,7 +716,7 @@ class SparkDatasetResampled(SparkDataset):
         return movie_interpolated
 
 
-class SparkDatasetLSTM(SparkDataset):
+class CaEventsDatasetLSTM(CaEventsDataset):
     """
     SparkDataset class for UNet-convLSTM model.
 
@@ -810,7 +810,7 @@ class SparkDatasetLSTM(SparkDataset):
         return video
 
 
-class SparkDatasetInference(SparkDataset):
+class CaEventsDatasetInference(CaEventsDataset):
     """
     Create a dataset that contains only a single movie for inference.
     It requires either a single movie or a movie path to be provided.
@@ -839,7 +839,7 @@ class SparkDatasetInference(SparkDataset):
 # re-implementation of some very old code (July 2020)
 
 
-class SparkDatasetSinChannels(SparkDataset):
+class CaEventsDatasetSinChannels(CaEventsDataset):
     """
     Create a dataset where each chunk is augmented with sinusoidal channels.
 
@@ -939,10 +939,10 @@ class SparkDatasetSinChannels(SparkDataset):
         )
 
 
-### Dataset with patch extraction ###
+### Datasets with patch extraction ###
 
 
-class PatchSparkDataset(SparkDataset):
+class PatchCaEventsDataset(CaEventsDataset):
     """
     A PyTorch Dataset class for spark detection with patch extraction. The
     samples of this dataset are simply patches extracted from the movies. The
@@ -1016,3 +1016,296 @@ class PatchSparkDataset(SparkDataset):
             "y_center": y_center,
             "x_center": x_center,
         }
+
+
+class PatchSparksDataset(CaEventsDataset):
+    """
+    A dataset class that partitions a video dataset into patches containing
+    calcium sparks events. Each spark peak is contained into exactly one patch,
+    ensuring that no sparks overlap between patches.
+
+    Args:
+        same as CaEventsDataset
+
+    Additional attributes:
+        patch_shape (tuple): The shape of each patch (t_patch, y_patch, x_patch).
+        patches (list): A list of lists containing the start coordinates of
+            patches for each sample.
+    """
+
+    def __init__(self, params: TrainingConfig, **kwargs: Any) -> None:
+        # Initialize SparkDataset class
+        super().__init__(params=params, **kwargs)
+
+        self.patch_shape = (self.patch_duration, self.patch_height, self.patch_width)
+        self.patches = self._get_patches_from_movies()
+
+        # Label puffs and waves in movie as undefined
+        for event_type in ["puffs", "waves"]:
+            self.labels = [
+                torch.where(
+                    label_mask == config.classes_dict[event_type],
+                    config.ignore_index,
+                    label_mask,
+                )
+                for label_mask in self.labels
+            ]
+
+    ############################## Class methods ###############################
+
+    def __len__(self) -> int:
+        return sum(len(patches) for patches in self.patches)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        if idx < 0:
+            idx = self.__len__() + idx
+
+        sample_dict = {}
+
+        # Find the sample and patch index
+        sample_idx, patch_idx = self._find_sample_and_patch_index(idx)
+
+        # Get the corresponding patch start coordinates
+        patch_start = self.patches[sample_idx][patch_idx]
+        t_start, y_start, x_start = patch_start
+        t_patch, y_patch, x_patch = self.patch_shape
+        t_end = t_start + t_patch
+        y_end = y_start + y_patch
+        x_end = x_start + x_patch
+
+        # Extract the windowed data and labels
+        sample_dict["data"] = self.movies[sample_idx][
+            t_start:t_end, y_start:y_end, x_start:x_end
+        ]
+
+        if self.gt_available:
+            sample_dict["labels"] = self.labels[sample_idx][
+                t_start:t_end, y_start:y_end, x_start:x_end
+            ]
+
+        if self.instances:
+            sample_dict["instances"] = self.instances[sample_idx][
+                t_start:t_end, y_start:y_end, x_start:x_end
+            ]
+
+        # Add the sample ID (string) to the item dictionary, if available
+        if self.sample_ids:
+            sample_dict["sample_id"] = self.sample_ids[sample_idx]
+
+        sample_dict["patch_start"] = patch_start
+
+        return sample_dict
+
+    def get_movies(self) -> Dict[int, np.ndarray]:
+        """
+        Returns the processed movie patches as a dictionary.
+
+        Returns:
+            dict: A dictionary containing the patches used as input to the model.
+        """
+        patched_numpy = {
+            i: self.__getitem__(i)["data"].numpy() for i in range(self.__len__())
+        }
+        return patched_numpy
+
+    def get_labels(self) -> Dict[int, np.ndarray]:
+        """
+        Returns the labels as a dictionary.
+
+        Returns:
+            dict: A dictionary containing the original labels used for training
+            and testing.
+        """
+        # Remove padding from the labels
+        labels_numpy = {
+            i: self.__getitem__(i)["labels"].numpy() for i in range(self.__len__())
+        }
+        return labels_numpy
+
+    def get_instances(self) -> Dict[int, np.ndarray]:
+        """
+        Returns the instances as a dictionary.
+
+        Returns:
+            dict: A dictionary containing the original instances used for
+            training and testing.
+        """
+        # Raise an error if instances are not available
+        if not self.instances:
+            raise ValueError("Instances not available for this dataset.")
+
+        # Remove padding from the instances
+        instances_numpy = {
+            i: self.__getitem__(i)["instances"].numpy() for i in range(self.__len__())
+        }
+        return instances_numpy
+
+    ############################## Private methods #############################
+
+    def _find_sample_and_patch_index(self, idx: int) -> Tuple[int, int]:
+        """
+        Find the sample index and patch index within the sample for a given global index.
+
+        Parameters:
+        idx (int): The global index.
+
+        Returns:
+        tuple: (sample_index, patch_index) corresponding to the global index.
+        """
+        cumulative_patches = 0
+        for sample_idx, patches in enumerate(self.patches):
+            if cumulative_patches + len(patches) > idx:
+                patch_idx = idx - cumulative_patches
+                return sample_idx, patch_idx
+            cumulative_patches += len(patches)
+        raise IndexError(f"Index {idx} is out of range")
+
+    def _fits_in_patch(self, spark, patch_start, patch_shape):
+        """
+        Check if a spark coordinate fits within the bounds of a given patch.
+
+        Parameters:
+        spark (tuple): The (t, y, x) coordinates of the spark.
+        patch_start (tuple): The starting (t_start, y_start, x_start)
+            coordinates of the patch.
+        patch_shape (tuple): The shape (t_patch, y_patch, x_patch) of the patch.
+
+        Returns:
+        bool: True if the spark fits within the patch, False otherwise.
+        """
+        t_patch, y_patch, x_patch = patch_shape
+        t, y, x = spark
+        t_start, y_start, x_start = patch_start
+        t_end = t_start + t_patch
+        y_end = y_start + y_patch
+        x_end = x_start + x_patch
+        return t_start <= t < t_end and y_start <= y < y_end and x_start <= x < x_end
+
+    def _find_patch_for_spark(self, spark, patches):
+        """
+        Find an existing patch that can contain the given spark.
+
+        Parameters:
+        spark (tuple): The (t, y, x) coordinates of the spark.
+        patches (list): A list of patch start coordinates (t_start, y_start, x_start).
+
+        Returns:
+        tuple or None: The starting coordinates (t_start, y_start, x_start) of
+        the patch if found, otherwise None.
+        """
+        for patch_start in patches:
+            if self._fits_in_patch(spark, patch_start, self.patch_shape):
+                return patch_start
+        return None
+
+    def _is_spark_assigned(self, spark):
+        """
+        Check if a spark has already been assigned to a patch.
+
+        Parameters:
+        spark (tuple): The (t, y, x) coordinates of the spark.
+
+        Returns:
+        bool: True if the spark is already assigned, False otherwise.
+        """
+        return spark in self._assigned_sparks
+
+    def _create_patches_from_sparks(self, sparks_coord, video_shape, patch_shape):
+        """
+        Create patches from spark coordinates, ensuring each spark is contained in
+        exactly one patch, and maximizing the number of patches.
+
+        Parameters:
+        sparks_coord (list): List of (t, y, x) coordinates of the sparks.
+        video_shape (tuple): The shape (t, y, x) of the video.
+        patch_shape (tuple): The shape (t_patch, y_patch, x_patch) of the patches.
+
+        Returns:
+        list: A list of patch start coordinates (t_start, y_start, x_start).
+        """
+        t_patch, y_patch, x_patch = patch_shape
+        patches = []
+        self._assigned_sparks = set()
+
+        for spark in sparks_coord:
+            if self._is_spark_assigned(spark):
+                continue
+
+            patch_start = self._find_patch_for_spark(spark, patches)
+            if patch_start is None:
+                t, y, x = spark
+                t_start = max(0, t - t_patch // 2)
+                y_start = max(0, y - y_patch // 2)
+                x_start = max(0, x - x_patch // 2)
+
+                if t_start + t_patch > video_shape[0]:
+                    t_start = video_shape[0] - t_patch
+                if y_start + y_patch > video_shape[1]:
+                    y_start = video_shape[1] - y_patch
+                if x_start + x_patch > video_shape[2]:
+                    x_start = video_shape[2] - x_patch
+
+                patch_start = (t_start, y_start, x_start)
+                patches.append(patch_start)
+
+            # Mark all sparks in the current patch as assigned
+            t_start, y_start, x_start = patch_start
+            t_end = t_start + t_patch
+            y_end = y_start + y_patch
+            x_end = x_start + x_patch
+
+            for t, y, x in sparks_coord:
+                if (
+                    t_start <= t < t_end
+                    and y_start <= y < y_end
+                    and x_start <= x < x_end
+                ):
+                    self._assigned_sparks.add((t, y, x))
+
+        return patches
+
+    def _get_patches_from_movies(self) -> List[List[Tuple[int, int, int]]]:
+        """
+        Create patches from the spark coordinates in each movie.
+
+        Returns:
+        list: A list of lists of patch start coordinates (t_start, y_start, x_start).
+        """
+        patches_list = []
+        for video, class_label, sparks_coord in zip(
+            self.movies, self.labels, self.spark_peaks
+        ):
+            logger.debug(
+                f"Getting patches from movie {len(patches_list) + 1}/{len(self.movies)}"
+            )
+            # Create patches from the spark coordinates
+            patches = self._create_patches_from_sparks(
+                sparks_coord=sparks_coord,
+                video_shape=video.shape,
+                patch_shape=self.patch_shape,
+            )
+
+            # Filter out patches that contain too much puff or wave pixels
+            for patch_start in patches:
+                t_start, y_start, x_start = patch_start
+                t_end = t_start + self.patch_shape[0]
+                y_end = y_start + self.patch_shape[1]
+                x_end = x_start + self.patch_shape[2]
+                puff_pixels = torch.sum(
+                    class_label[t_start:t_end, y_start:y_end, x_start:x_end] == 2
+                )
+                wave_pixels = torch.sum(
+                    class_label[t_start:t_end, y_start:y_end, x_start:x_end] == 3
+                )
+                if (
+                    puff_pixels > 0.1 * self.patch_shape[1] * self.patch_shape[2]
+                    or wave_pixels > 0.1 * self.patch_shape[1] * self.patch_shape[2]
+                ):
+                    logger.debug(
+                        f"  Removing patch {patch_start} due to puff or wave pixels"
+                    )
+                    patches.remove(patch_start)
+
+            patches_list.append(patches)
+
+        return patches_list

@@ -624,7 +624,8 @@ def get_otsu_argmax_segmentation(
 
     # Mask out removed events from UNet preds for each class
     # This is necessary because the classes need to be in the right order
-    for event_type, event_label in config.classes_dict.items():
+    for event_type in config.event_types:
+        event_label = config.classes_dict[event_type]
         if event_type == "ignore":
             continue
         masked_class_preds[event_label] = binary_sum_preds * preds[event_type]

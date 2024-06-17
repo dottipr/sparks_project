@@ -1,6 +1,9 @@
 """
 Create classes to manage the project.
 
+UPDATES:
+- 17/06/2024: Changed parameters to fit "patches" experiments.
+
 Classes:
     ProjectConfig: stores all the global variables for the project.
     TrainingConfig: loads settings from a configuration file, initializes
@@ -8,7 +11,7 @@ Classes:
                     logging.
 
 Author: Prisca Dotti
-Last modified: 08.04.2024
+Last modified: 17.06.2024
 """
 
 import logging
@@ -48,8 +51,8 @@ class ProjectConfig:
         )
         self.verbosity = 2
         self.debug_mode = False
-        # wandb_project_name = "TEST"
-        self.wandb_project_name = "sparks_thesis"
+        # self.wandb_project_name = "sparks_thesis"
+        self.wandb_project_name = "patches"
         # Directory where output, saved parameters, and testing results are saved
         self._output_relative_dir = os.path.join("models", "saved_models")
 
@@ -68,7 +71,7 @@ class ProjectConfig:
             # "undefined": 5,  type of local signal (not spark of puff)
         }
         # note: the class values have to be consecutive
-        self.event_types = ["sparks", "waves", "puffs"]
+        self.event_types = ["sparks"]  # , "waves", "puffs"]
 
         self.ignore_index = 4  # Label ignored during training
 
@@ -80,8 +83,8 @@ class ProjectConfig:
         # Minimal dimensions to remove small events in UNet detections
         self.min_size = {
             "sparks": [2, 3, 3],
-            "waves": [None, None, round(15 / self.pixel_size)],
-            "puffs": [5, None, None],
+            # "waves": [None, None, round(15 / self.pixel_size)],
+            # "puffs": [5, None, None],
         }  # [duration, height, width]
 
         ## Sparks (1) parameters ##
@@ -109,8 +112,8 @@ class ProjectConfig:
         # (in frames)
         self.max_gap = {
             "sparks": None,
-            "waves": 2,
-            "puffs": 2,
+            # "waves": 2,
+            # "puffs": 2,
         }
 
         # Parameters for correspondence computation
