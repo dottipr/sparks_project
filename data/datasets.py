@@ -696,7 +696,7 @@ class CaEventsDatasetResampled(CaEventsDataset):
 
         # Use cubic spline interpolation
         f = interp1d(
-            frames_time, movie_np, kind="cubic", axis=0, fill_value="extrapolate"
+            frames_time, movie_np, kind="cubic", axis=0, fill_value="extrapolate"  # type: ignore
         )
 
         assert len(frames_time) == movie_np.shape[0], (

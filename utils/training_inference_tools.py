@@ -14,6 +14,7 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.utils.data
+import wandb
 from scipy import ndimage as ndi
 from sklearn.metrics import confusion_matrix
 from torch import nn
@@ -22,7 +23,6 @@ from torch import nn
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 
-import wandb
 from config import TrainingConfig, config
 from data.data_processing_tools import (
     masks_to_instances_dict,
@@ -1251,27 +1251,36 @@ def test_function_patches(
     ys_concat = []
     preds_concat = []
 
-    for i, sample in enumerate(testing_dataset):
+    # Create a dataloader that only returns one sample at a time
+    dataset_loader = DataLoader(
+        testing_dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=params.num_workers,
+        pin_memory=params.pin_memory,
+    )
+
+    for i, sample in enumerate(dataset_loader):
         logger.debug(f"Processing patch {i}/{len(testing_dataset)}")
-        x = sample["data"].numpy()
-        y = sample["labels"].numpy()
-        y_instances = sample["instances"].numpy()
+        x = sample["data"][0].numpy()
+        y = sample["labels"][0].numpy()
+        y_instances = sample["instances"][0].numpy()
         raw_pred = raw_preds[i]
 
         # Compute exp of predictions
         raw_pred = torch.exp(raw_pred).numpy()
 
-        # logger.debug("Test function: saving raw predictions on disk")
-        # # Save raw predictions as .tif videos
-        # write_videos_on_disk(
-        #     xs=x,
-        #     ys=y,
-        #     raw_preds=raw_pred,
-        #     training_name=training_name,
-        #     video_name=sample_id,
-        #     out_dir=output_dir,
-        #     class_names=config.event_types,
-        # )
+        logger.debug(f"Test function: saving raw predictions on disk ({output_dir})")
+        # Save raw predictions as .tif videos
+        write_videos_on_disk(
+            xs=x,
+            ys=y,
+            raw_preds=raw_pred,
+            training_name=training_name,
+            video_name=f"patch_{i}",
+            out_dir=output_dir,
+            class_names=config.event_types,
+        )
 
         ####################### Re-organise annotations ########################
 
