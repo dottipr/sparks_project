@@ -22,13 +22,8 @@ import torch.nn.functional as F
 from matplotlib import pyplot as plt
 from scipy import ndimage as ndi
 from scipy import signal, spatial
-from scipy.ndimage import (
-    binary_fill_holes,
-    center_of_mass,
-    distance_transform_edt,
-    find_objects,
-    label,
-)
+from scipy.ndimage import (binary_fill_holes, center_of_mass,
+                           distance_transform_edt, find_objects, label)
 from scipy.stats import ttest_rel
 from skimage.filters import threshold_otsu
 from skimage.measure import label, regionprops
@@ -1098,7 +1093,7 @@ def process_raw_predictions(
     - training_mode (bool): If True, separate events using a simpler algorithm.
     - fill_holes (bool): Whether to fill holes in the predicted segmentation
         mask, so that each event is a connected component in each frame.
-    - debug (bool): If True, print debugging information.
+    - compute_instances (bool): If True, compute event instances.
 
     Returns:
     - Tuple: A tuple containing processed event instances, segmented predictions,
