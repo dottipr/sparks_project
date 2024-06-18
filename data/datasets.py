@@ -37,7 +37,7 @@ __all__ = [
 
 basepath = os.path.dirname("__file__")
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+# logger.setLevel(logging.DEBUG)
 
 
 """

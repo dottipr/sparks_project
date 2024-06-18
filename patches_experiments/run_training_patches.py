@@ -27,13 +27,13 @@ import random
 
 import numpy as np
 import torch
-import wandb
 from torch import nn, optim
 
 # from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard.writer import SummaryWriter
 
+import wandb
 from config import TrainingConfig, config
 from data.datasets import PatchCaEventsDataset, PatchSparksDataset
 from models.UNet import unet
@@ -56,7 +56,7 @@ from utils.training_script_utils import (
 )
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+# logger.setLevel(logging.DEBUG)
 
 ##################### Get training-specific parameters #####################
 
