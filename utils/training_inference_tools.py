@@ -2,7 +2,7 @@
 Functions that are used during the training of the neural network model.
 
 Author: Prisca Dotti
-Last modified: 04.06.2024
+Last modified: 25.06.2024
 """
 
 import logging
@@ -18,8 +18,6 @@ import wandb
 from scipy import ndimage as ndi
 from sklearn.metrics import confusion_matrix
 from torch import nn
-
-# from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 
@@ -28,7 +26,6 @@ from data.data_processing_tools import (
     masks_to_instances_dict,
     preds_dict_to_mask,
     process_raw_predictions,
-    remove_padding,
 )
 from data.datasets import CaEventsDataset, CaEventsDatasetInference, PatchSparksDataset
 from evaluation.metrics_tools import (
@@ -1204,11 +1201,6 @@ def test_function_patches(
     start = time.time()
     logger.debug("Test function: running samples in UNet")
 
-    # # Get movies, labels, and instances
-    # xs = testing_dataset.get_movies()
-    # ys = testing_dataset.get_labels()
-    # ys_instances = testing_dataset.get_instances()
-
     # Create a dataloader
     dataset_loader = DataLoader(
         testing_dataset,
@@ -1233,9 +1225,6 @@ def test_function_patches(
     logger.debug(f"Time to run testing dataset in UNet: {time.time() - start:.2f} s")
 
     logger.debug("Test function: computing loss")
-    # # Get ys and predictions as lists of tensors
-    # ys_tensors = [torch.from_numpy(y) for y in ys.values()]
-    # raw_preds_tensors = [torch.from_numpy(raw_pred) for raw_pred in raw_preds]
 
     # Compute loss on dataset
     metrics["validation_loss"] = compute_loss(
@@ -1270,8 +1259,10 @@ def test_function_patches(
         # Compute exp of predictions
         raw_pred = torch.exp(raw_pred).numpy()
 
-        logger.debug(f"Test function: saving raw predictions on disk ({output_dir})")
         # Save raw predictions as .tif videos
+        logger.debug(
+            f"Test function: saving raw predictions on disk ({os.path.abspath(output_dir)})"
+        )
         write_videos_on_disk(
             xs=x,
             ys=y,
@@ -1321,7 +1312,7 @@ def test_function_patches(
 
         ############### Compute pairwise scores (based on IoMin) ###############
 
-        if compute_instances_metrics and np.any(list(preds_instances.values())):
+        if compute_instances_metrics:
             if logger.level <= logging.DEBUG:
                 start = time.time()
                 n_ys_events = max(
@@ -1345,9 +1336,6 @@ def test_function_patches(
                 ys_instances=y_instances,
                 preds_instances=preds_instances,
             )
-        else:
-            logger.warning("Empty predicted events: skipping instances-based metrics.")
-            compute_instances_metrics = False
 
         if compute_instances_metrics:
             logger.debug(
@@ -1404,9 +1392,6 @@ def test_function_patches(
     (- Matthews correlation coefficient (MCC))??? (TODO)
     """
     if compute_instances_metrics:
-        # Get confusion matrix of all summed events
-        # metrics["events_confusion_matrix"] = sum(confusion_matrix.values())
-
         # Get other metrics (precision, recall, % correctly classified, % detected, % labeled)
         metrics_all = get_metrics_from_summary(
             tot_preds=tot_preds,
